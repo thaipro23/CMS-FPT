@@ -1,0 +1,55 @@
+<!--
+Mẫu nút cho template Mako/HTML cũ nếu bạn không gắn qua Learning MFE.
+Bạn cần thay courseId/unitUsageKey bằng biến thật của trang Unit đang dùng.
+-->
+<button type="button" id="unit-reset-button" class="btn btn-outline-primary">
+  Làm lại bài
+</button>
+
+<script>
+function getCookie(name) {
+  var value = '; ' + document.cookie;
+  var parts = value.split('; ' + name + '=');
+  if (parts.length === 2) return parts.pop().split(';').shift();
+  return '';
+}
+
+function formatWait(totalSeconds) {
+  var secondsNumber = Number(totalSeconds || 0);
+  var minutes = Math.floor(secondsNumber / 60);
+  var seconds = secondsNumber % 60;
+  if (minutes <= 0) return seconds + ' giây';
+  return minutes + ' phút ' + seconds + ' giây';
+}
+
+document.getElementById('unit-reset-button').addEventListener('click', function () {
+  if (!window.confirm('Bạn có chắc muốn làm lại bài? Toàn bộ bài làm hiện tại sẽ bị xóa và random lại bộ câu hỏi mới.')) {
+    return;
+  }
+
+  fetch('/api/unit-reset/v1/reset/', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': getCookie('csrftoken')
+    },
+    body: JSON.stringify({
+      course_id: window.OPENEDX_COURSE_ID,
+      unit_usage_key: window.OPENEDX_UNIT_USAGE_KEY
+    })
+  }).then(function (res) {
+    return res.json().then(function (data) {
+      if (!res.ok) {
+        if (data.code === 'RESET_COOLDOWN') {
+          alert('Bạn chưa thể làm lại bài. Vui lòng chờ ' + formatWait(data.wait_seconds) + ' nữa.');
+          return;
+        }
+        alert(data.message || 'Không thể làm lại bài.');
+        return;
+      }
+      window.location.reload();
+    });
+  });
+});
+</script>
