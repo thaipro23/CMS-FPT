@@ -68,3 +68,17 @@ Kỳ vọng:
 
 - Open edX có Content Libraries V2: plugin có thể tạo Library và import Problem thật.
 - Open edX chỉ có Legacy Libraries hoặc chưa bật V2: plugin trả lỗi `Content Libraries V2 Python API không khả dụng`. Khi đó cần nâng/bật Libraries V2 hoặc viết adapter Legacy Library riêng.
+
+## v25.9.13.10 - Library component tags
+
+Connector can attach Open edX Content Tags to imported Library problems.
+
+CMS/Studio env vars:
+
+```env
+AI_CONNECTOR_TAGGING_ENABLED=true
+AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID=ai-learning-check
+AI_CONNECTOR_TAG_TAXONOMY_NAME=AI Learning Check
+```
+
+If Content Tagging is unavailable, publishing still succeeds and the connector returns a non-fatal `tag_result` warning.

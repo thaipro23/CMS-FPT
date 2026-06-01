@@ -234,7 +234,7 @@ def get_block_cooldown_seconds(usage_keys):
                 max_seconds = seconds
 
     if max_seconds <= 0:
-        max_seconds = int(getattr(settings, "UNIT_RESET_DEFAULT_COOLDOWN_SECONDS", 600))
+        max_seconds = int(getattr(settings, "UNIT_RESET_DEFAULT_COOLDOWN_SECONDS", 60))
 
     return max_seconds
 

@@ -10,6 +10,8 @@ from .views import (
     publish_diagnostics,
     backfill_library_tags,
     library_tags_diagnostics,
+    verify_library_problem,
+    delete_library_problem,
 )
 
 # NOTE:
@@ -30,4 +32,8 @@ urlpatterns = [
     path("libraries/<path:library_key>/backfill-tags/", backfill_library_tags, name="ai_connector_backfill_library_tags_slash"),
     path("libraries/<path:library_key>/tags/diagnostics", library_tags_diagnostics, name="ai_connector_library_tags_diagnostics"),
     path("libraries/<path:library_key>/tags/diagnostics/", library_tags_diagnostics, name="ai_connector_library_tags_diagnostics_slash"),
+    path("libraries/<path:library_key>/problems/verify", verify_library_problem, name="ai_connector_verify_library_problem"),
+    path("libraries/<path:library_key>/problems/verify/", verify_library_problem, name="ai_connector_verify_library_problem_slash"),
+    path("libraries/<path:library_key>/problems/delete", delete_library_problem, name="ai_connector_delete_library_problem"),
+    path("libraries/<path:library_key>/problems/delete/", delete_library_problem, name="ai_connector_delete_library_problem_slash"),
 ]

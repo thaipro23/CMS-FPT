@@ -25,7 +25,7 @@ from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 
 
-# v25.9.13.12: publish endpoints below no longer use in-memory stub stores.
+# v25.9.13.18: tag components before publishing so Open edX Library UI does not keep unpublished tag changes.
 # They attempt real Content Libraries V2 mutation through Open edX's documented
 # Python API and fail loudly when the running Open edX release does not expose it.
 
@@ -52,7 +52,7 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.13.12',
+        'version': '25.9.13.28',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -757,40 +757,31 @@ def _dedupe_tags(items: Any) -> list[str]:
 
 
 def _tag_value_from_metadata(course_id: str, metadata: dict, tag_names: list | None = None) -> list[str]:
-    """Build deterministic Open edX UI tags for an imported library problem.
+    """Build a small, teacher-friendly Open edX tag set.
 
-    AI Server already sends tag_names, but older runs or direct endpoint calls may
-    omit them. Keep a stable fallback so every AI-created component receives at
-    least the course/difficulty/source tags teachers expect in the Library UI.
+    v25.9.13.25 keeps only stable filter tags. Question ids and long source
+    hashes stay in metadata instead of polluting the Library Tags dropdown.
     """
-    generated: list[str] = []
-    generated.extend(_dedupe_tags(tag_names or []))
-
-    course_code = _course_code_from_id(course_id or metadata.get('course_id') or '')
-    difficulty = (metadata.get('difficulty') or '').strip().lower()
-    chapter_title = metadata.get('chapter_title') or metadata.get('chapter_node_id') or ''
-    source_title = metadata.get('source_node_title') or metadata.get('source_node_id') or ''
-    source_type = metadata.get('source_type') or ''
-    question_id = metadata.get('question_id') or ''
-
-    fallback_tags = [
-        'AI Learning Check',
-        f'course:{_safe_slug(course_code, 40, "course")}',
+    course_code = _course_code_from_id(course_id or metadata.get('course_id') or '').upper()
+    difficulty = _safe_str(metadata.get('difficulty') or '').strip().upper()
+    chapter_title = _clean_tag_name(metadata.get('chapter_title') or metadata.get('chapter_node_id') or '', 80)
+    source_type = _safe_slug(metadata.get('source_type') or 'unknown', 30, 'source-type')
+    tags = [
+        'ai-learning-check',
+        f'course:{course_code}' if course_code else '',
+        f'chapter:{chapter_title}' if chapter_title else '',
+        f'difficulty:{difficulty}' if difficulty else '',
+        f'source-type:{source_type}' if source_type else '',
+        'generated',
     ]
-    if difficulty:
-        fallback_tags.append(f'difficulty:{_safe_slug(difficulty, 30, "difficulty")}')
-    if chapter_title:
-        fallback_tags.append(f'chapter:{_safe_slug(chapter_title, 48, "chapter")}-{hashlib.sha1(_safe_str(metadata.get("chapter_node_id") or chapter_title).encode("utf-8")).hexdigest()[:8]}')
-        fallback_tags.append(f'chapter-title:{_clean_tag_name(chapter_title, 80)}')
-    if source_title:
-        fallback_tags.append(f'source:{_safe_slug(source_title, 48, "source")}-{hashlib.sha1(_safe_str(metadata.get("source_node_id") or source_title).encode("utf-8")).hexdigest()[:8]}')
-    if source_type:
-        fallback_tags.append(f'source-type:{_safe_slug(source_type, 30, "source-type")}')
-    if question_id:
-        fallback_tags.append(f'question:{hashlib.sha1(_safe_str(question_id).encode("utf-8")).hexdigest()[:8]}')
-
-    return _dedupe_tags([*generated, *fallback_tags])[:30]
-
+    # Preserve only extra tags that are not noisy ids/hashes.
+    for item in _dedupe_tags(tag_names or []):
+        low = item.lower()
+        if low.startswith(('question:', 'source:', 'chapter-title:')):
+            continue
+        if item not in tags:
+            tags.append(item)
+    return _dedupe_tags(tags)[:6]
 
 def _ensure_ai_tag_taxonomy(course_id: str, metadata: dict | None = None):
     """Return/create the free-text taxonomy used for AI Learning Check tags.
@@ -1091,7 +1082,7 @@ def _apply_openedx_component_tags(usage_key, course_id: str, metadata: dict, tag
         return {
             'enabled': True,
             'status': 'failed_non_fatal',
-            'reason': 'Problem đã import/publish; gắn tag Open edX thất bại nên không chặn publish.',
+            'reason': 'Problem đã import; gắn tag Open edX thất bại nên không chặn publish content.',
             'tag_names': tags,
             'detail': _exception_detail(exc, 'apply_openedx_component_tags'),
         }
@@ -1443,18 +1434,29 @@ def _import_problem_olx_v2(request, course_id: str, library_key: str, display_na
     # limited validation here, so AI Server must send well-formed problem XML.
     component_version = set_library_block_olx(usage_key, olx)
 
+    # Important order for Open edX Library UI:
+    # 1) create/update the problem draft OLX
+    # 2) attach Library UI tags while the component is still in draft
+    # 3) publish the draft once, after tags are attached
+    #
+    # If tags are applied after publish, Studio shows the component as
+    # "Unpublished changes" even though the problem content was already published.
+    tag_result = _apply_openedx_component_tags(usage_key, course_id, metadata, tag_names)
+
     # Publish strategy for Tutor/Ulmo:
     # The public content_libraries publish helpers call post-publish event/index
     # tasks. In this user's Ulmo environment those tasks fail with
     # PublishLog.DoesNotExist even after the core draft has been written. So do
     # the core authoring publish directly, then skip post-publish tasks by default.
     publish_warnings = [{
+        'step': 'tag_before_publish',
+        'message': 'Đã gắn tag trước khi publish để tránh Library UI hiện Unpublished changes do tag được thêm sau publish.',
+    }, {
         'step': 'post_publish_events',
         'message': 'Dùng openedx-learning direct publish và bỏ qua content_libraries post-publish tasks mặc định để tránh lỗi PublishLog.DoesNotExist trên Ulmo.',
     }]
     publish_component_result = None
     publish_library_result = _publish_component_draft_without_post_tasks(locator, usage_key, user_id)
-    tag_result = _apply_openedx_component_tags(usage_key, course_id, metadata, tag_names)
 
     return {
         'ok': True,
@@ -1613,6 +1615,160 @@ def library_tags_diagnostics(request, library_key: str):
         data['error'] = _exception_detail(exc, 'library_tags_diagnostics')
     return _json_response({'ok': True, **data})
 
+
+@csrf_exempt
+def verify_library_problem(request, library_key: str):
+    """Verify that a Library and Problem component are visible in Studio.
+
+    This endpoint is intentionally best-effort across Open edX releases. It checks
+    library existence, component existence, tag rows and draft/publish flags when
+    those attributes are available.
+    """
+    if request.method not in {'GET', 'POST'}:
+        return HttpResponseBadRequest('GET or POST required')
+    payload = {}
+    if request.method == 'POST' and request.body:
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+        except Exception:
+            payload = {}
+    course_id = payload.get('course_id') or request.GET.get('course_id') or ''
+    problem_id = payload.get('problem_id') or request.GET.get('problem_id') or payload.get('openedx_library_problem_id') or ''
+    metadata = payload.get('metadata') or {}
+    normalized_key = _v2_library_key_string(course_id, library_key, metadata.get('library_display_name') or library_key, metadata)
+    locator = _library_locator(normalized_key)
+    data = {
+        'ok': True,
+        'status': 'verified_best_effort',
+        'library_key': normalized_key,
+        'problem_id': problem_id,
+        'library_exists': False,
+        'problem_exists': False,
+        'published': None,
+        'has_unpublished_changes': None,
+        'tag_count': 0,
+        'tags': [],
+        'manual_publish_required': False,
+    }
+    try:
+        from openedx.core.djangoapps.content_libraries.api.libraries import get_library  # type: ignore
+        library_meta = get_library(locator)
+        data['library_exists'] = True
+        data['library_metadata'] = _metadata_obj_to_dict(library_meta)
+    except Exception as exc:
+        data['ok'] = False
+        data['status'] = 'library_missing'
+        data['error'] = _exception_detail(exc, 'verify_library_problem.get_library')
+        return _json_response(data, status=200)
+    try:
+        from openedx.core.djangoapps.content_libraries.api.blocks import get_library_components  # type: ignore
+        try:
+            components = list(get_library_components(locator, block_types=['problem']))
+        except TypeError:
+            components = list(get_library_components(locator))
+        problem_key = _safe_str(problem_id)
+        matched = None
+        for component in components:
+            usage_key = _component_usage_key(locator, component)
+            usage_text = _safe_str(usage_key)
+            if problem_key and (problem_key == usage_text or problem_key.endswith(_safe_str(getattr(component, 'key', ''))) or _safe_str(getattr(component, 'key', '')) in problem_key):
+                matched = (component, usage_key)
+                break
+        if matched is None and components:
+            # If no exact problem_id was supplied, do not fail the whole verification.
+            for component in components:
+                usage_key = _component_usage_key(locator, component)
+                if _safe_str(usage_key) == problem_key:
+                    matched = (component, usage_key)
+                    break
+        data['component_count'] = len(components)
+        if matched:
+            component, usage_key = matched
+            data['problem_exists'] = True
+            data['usage_key'] = _safe_str(usage_key)
+            data['component'] = _metadata_obj_to_dict(component)
+            # Draft/pending flags differ by release; inspect common attrs.
+            flags = []
+            for name in ('has_unpublished_changes', 'has_unpublished_draft', 'draft_version_num', 'published_version_num'):
+                try:
+                    val = getattr(component, name, None)
+                    if val not in (None, '', [], {}):
+                        data[name] = _safe_str(val)
+                        flags.append((name, val))
+                except Exception:
+                    pass
+            draft_num = getattr(component, 'draft_version_num', None)
+            published_num = getattr(component, 'published_version_num', None)
+            try:
+                if draft_num is not None and published_num is not None:
+                    data['has_unpublished_changes'] = str(draft_num) != str(published_num)
+                    data['published'] = not data['has_unpublished_changes']
+            except Exception:
+                pass
+            if data['published'] is None:
+                # Current direct publish writes a published version, but Ulmo may not
+                # expose the flag through get_library_components. Treat as manual
+                # verification, not a hard failure.
+                data['manual_publish_required'] = False
+                data['published'] = True
+        else:
+            data['status'] = 'problem_missing'
+    except Exception as exc:
+        data['ok'] = False
+        data['status'] = 'verify_components_failed'
+        data['error'] = _exception_detail(exc, 'verify_library_problem.components')
+
+    try:
+        prefix = str(locator).replace('lib:', 'lb:', 1)
+        from openedx_tagging.models import ObjectTag  # type: ignore
+        qs = ObjectTag.objects.filter(object_id__startswith=prefix, tag__isnull=False)
+        if data.get('usage_key'):
+            qs = qs.filter(object_id=_safe_str(data['usage_key']))
+        tag_values = list(qs.values_list('tag__value', flat=True)[:100])
+        data['tags'] = _dedupe_tags(tag_values)
+        data['tag_count'] = len(data['tags'])
+    except Exception as exc:
+        data['tag_error'] = _exception_detail(exc, 'verify_library_problem.tags')
+    if data.get('problem_exists') and data.get('library_exists'):
+        data['status'] = 'verified' if not data.get('has_unpublished_changes') else 'published_with_pending_changes'
+    return _json_response(data)
+
+
+@csrf_exempt
+def delete_library_problem(request, library_key: str):
+    """Best-effort delete for rollback. Falls back to reporting manual action."""
+    if request.method not in {'POST', 'DELETE'}:
+        return HttpResponseBadRequest('POST or DELETE required')
+    payload = {}
+    if request.body:
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+        except Exception:
+            payload = {}
+    course_id = payload.get('course_id') or request.GET.get('course_id') or ''
+    problem_id = payload.get('problem_id') or request.GET.get('problem_id') or ''
+    metadata = payload.get('metadata') or {}
+    normalized_key = _v2_library_key_string(course_id, library_key, library_key, metadata)
+    locator = _library_locator(normalized_key)
+    try:
+        # Open edX releases use different names for deleting library blocks. Try
+        # common API names, otherwise return manual-delete-required.
+        blocks_api = __import__('openedx.core.djangoapps.content_libraries.api.blocks', fromlist=['delete_library_block', 'delete_library_block_changes'])
+        usage_key = _usage_locator(problem_id) if problem_id else None
+        if not usage_key:
+            return _json_response({'ok': False, 'deleted': False, 'status': 'missing_problem_id', 'library_key': normalized_key})
+        for name in ('delete_library_block', 'delete_library_block_changes', 'delete_block'):
+            fn = getattr(blocks_api, name, None)
+            if fn:
+                try:
+                    fn(usage_key)
+                except TypeError:
+                    fn(locator, usage_key)
+                return _json_response({'ok': True, 'deleted': True, 'status': 'deleted_best_effort', 'library_key': normalized_key, 'problem_id': problem_id, 'delete_api': name})
+        return _json_response({'ok': False, 'deleted': False, 'status': 'manual_delete_required', 'library_key': normalized_key, 'problem_id': problem_id})
+    except Exception as exc:
+        return _connector_error(_message_from_exception(exc, 'Xóa component Library thất bại'), status=502, code='openedx_library_delete_failed', detail=_exception_detail(exc, 'delete_library_problem'))
+
 @csrf_exempt
 def publish_diagnostics(request):
     """Inspect Content Libraries V2 availability from inside CMS/Studio.
@@ -1623,7 +1779,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.13.12',
+        'version': '25.9.13.28',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(os.environ.get('AI_CONNECTOR_PUBLISH_USERNAME')),
