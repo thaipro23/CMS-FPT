@@ -22,12 +22,13 @@ import time
 import traceback
 from html import unescape
 from typing import Any
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from django.conf import settings
-from django.http import JsonResponse, HttpResponseBadRequest
+from django.http import JsonResponse, HttpResponseBadRequest, HttpResponseRedirect
 from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.views import redirect_to_login
 
 
 # v25.9.13.39: rollback delete verifies/matches Library components by local component key, not only full usage key.
@@ -191,10 +192,141 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.13.43',
+        'version': '25.9.13.48',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
+
+
+
+def _b64url_json(data: dict) -> str:
+    raw = json.dumps(data, ensure_ascii=False, separators=(',', ':'), default=str).encode('utf-8')
+    return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
+
+
+def _sign_session_bridge_payload(payload: dict) -> str:
+    secret = str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_SECRET') or _connector_hmac_secret() or '')
+    if not secret:
+        raise RuntimeError('AI_CONNECTOR_SESSION_BRIDGE_SECRET/AI_CONNECTOR_HMAC_SECRET is not configured')
+    payload_b64 = _b64url_json(payload)
+    signature = hmac.new(secret.encode('utf-8'), payload_b64.encode('ascii'), hashlib.sha256).hexdigest()
+    return f'{payload_b64}.{signature}'
+
+
+def _bridge_allowed_return_hosts(request) -> set[str]:
+    raw = str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_ALLOWED_RETURN_HOSTS') or '')
+    hosts = {item.strip().lower() for item in raw.split(',') if item.strip()}
+    # Dev/local convenience. Production should set the allowlist explicitly.
+    hosts.update({'localhost', '127.0.0.1'})
+    return hosts
+
+
+def _validate_bridge_return_to(request, return_to: str) -> tuple[bool, str]:
+    parsed = urlparse(return_to or '')
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        return False, 'return_to must be an absolute http(s) URL'
+    host = parsed.hostname.lower()
+    if host not in _bridge_allowed_return_hosts(request):
+        return False, f'return_to host {host!r} is not allowed by AI_CONNECTOR_SESSION_BRIDGE_ALLOWED_RETURN_HOSTS'
+    return True, ''
+
+
+def _append_query(url: str, params: dict[str, Any]) -> str:
+    parsed = urlparse(url)
+    current = parsed.query
+    extra = urlencode({k: v for k, v in params.items() if v is not None})
+    query = f'{current}&{extra}' if current and extra else (current or extra)
+    return parsed._replace(query=query).geturl()
+
+
+def _course_author_access(user, course_id: str | None) -> bool:
+    if not course_id:
+        return False
+    if getattr(user, 'is_superuser', False):
+        return True
+    try:
+        from opaque_keys.edx.keys import CourseKey  # type: ignore
+        from common.djangoapps.student.auth import has_course_author_access  # type: ignore
+        course_key = CourseKey.from_string(unquote(course_id))
+        return bool(has_course_author_access(user, course_key))
+    except Exception:
+        # Safe fallback: do not grant course-level teacher access unless the user
+        # is global staff/superuser. This avoids accidentally authorizing a learner
+        # if an Open edX internal import path differs between releases.
+        return bool(getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
+
+
+def _cms_user_payload(request, course_id: str | None = None) -> dict[str, Any]:
+    user = getattr(request, 'user', None)
+    if not getattr(user, 'is_authenticated', False):
+        return {'authenticated': False}
+    is_staff = bool(getattr(user, 'is_staff', False))
+    is_superuser = bool(getattr(user, 'is_superuser', False))
+    can_author_course = _course_author_access(user, course_id)
+    if is_superuser or is_staff:
+        role = 'admin'
+        course_ids = ['*']
+    elif can_author_course and course_id:
+        role = 'teacher'
+        course_ids = [course_id]
+    else:
+        role = 'viewer'
+        course_ids = []
+    return {
+        'authenticated': True,
+        'user_id': str(getattr(user, 'id', '') or getattr(user, 'pk', '') or getattr(user, 'username', '')),
+        'username': getattr(user, 'username', None),
+        'email': getattr(user, 'email', None),
+        'name': user.get_full_name() if hasattr(user, 'get_full_name') else '',
+        'is_staff': is_staff,
+        'is_superuser': is_superuser,
+        'role': role,
+        'course_ids': course_ids,
+        'requested_course_id': course_id,
+        'can_author_requested_course': can_author_course,
+    }
+
+
+def session_me(request):
+    """Return the current CMS session user for same-site credentialed calls.
+
+    For cross-site/local development, prefer session_bridge because browser
+    SameSite cookie policy can block XHR cookies from localhost.
+    """
+    course_id = request.GET.get('course_id') or None
+    payload = _cms_user_payload(request, course_id)
+    status_code = 200 if payload.get('authenticated') else 401
+    return _json_response({'ok': bool(payload.get('authenticated')), 'user': payload}, status=status_code)
+
+
+def session_bridge(request):
+    """Top-level CMS session bridge.
+
+    Flow:
+      1. AI frontend redirects the browser here with return_to + optional course_id.
+      2. CMS uses its existing Studio session cookie. If missing, CMS login is shown.
+      3. Connector signs a 60-second ticket and redirects back to AI frontend.
+      4. AI frontend exchanges the ticket at AI backend /auth/openedx-session/exchange.
+    """
+    if not getattr(getattr(request, 'user', None), 'is_authenticated', False):
+        return redirect_to_login(request.get_full_path())
+    return_to = request.GET.get('return_to') or ''
+    ok, reason = _validate_bridge_return_to(request, return_to)
+    if not ok:
+        return HttpResponseBadRequest(reason)
+    course_id = request.GET.get('course_id') or None
+    user_payload = _cms_user_payload(request, course_id)
+    now = int(time.time())
+    ticket_payload = {
+        'iss': str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_ISSUER') or 'openedx-ai-connector'),
+        'aud': str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_AUDIENCE') or 'ai-learning-server'),
+        'iat': now,
+        'exp': now + int(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_TTL_SECONDS', '60') or '60'),
+        'sub': user_payload.get('user_id'),
+        **user_payload,
+    }
+    ticket = _sign_session_bridge_payload(ticket_payload)
+    return HttpResponseRedirect(_append_query(return_to, {'ticket': ticket, 'state': request.GET.get('state')}))
 
 
 def _safe_str(value: Any) -> str:
@@ -2305,7 +2437,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.13.43',
+        'version': '25.9.13.48',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(_setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME')),

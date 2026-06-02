@@ -12,6 +12,8 @@ from .views import (
     library_tags_diagnostics,
     verify_library_problem,
     delete_library_problem,
+    session_me,
+    session_bridge,
 )
 
 # NOTE:
@@ -21,6 +23,10 @@ from .views import (
 urlpatterns = [
     path("health", health, name="ai_connector_health"),
     path("health/", health, name="ai_connector_health_slash"),
+    path("session/me", session_me, name="ai_connector_session_me"),
+    path("session/me/", session_me, name="ai_connector_session_me_slash"),
+    path("session/bridge", session_bridge, name="ai_connector_session_bridge"),
+    path("session/bridge/", session_bridge, name="ai_connector_session_bridge_slash"),
     path("publish-diagnostics", publish_diagnostics, name="ai_connector_publish_diagnostics"),
     path("publish-diagnostics/", publish_diagnostics, name="ai_connector_publish_diagnostics_slash"),
     path("courses/<path:course_id>/content", course_content, name="ai_connector_course_content"),
