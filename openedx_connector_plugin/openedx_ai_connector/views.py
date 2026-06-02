@@ -25,7 +25,7 @@ from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 
 
-# v25.9.13.18: tag components before publishing so Open edX Library UI does not keep unpublished tag changes.
+# v25.9.13.39: rollback delete verifies/matches Library components by local component key, not only full usage key.
 # They attempt real Content Libraries V2 mutation through Open edX's documented
 # Python API and fail loudly when the running Open edX release does not expose it.
 
@@ -52,7 +52,7 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.13.28',
+        'version': '25.9.13.39',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -110,6 +110,34 @@ def _display_name(block: Any) -> str:
 
 def _parent_id(parent: Any | None) -> str | None:
     return str(parent) if parent else None
+
+
+def _clean_usage_key_input(value: Any) -> str:
+    """Accept raw, URL-encoded, or JSON-encoded usage keys from AI Server.
+
+    Older AI Server builds stored keys with surrounding quotes, e.g.
+    '"lb:FPT:..."'.  Strip those safely before LibraryUsageLocatorV2 parsing.
+    """
+    from urllib.parse import unquote
+
+    text = _safe_str(value).strip()
+    for _ in range(4):
+        decoded = unquote(text).strip()
+        if decoded != text:
+            text = decoded
+            continue
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+            text = text[1:-1].strip()
+            continue
+        try:
+            loaded = json.loads(text)
+            if isinstance(loaded, str) and loaded != text:
+                text = loaded.strip()
+                continue
+        except Exception:
+            pass
+        break
+    return text
 
 
 def _to_jsonable(value: Any, depth: int = 0) -> Any:
@@ -680,6 +708,7 @@ def _library_locator(library_key: str):
 
 
 def _usage_locator(usage_key: str):
+    usage_key = _clean_usage_key_input(usage_key)
     # Different releases expose the parser in slightly different modules. Try the
     # documented V2 locator first, then the generic UsageKey parser.
     try:
@@ -1283,10 +1312,23 @@ def _publish_component_draft_without_post_tasks(library_key, usage_key, user_id:
 
 
 def _publish_library_drafts_without_post_tasks(library_key, user_id: int | None) -> dict:
-    """Publish all pending drafts in a library without running post-publish tasks.
+    """Publish all pending drafts in a library and refresh Studio Library UI state.
 
-    This is a fallback/repair helper for Ulmo when library-level publish_changes fails
-    after core authoring publish due to PublishLog lookup in asynchronous tasks.
+    v25.9.13.39 note:
+    Earlier Ulmo fixes skipped content_libraries post-publish events to avoid the
+    Celery-side PublishLog.DoesNotExist error. That made the core Learning Core
+    publish succeed, but the Authoring MFE search/index state could still show
+    components as "Never published" or "Unpublished changes".
+
+    The stable Ulmo-compatible path is:
+      1) call openedx-learning publish_all_drafts synchronously;
+      2) run the content_libraries post-publish event task synchronously in the
+         CMS process, not through Celery/result.get().
+
+    This keeps the same official event/indexing behavior used by Open edX while
+    avoiding the cross-worker PublishLog lookup race seen in the user's Tutor
+    environment. If synchronous events fail, the import is still returned with a
+    warning, but the connector no longer silently skips them by default.
     """
     from openedx.core.djangoapps.content_libraries.models import ContentLibrary  # type: ignore
     from openedx_learning.api import authoring as authoring_api  # type: ignore
@@ -1294,14 +1336,86 @@ def _publish_library_drafts_without_post_tasks(library_key, user_id: int | None)
     content_library = ContentLibrary.objects.get_by_key(library_key)
     learning_package = content_library.learning_package
     assert learning_package is not None
+
+    draft_count_before = authoring_api.get_all_drafts(learning_package.id).count()
     publish_log = authoring_api.publish_all_drafts(learning_package.id, published_by=user_id)
+
+    event_result: dict[str, Any] = {
+        'mode': 'sync_in_cms_process',
+        'status': 'not_run',
+        'reason': None,
+    }
+
+    try:
+        from openedx.core.djangoapps.content_libraries import tasks  # type: ignore
+        task_obj = getattr(tasks, 'send_events_after_publish')
+        if hasattr(task_obj, 'run'):
+            task_obj.run(getattr(publish_log, 'pk', None), str(library_key))
+        else:
+            task_obj(getattr(publish_log, 'pk', None), str(library_key))
+        event_result = {
+            'mode': 'sync_in_cms_process',
+            'status': 'ok',
+            'publish_log_pk': getattr(publish_log, 'pk', None),
+            'library_key': str(library_key),
+        }
+    except Exception as exc:
+        event_result = {
+            'mode': 'sync_in_cms_process',
+            'status': 'failed_non_fatal',
+            'reason': 'Core publish succeeded, but synchronous post-publish events/index refresh failed.',
+            'detail': _exception_detail(exc, 'sync_post_publish_events'),
+        }
+
+    # Verify after publish using the same metadata API that the Library UI uses.
+    verification: dict[str, Any] = {'status': 'not_run'}
+    try:
+        from openedx.core.djangoapps.content_libraries.api.blocks import get_library_components  # type: ignore
+        components = list(get_library_components(library_key, block_types=['problem']))
+        never = 0
+        modified = 0
+        published = 0
+        sample = []
+        for component in components[:50]:
+            versioning = getattr(component, 'versioning', None)
+            draft = getattr(versioning, 'draft', None) if versioning is not None else None
+            live = getattr(versioning, 'published', None) if versioning is not None else None
+            has_changes = bool(getattr(versioning, 'has_unpublished_changes', False)) if versioning is not None else False
+            if live is None:
+                never += 1
+            elif has_changes:
+                modified += 1
+            else:
+                published += 1
+            sample.append({
+                'key': _safe_str(getattr(component, 'key', '')),
+                'draft_version': getattr(draft, 'version_num', None),
+                'published_version': getattr(live, 'version_num', None) if live is not None else None,
+                'has_unpublished_changes': has_changes,
+            })
+        verification = {
+            'status': 'ok',
+            'component_count': len(components),
+            'published': published,
+            'modified_since_publish': modified,
+            'never_published': never,
+            'sample': sample,
+        }
+    except Exception as exc:
+        verification = {
+            'status': 'failed_non_fatal',
+            'detail': _exception_detail(exc, 'post_publish_verification'),
+        }
+
     return {
-        'mode': 'openedx_learning_direct_library_publish_no_tasks',
-        'status': 'published_library_core_without_post_tasks',
+        'mode': 'openedx_learning_library_publish_sync_events',
+        'status': 'published_library_core_and_refreshed_events',
         'learning_package_id': learning_package.id,
         'publish_log_id': getattr(publish_log, 'id', None),
         'published_by': user_id,
-        'post_publish_events': 'skipped',
+        'draft_count_before': draft_count_before,
+        'post_publish_events': event_result,
+        'library_ui_verification': verification,
     }
 
 def _ensure_content_library_v2(request, course_id: str, display_name: str, library_key: str | None, metadata: dict | None = None) -> dict:
@@ -1452,11 +1566,21 @@ def _import_problem_olx_v2(request, course_id: str, library_key: str, display_na
         'step': 'tag_before_publish',
         'message': 'Đã gắn tag trước khi publish để tránh Library UI hiện Unpublished changes do tag được thêm sau publish.',
     }, {
+        'step': 'library_core_publish_all_drafts',
+        'message': 'Publish toàn bộ draft đang pending trong Library AI-managed sau khi set OLX + tag. Cách này phù hợp Tutor/Ulmo hơn publish riêng component, tránh UI hiển thị Never published.',
+    }, {
         'step': 'post_publish_events',
-        'message': 'Dùng openedx-learning direct publish và bỏ qua content_libraries post-publish tasks mặc định để tránh lỗi PublishLog.DoesNotExist trên Ulmo.',
+        'message': 'Bỏ qua content_libraries post-publish tasks mặc định để tránh lỗi PublishLog.DoesNotExist trên Ulmo. Nếu cần reindex/event có thể bật riêng sau.',
     }]
     publish_component_result = None
-    publish_library_result = _publish_component_draft_without_post_tasks(locator, usage_key, user_id)
+    # v25.9.13.39: component-level direct publish can leave Studio Library UI
+    # showing components as "Never published" on Ulmo because the component
+    # draft selection is release-sensitive. These AI-generated libraries are
+    # managed by AI Server per chapter+difficulty, so publish all pending drafts
+    # in this Library after OLX and tags are written. This marks each imported
+    # problem's published version in openedx-learning without running the flaky
+    # post-publish tasks that fail with PublishLog.DoesNotExist.
+    publish_library_result = _publish_library_drafts_without_post_tasks(locator, user_id)
 
     return {
         'ok': True,
@@ -1719,24 +1843,218 @@ def verify_library_problem(request, library_key: str):
         data['error'] = _exception_detail(exc, 'verify_library_problem.components')
 
     try:
+        # Prefer the official content_tagging API.  Some Tutor/Ulmo builds do not
+        # install the standalone `openedx_tagging.models` import path, so importing
+        # it here makes verification noisy even though publishing/deleting is OK.
+        from openedx.core.djangoapps.content_tagging import api as tagging_api  # type: ignore
         prefix = str(locator).replace('lib:', 'lb:', 1)
-        from openedx_tagging.models import ObjectTag  # type: ignore
-        qs = ObjectTag.objects.filter(object_id__startswith=prefix, tag__isnull=False)
+        all_tags, _taxonomies = tagging_api.get_all_object_tags(locator)
+        tag_values = []
         if data.get('usage_key'):
-            qs = qs.filter(object_id=_safe_str(data['usage_key']))
-        tag_values = list(qs.values_list('tag__value', flat=True)[:100])
+            object_tags = all_tags.get(_safe_str(data['usage_key']), {}) or {}
+            for values in object_tags.values():
+                if isinstance(values, (list, tuple, set)):
+                    tag_values.extend([_safe_str(v) for v in values])
+                elif values:
+                    tag_values.append(_safe_str(values))
+        else:
+            for object_id, taxonomy_map in (all_tags or {}).items():
+                if _safe_str(object_id).startswith(prefix):
+                    for values in (taxonomy_map or {}).values():
+                        if isinstance(values, (list, tuple, set)):
+                            tag_values.extend([_safe_str(v) for v in values])
+                        elif values:
+                            tag_values.append(_safe_str(values))
         data['tags'] = _dedupe_tags(tag_values)
         data['tag_count'] = len(data['tags'])
     except Exception as exc:
+        # Tags are non-fatal for publish/rollback verification.  Keep the diagnostic
+        # detail, but do not flip ok/status because a build without Content Tagging
+        # can still publish Library components correctly.
         data['tag_error'] = _exception_detail(exc, 'verify_library_problem.tags')
     if data.get('problem_exists') and data.get('library_exists'):
         data['status'] = 'verified' if not data.get('has_unpublished_changes') else 'published_with_pending_changes'
     return _json_response(data)
 
 
+def _usage_key_local_id(usage_key) -> str:
+    """Return the local component id from a LibraryUsageLocatorV2.
+
+    Open edX ``get_library_components()`` returns Learning Core Component rows.
+    On Ulmo those rows usually expose ``component.key`` as the local id
+    (``ai-...``), not the full usage key (``lb:ORG:lib:problem:ai-...``).
+    The old rollback verifier compared only the full usage key and therefore
+    concluded that existing components were already absent; AI Server then
+    reported rollback success even though Studio still showed all cards.
+    """
+    for attr in ('block_id', 'usage_id', 'local_id'):
+        try:
+            value = getattr(usage_key, attr, None)
+        except Exception:
+            value = None
+        text = _safe_str(value).strip()
+        if text:
+            return text
+    text = _safe_str(usage_key).strip()
+    if ':' in text:
+        return text.rsplit(':', 1)[-1]
+    return text
+
+
+def _component_candidate_keys(component) -> list[str]:
+    """Return possible identifiers for a Library component row."""
+    candidates: list[str] = []
+    for attr in ('usage_key', 'key', 'local_key', 'uuid', 'locator'):
+        try:
+            value = getattr(component, attr, None)
+        except Exception:
+            value = None
+        text = _safe_str(value).strip()
+        if text:
+            candidates.append(text)
+    try:
+        versioning = getattr(component, 'versioning', None)
+        draft = getattr(versioning, 'draft', None) if versioning is not None else None
+        published = getattr(versioning, 'published', None) if versioning is not None else None
+        for version in (draft, published):
+            for attr in ('key', 'component_key', 'usage_key'):
+                text = _safe_str(getattr(version, attr, None)).strip()
+                if text:
+                    candidates.append(text)
+    except Exception:
+        pass
+    # Keep order while removing blanks/duplicates.
+    seen = set()
+    unique = []
+    for text in candidates:
+        if text and text not in seen:
+            seen.add(text)
+            unique.append(text)
+    return unique
+
+
+def _component_exists_in_library(library_key, usage_key) -> dict:
+    """Return whether a Library component is visible to the Library API/UI.
+
+    Match both full usage key and local component id. This is important for
+    rollback because Open edX Learning Core Component objects expose the local
+    ``key`` while AI Server stores full ``lb:...`` usage keys.
+    """
+    data = {
+        'checked': False,
+        'exists': None,
+        'component_count': None,
+        'matched': None,
+        'match_reason': None,
+        'usage_key': _safe_str(usage_key),
+        'local_id': _usage_key_local_id(usage_key),
+        'sample_candidates': [],
+        'error': None,
+    }
+    try:
+        from openedx.core.djangoapps.content_libraries.api.blocks import get_library_components  # type: ignore
+        components = list(get_library_components(library_key, block_types=['problem']))
+        usage_text = _safe_str(usage_key).strip()
+        local_id = _usage_key_local_id(usage_key).strip()
+        matched = None
+        match_reason = None
+        sample_candidates = []
+        for component in components:
+            candidates = _component_candidate_keys(component)
+            if len(sample_candidates) < 8:
+                sample_candidates.append(candidates[:8])
+            if usage_text and usage_text in candidates:
+                matched = component
+                match_reason = 'full_usage_key'
+                break
+            if local_id and local_id in candidates:
+                matched = component
+                match_reason = 'local_component_key'
+                break
+            # Last-resort: some component keys stringify with namespace prefixes.
+            if local_id and any(str(candidate).endswith(':' + local_id) for candidate in candidates):
+                matched = component
+                match_reason = 'local_component_key_suffix'
+                break
+        data.update({
+            'checked': True,
+            'exists': matched is not None,
+            'component_count': len(components),
+            'matched': _metadata_obj_to_dict(matched) if matched is not None else None,
+            'match_reason': match_reason,
+            'sample_candidates': sample_candidates,
+        })
+    except Exception as exc:
+        data.update({
+            'checked': False,
+            'exists': None,
+            'error': _exception_detail(exc, 'component_exists_in_library'),
+        })
+    return data
+
+
+def _call_delete_library_block(blocks_api, locator, usage_key, user) -> dict:
+    """Delete one Library component across Open edX release signature variants.
+
+    Ulmo/Verawood expose slightly different signatures. Try explicit user_id
+    variants first because several authoring APIs eventually store integer user
+    ids in openedx-learning publish logs.
+    """
+    user_id = getattr(user, 'id', None) if user is not None else None
+    attempts = []
+    for name in ('delete_library_block', 'delete_library_block_changes', 'delete_block', 'remove_library_block'):
+        fn = getattr(blocks_api, name, None)
+        if not fn:
+            continue
+        call_variants = [
+            ('usage_key_user_id_kw', lambda: fn(usage_key, user_id=user_id)),
+            ('usage_key_user_id_pos', lambda: fn(usage_key, user_id)),
+            ('usage_key_user_kw', lambda: fn(usage_key, user=user)),
+            ('usage_key_only', lambda: fn(usage_key)),
+            ('locator_usage_key_user_id_kw', lambda: fn(locator, usage_key, user_id=user_id)),
+            ('locator_usage_key_user_id_pos', lambda: fn(locator, usage_key, user_id)),
+            ('locator_usage_key_only', lambda: fn(locator, usage_key)),
+        ]
+        for variant_name, caller in call_variants:
+            try:
+                result = caller()
+                return {
+                    'ok': True,
+                    'delete_api': name,
+                    'signature_variant': variant_name,
+                    'result': _metadata_obj_to_dict(result) if result is not None else {},
+                }
+            except TypeError as exc:
+                attempts.append({'api': name, 'variant': variant_name, 'type_error': str(exc)})
+                continue
+            except Exception as exc:
+                # If the component is already missing, rollback should be idempotent.
+                class_name = exc.__class__.__name__
+                msg = str(exc) or repr(exc)
+                if class_name in {'DoesNotExist', 'ItemNotFoundError', 'LibraryBlockNotFound'} or 'does not exist' in msg.lower() or 'not found' in msg.lower():
+                    return {
+                        'ok': True,
+                        'delete_api': name,
+                        'signature_variant': variant_name,
+                        'already_missing': True,
+                        'detail': _exception_detail(exc, f'delete.{name}.{variant_name}'),
+                    }
+                raise
+    return {
+        'ok': False,
+        'status': 'delete_api_unavailable',
+        'attempts': attempts[-20:],
+    }
+
+
 @csrf_exempt
 def delete_library_problem(request, library_key: str):
-    """Best-effort delete for rollback. Falls back to reporting manual action."""
+    """Delete one AI-imported problem from an Open edX Content Library.
+
+    This endpoint is used by AI Server rollback level=openedx. It must not only
+    mark AI Server rows as approved; it must remove the actual Library component,
+    then publish Library drafts so Studio stops showing the component.
+    """
     if request.method not in {'POST', 'DELETE'}:
         return HttpResponseBadRequest('POST or DELETE required')
     payload = {}
@@ -1746,26 +2064,70 @@ def delete_library_problem(request, library_key: str):
         except Exception:
             payload = {}
     course_id = payload.get('course_id') or request.GET.get('course_id') or ''
-    problem_id = payload.get('problem_id') or request.GET.get('problem_id') or ''
+    problem_id = _clean_usage_key_input(payload.get('problem_id') or request.GET.get('problem_id') or '')
     metadata = payload.get('metadata') or {}
     normalized_key = _v2_library_key_string(course_id, library_key, library_key, metadata)
-    locator = _library_locator(normalized_key)
     try:
-        # Open edX releases use different names for deleting library blocks. Try
-        # common API names, otherwise return manual-delete-required.
-        blocks_api = __import__('openedx.core.djangoapps.content_libraries.api.blocks', fromlist=['delete_library_block', 'delete_library_block_changes'])
+        locator = _library_locator(normalized_key)
         usage_key = _usage_locator(problem_id) if problem_id else None
         if not usage_key:
-            return _json_response({'ok': False, 'deleted': False, 'status': 'missing_problem_id', 'library_key': normalized_key})
-        for name in ('delete_library_block', 'delete_library_block_changes', 'delete_block'):
-            fn = getattr(blocks_api, name, None)
-            if fn:
-                try:
-                    fn(usage_key)
-                except TypeError:
-                    fn(locator, usage_key)
-                return _json_response({'ok': True, 'deleted': True, 'status': 'deleted_best_effort', 'library_key': normalized_key, 'problem_id': problem_id, 'delete_api': name})
-        return _json_response({'ok': False, 'deleted': False, 'status': 'manual_delete_required', 'library_key': normalized_key, 'problem_id': problem_id})
+            return _json_response({
+                'ok': False,
+                'deleted': False,
+                'status': 'missing_problem_id',
+                'library_key': normalized_key,
+            })
+        before = _component_exists_in_library(locator, usage_key)
+        if before.get('checked') and before.get('exists') is False:
+            return _json_response({
+                'ok': True,
+                'deleted': True,
+                'status': 'already_absent',
+                'library_key': normalized_key,
+                'problem_id': problem_id,
+                'before': before,
+            })
+
+        user = _request_publish_user(request)
+        blocks_api = __import__('openedx.core.djangoapps.content_libraries.api.blocks', fromlist=[
+            'delete_library_block', 'delete_library_block_changes', 'delete_block', 'remove_library_block'
+        ])
+        delete_result = _call_delete_library_block(blocks_api, locator, usage_key, user)
+        if not delete_result.get('ok'):
+            return _json_response({
+                'ok': False,
+                'deleted': False,
+                'status': delete_result.get('status') or 'delete_failed',
+                'library_key': normalized_key,
+                'problem_id': problem_id,
+                'delete_result': delete_result,
+                'manual_delete_required': True,
+            })
+
+        publish_result = {'status': 'not_run'}
+        try:
+            publish_result = _publish_library_drafts_without_post_tasks(locator, getattr(user, 'id', None) if user is not None else None)
+        except Exception as exc:
+            publish_result = {
+                'status': 'failed_non_fatal',
+                'detail': _exception_detail(exc, 'delete.publish_library_after_delete'),
+            }
+
+        after = _component_exists_in_library(locator, usage_key)
+        deleted = bool(delete_result.get('already_missing')) or (after.get('checked') and after.get('exists') is False)
+        status = 'deleted_and_published' if deleted else 'delete_requested_verify_needed'
+        return _json_response({
+            'ok': deleted,
+            'deleted': deleted,
+            'status': status,
+            'library_key': normalized_key,
+            'problem_id': problem_id,
+            'before': before,
+            'delete_result': delete_result,
+            'publish_result': publish_result,
+            'after': after,
+            'manual_delete_required': not deleted,
+        })
     except Exception as exc:
         return _connector_error(_message_from_exception(exc, 'Xóa component Library thất bại'), status=502, code='openedx_library_delete_failed', detail=_exception_detail(exc, 'delete_library_problem'))
 
@@ -1779,7 +2141,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.13.28',
+        'version': '25.9.13.39',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(os.environ.get('AI_CONNECTOR_PUBLISH_USERNAME')),
