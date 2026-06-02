@@ -11,16 +11,21 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import ipaddress
 import json
 import mimetypes
 import os
 import re
+import socket
+import time
 import traceback
 from html import unescape
 from typing import Any
-from urllib.parse import quote, unquote, urljoin
-from urllib.request import Request, urlopen
+from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from django.conf import settings
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
 
@@ -43,6 +48,140 @@ _VIDEO_FIELD_NAMES = (
 )
 
 
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # pragma: no cover - stdlib callback
+        return None
+
+
+def _setting_or_env(name: str, default: Any = None) -> Any:
+    """Read connector config from process env first, then Tutor/Django settings.
+
+    v25.9.13.41: Tutor plugin mode stores AI_CONNECTOR_* values in generated
+    CMS Django settings instead of requiring docker-compose.override.yml env
+    injection. Env still wins so emergency overrides keep working.
+    """
+    value = os.environ.get(name)
+    if value is not None:
+        return value
+    return getattr(settings, name, default)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = _setting_or_env(name)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _connector_hmac_secret() -> str:
+    return str(_setting_or_env('AI_CONNECTOR_HMAC_SECRET') or _setting_or_env('OPENEDX_CONNECTOR_HMAC_SECRET') or '')
+
+
+def _request_path_with_query(request) -> str:
+    path = request.path or ''
+    query = request.META.get('QUERY_STRING') or ''
+    return f'{path}?{query}' if query else path
+
+
+def _valid_connector_hmac(request) -> bool:
+    secret = _connector_hmac_secret()
+    if not secret:
+        return False
+    timestamp = request.META.get('HTTP_X_AI_CONNECTOR_TIMESTAMP') or ''
+    supplied = request.META.get('HTTP_X_AI_CONNECTOR_SIGNATURE') or ''
+    try:
+        ts = int(timestamp)
+    except Exception:
+        return False
+    skew = int(_setting_or_env('AI_CONNECTOR_HMAC_SKEW_SECONDS', '300') or '300')
+    if abs(int(time.time()) - ts) > skew:
+        return False
+    body = request.body or b''
+    body_hash = hashlib.sha256(body).hexdigest()
+    message = f'{timestamp}.{request.method.upper()}.{_request_path_with_query(request)}.{body_hash}'
+    expected = hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, supplied)
+
+
+def _staff_or_superuser(request) -> bool:
+    user = getattr(request, 'user', None)
+    return bool(
+        getattr(user, 'is_authenticated', False)
+        and (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
+    )
+
+
+def _auth_failed_response(reason: str = 'connector authentication required') -> JsonResponse:
+    return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=403)
+
+
+def _require_connector_admin(request):
+    if _valid_connector_hmac(request) or _staff_or_superuser(request):
+        return None
+    return _auth_failed_response('Endpoint này chỉ cho AI Server đã ký HMAC hoặc Studio staff/admin.')
+
+
+def _require_connector_write(request):
+    if _valid_connector_hmac(request) or _staff_or_superuser(request):
+        return None
+    return _auth_failed_response('Publish/rollback endpoint yêu cầu HMAC server-to-server hoặc Studio staff/admin; anonymous bị chặn.')
+
+
+def _host_from_request(request) -> str:
+    return (request.get_host() or '').split(':', 1)[0].strip().lower()
+
+
+def _allowed_download_hosts(request) -> set[str]:
+    hosts = {_host_from_request(request)} if _host_from_request(request) else set()
+    for name in ('AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS', 'OPENEDX_ALLOWED_DOWNLOAD_HOSTS'):
+        for host in (str(_setting_or_env(name) or '')).split(','):
+            clean = host.strip().lower()
+            if clean:
+                hosts.add(clean)
+    return hosts
+
+
+def _host_resolves_to_private_address(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        addresses = [hostname]
+    except ValueError:
+        try:
+            addresses = [item[4][0] for item in socket.getaddrinfo(hostname, None)]
+        except socket.gaierror:
+            return True
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            return True
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return True
+    return False
+
+
+def _validate_download_url(request, url: str) -> tuple[bool, str]:
+    parsed = urlparse(url or '')
+    if parsed.scheme not in {'http', 'https'} or not parsed.hostname:
+        return False, 'invalid_scheme_or_host'
+    host = parsed.hostname.lower()
+    allowed = _allowed_download_hosts(request)
+    if host in allowed:
+        return True, 'allowed_host'
+    if _host_resolves_to_private_address(host):
+        return False, 'private_or_internal_host_blocked'
+    return False, 'host_not_in_allowlist'
+
+
+def _same_request_host(request, url: str) -> bool:
+    try:
+        return (urlparse(url).hostname or '').lower() == _host_from_request(request)
+    except Exception:
+        return False
+
+
 def _json_response(data: dict, status: int = 200) -> JsonResponse:
     return JsonResponse(data, status=status, json_dumps_params={'ensure_ascii': False})
 
@@ -52,7 +191,7 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.13.39',
+        'version': '25.9.13.43',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -252,22 +391,30 @@ def _should_capture_asset(url: str) -> bool:
 
 
 def _download_asset_payload(request, url: str, max_bytes: int = 15 * 1024 * 1024) -> dict:
-    """Best-effort inline asset fetch for local Studio connector responses.
+    """Best-effort inline asset fetch with SSRF protection.
 
-    AI Server can also download asset URLs from outside CMS, but when Docker/DNS
-    cannot resolve the Studio hostname this inline base64 fallback lets the
-    backend parse handouts directly.  Large files are intentionally skipped.
+    Only the current Studio host and explicit AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS
+    are allowed. Redirects are disabled so a public URL cannot bounce the CMS
+    process into localhost/VPC/metadata services.
     """
     if not url.startswith(('http://', 'https://')):
         return {}
+    ok, reason = _validate_download_url(request, url)
+    if not ok:
+        return {'download_skipped': reason}
     try:
         headers = {'Accept': '*/*'}
         cookie = request.META.get('HTTP_COOKIE')
-        if cookie:
+        if cookie and _same_request_host(request, url):
             headers['Cookie'] = cookie
         req = Request(url, headers=headers)
-        with urlopen(req, timeout=8) as response:  # nosec - local CMS connector best effort
+        opener = build_opener(_NoRedirectHandler)
+        with opener.open(req, timeout=8) as response:  # nosec - URL is allowlisted above and redirects are disabled.
             content_type = response.headers.get('Content-Type', '')
+            final_url = getattr(response, 'url', url)
+            final_ok, final_reason = _validate_download_url(request, final_url)
+            if not final_ok:
+                return {'download_skipped': f'final_url_{final_reason}', 'content_type': content_type}
             data = response.read(max_bytes + 1)
         if len(data) > max_bytes:
             return {'download_skipped': 'asset_too_large', 'content_type': content_type}
@@ -522,6 +669,9 @@ def course_content(request, course_id: str):
     It now reads the same Studio/modulestore source as the v1 endpoint instead of
     returning placeholder content.
     """
+    guard = _require_connector_admin(request)
+    if guard:
+        return guard
     return studio_course_content(request, course_id)
 
 
@@ -533,6 +683,9 @@ def studio_course_content(request, course_id: str):
     asset URLs.  This is the endpoint AI Server should use when it needs content
     from Studio rather than the learner-facing Course Blocks API.
     """
+    guard = _require_connector_admin(request)
+    if guard:
+        return guard
     try:
         blocks, summary = _read_studio_blocks(request, course_id)
     except Exception as exc:
@@ -638,7 +791,7 @@ def _organization_for_library(course_id: str, metadata: dict | None = None):
     if org:
         return org
 
-    auto_create = os.environ.get('AI_CONNECTOR_AUTO_CREATE_ORG', '').lower() in {'1', 'true', 'yes'}
+    auto_create = _setting_or_env('AI_CONNECTOR_AUTO_CREATE_ORG', '').lower() in {'1', 'true', 'yes'}
     if auto_create:
         org, _ = Organization.objects.get_or_create(
             short_name=org_short_name,
@@ -745,7 +898,7 @@ def _metadata_obj_to_dict(obj: Any) -> dict:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.environ.get(name)
+    value = _setting_or_env(name)
     if value is None or value == '':
         return default
     return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -821,9 +974,9 @@ def _ensure_ai_tag_taxonomy(course_id: str, metadata: dict | None = None):
     requiring a manual taxonomy CSV import first.
     """
     metadata = metadata or {}
-    export_id = os.environ.get('AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID') or 'ai-learning-check'
-    name = os.environ.get('AI_CONNECTOR_TAG_TAXONOMY_NAME') or 'AI Learning Check'
-    description = os.environ.get('AI_CONNECTOR_TAG_TAXONOMY_DESCRIPTION') or 'Tags automatically assigned by AI Learning Check Generator.'
+    export_id = _setting_or_env('AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID') or 'ai-learning-check'
+    name = _setting_or_env('AI_CONNECTOR_TAG_TAXONOMY_NAME') or 'AI Learning Check'
+    description = _setting_or_env('AI_CONNECTOR_TAG_TAXONOMY_DESCRIPTION') or 'Tags automatically assigned by AI Learning Check Generator.'
 
     try:
         from openedx.core.djangoapps.content_tagging import api as tagging_api  # type: ignore
@@ -1120,31 +1273,27 @@ def _apply_openedx_component_tags(usage_key, course_id: str, metadata: dict, tag
 def _request_publish_user(request):
     user = getattr(request, 'user', None)
     if getattr(user, 'is_authenticated', False):
-        return user
+        if getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False):
+            return user
+        raise RuntimeError('Studio user hiện tại không có quyền staff/admin để publish Library.')
 
-    username = os.environ.get('AI_CONNECTOR_PUBLISH_USERNAME') or os.environ.get('AI_CONNECTOR_STAFF_USERNAME')
+    username = _setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME') or _setting_or_env('AI_CONNECTOR_STAFF_USERNAME')
+    if not username:
+        raise RuntimeError(
+            'Không xác định được Studio user để publish Library. Production bắt buộc đặt AI_CONNECTOR_PUBLISH_USERNAME '
+            'là một user staff/admin; connector không còn tự lấy first staff user và không cho anonymous publish.'
+        )
     try:
         from django.contrib.auth import get_user_model  # type: ignore
         User = get_user_model()
-        if username:
-            found = User.objects.filter(username=username).first()
-            if found:
-                return found
-        # Server-to-server OAuth/client_credentials can arrive without a normal
-        # Django request user. Use a deterministic staff fallback in local/Tutor,
-        # but never create a fake success: if no staff exists, fail clearly.
-        found = User.objects.filter(is_active=True, is_staff=True).order_by('id').first()
-        if found:
+        found = User.objects.filter(username=username, is_active=True).first()
+        if found and (getattr(found, 'is_staff', False) or getattr(found, 'is_superuser', False)):
             return found
-    except Exception:
-        pass
-
-    if os.environ.get('AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH', '').lower() in {'1', 'true', 'yes'}:
-        return None
-    raise RuntimeError(
-        'Không xác định được Studio user để publish Library. Gửi request bằng user staff/admin hoặc đặt AI_CONNECTOR_PUBLISH_USERNAME.'
-    )
-
+        raise RuntimeError(f'AI_CONNECTOR_PUBLISH_USERNAME={username!r} không tồn tại hoặc không phải staff/admin.')
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError('Không đọc được Studio user để publish Library.') from exc
 
 def _call_publish_component_changes(publish_component_changes, usage_key, user):
     """Publish one Library component across Open edX release signature variants.
@@ -1280,7 +1429,7 @@ def _publish_component_draft_without_post_tasks(library_key, usage_key, user_id:
 
     # Optional compatibility path. Keep it off by default because this is exactly
     # where the user's Ulmo container fails with PublishLog.DoesNotExist.
-    if os.environ.get('AI_CONNECTOR_POST_PUBLISH_EVENTS_ENABLED', '').lower() in {'1', 'true', 'yes'}:
+    if _setting_or_env('AI_CONNECTOR_POST_PUBLISH_EVENTS_ENABLED', '').lower() in {'1', 'true', 'yes'}:
         post_publish_result = {'enabled': True, 'status': 'not_run'}
         try:
             from openedx.core.djangoapps.content_libraries import tasks  # type: ignore
@@ -1662,6 +1811,9 @@ def backfill_library_tags(request, library_key: str):
     added, or the initial import response had tag_result failed_non_fatal. It is
     safe to run multiple times because tag assignment is idempotent per taxonomy.
     """
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
     if request.method not in {'POST', 'GET'}:
         return HttpResponseBadRequest('POST or GET required')
     payload = {}
@@ -1726,6 +1878,9 @@ def backfill_library_tags(request, library_key: str):
 @csrf_exempt
 def library_tags_diagnostics(request, library_key: str):
     """Return raw tag rows for a Library so the UI/tagging mismatch is visible."""
+    guard = _require_connector_admin(request)
+    if guard:
+        return guard
     course_id = request.GET.get('course_id') or ''
     normalized_key = _v2_library_key_string(course_id, library_key, library_key, {})
     locator = _library_locator(normalized_key)
@@ -1748,6 +1903,9 @@ def verify_library_problem(request, library_key: str):
     library existence, component existence, tag rows and draft/publish flags when
     those attributes are available.
     """
+    guard = _require_connector_admin(request)
+    if guard:
+        return guard
     if request.method not in {'GET', 'POST'}:
         return HttpResponseBadRequest('GET or POST required')
     payload = {}
@@ -2055,6 +2213,9 @@ def delete_library_problem(request, library_key: str):
     mark AI Server rows as approved; it must remove the actual Library component,
     then publish Library drafts so Studio stops showing the component.
     """
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
     if request.method not in {'POST', 'DELETE'}:
         return HttpResponseBadRequest('POST or DELETE required')
     payload = {}
@@ -2135,20 +2296,23 @@ def delete_library_problem(request, library_key: str):
 def publish_diagnostics(request):
     """Inspect Content Libraries V2 availability from inside CMS/Studio.
 
-    This endpoint does not create any content. It is intentionally safe and helps
-    diagnose Ulmo/Verawood/Tutor differences before calling publish.
+    This endpoint does not create any content, but it exposes internal Open edX
+    capability/user information, so it is admin/HMAC-only.
     """
+    guard = _require_connector_admin(request)
+    if guard:
+        return guard
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.13.39',
+        'version': '25.9.13.43',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
-            'AI_CONNECTOR_PUBLISH_USERNAME': bool(os.environ.get('AI_CONNECTOR_PUBLISH_USERNAME')),
-            'AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH': os.environ.get('AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH', ''),
-            'AI_CONNECTOR_COMPONENT_PUBLISH_ENABLED': os.environ.get('AI_CONNECTOR_COMPONENT_PUBLISH_ENABLED', ''),
-            'AI_CONNECTOR_TAGGING_ENABLED': os.environ.get('AI_CONNECTOR_TAGGING_ENABLED', 'true'),
-            'AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID': os.environ.get('AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID', 'ai-learning-check'),
+            'AI_CONNECTOR_PUBLISH_USERNAME': bool(_setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME')),
+            'AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH': _setting_or_env('AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH', ''),
+            'AI_CONNECTOR_COMPONENT_PUBLISH_ENABLED': _setting_or_env('AI_CONNECTOR_COMPONENT_PUBLISH_ENABLED', ''),
+            'AI_CONNECTOR_TAGGING_ENABLED': _setting_or_env('AI_CONNECTOR_TAGGING_ENABLED', 'true'),
+            'AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID': _setting_or_env('AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID', 'ai-learning-check'),
         },
         'checks': {},
     }
@@ -2198,6 +2362,9 @@ def publish_problem(request, course_id: str):
     for older builds and publishes into a deterministic course-level AI library.
     It never returns a stub success.
     """
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
     if request.method != 'POST':
         return HttpResponseBadRequest('POST required')
     try:
@@ -2238,6 +2405,9 @@ def publish_problem(request, course_id: str):
 @csrf_exempt
 def ensure_chapter_library(request, course_id: str):
     """Find/create a real Content Libraries V2 library for a chapter+difficulty."""
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
     if request.method != 'POST':
         return HttpResponseBadRequest('POST required')
     try:
@@ -2268,6 +2438,9 @@ def ensure_chapter_library(request, course_id: str):
 @csrf_exempt
 def import_problem_to_library(request, library_key: str):
     """Import OLX problem into a real Content Libraries V2 library."""
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
     if request.method != 'POST':
         return HttpResponseBadRequest('POST required')
     try:

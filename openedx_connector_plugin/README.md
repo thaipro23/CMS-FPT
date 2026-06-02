@@ -36,16 +36,21 @@ Từ v25.9.13.4, các endpoint này không còn dùng stub/local memory. Chúng 
 
 Nếu Open edX đang chạy chưa có Content Libraries V2 API hoặc chưa xác định được Studio staff user để publish, plugin sẽ trả lỗi rõ ràng và **không báo thành công giả**.
 
-## Env cho publish user
+## Env bảo mật cho publish user / HMAC
 
-Nếu request từ AI Server dùng OAuth client_credentials và vào plugin dưới dạng AnonymousUser, set user staff/admin cho CMS container:
+Production không cho anonymous publish và không còn fallback sang "first staff user". Nếu request từ AI Server dùng OAuth client_credentials hoặc HMAC và vào plugin dưới dạng AnonymousUser, CMS container phải có một user staff/admin rõ ràng:
 
 ```env
 AI_CONNECTOR_PUBLISH_USERNAME=<studio_staff_or_admin_username>
 AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH=false
+AI_CONNECTOR_HMAC_SECRET=<same_64_hex_secret_as_OPENEDX_CONNECTOR_HMAC_SECRET>
+AI_CONNECTOR_HMAC_SKEW_SECONDS=300
+AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS=studio.example.edu,lms.example.edu,apps.example.edu
 ```
 
-Không bật `AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH=true` trong production.
+`AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH` hiện được giữ để tương thích env cũ nhưng endpoint publish/rollback không còn chấp nhận anonymous. Các endpoint publish/rollback/diagnostics/studio-content yêu cầu một trong hai điều kiện: request có HMAC hợp lệ từ AI Server, hoặc user hiện tại là Studio staff/admin.
+
+Asset/transcript download có SSRF guard: chỉ download từ Studio host hiện tại hoặc host nằm trong `AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS`; redirect bị chặn và cookie chỉ forward cho cùng host.
 
 ## Kiểm tra plugin
 
@@ -58,7 +63,7 @@ Kỳ vọng:
 ```json
 {
   "status": "ok",
-  "version": "25.9.13.4",
+  "version": "25.9.13.43",
   "publish_implementation": "content_libraries_v2_python_api",
   "stub_publish": false
 }
@@ -82,3 +87,17 @@ AI_CONNECTOR_TAG_TAXONOMY_NAME=AI Learning Check
 ```
 
 If Content Tagging is unavailable, publishing still succeeds and the connector returns a non-fatal `tag_result` warning.
+
+## Tutor config plugin mode
+
+v25.9.13.43 adds a Tutor plugin helper at:
+
+```text
+tutor-plugins/ai_learning_connector_env.py
+```
+
+Use it when AI Server and Open edX run separately and you do not want to maintain a manual `docker-compose.override.yml` for `AI_CONNECTOR_*` values. See:
+
+```text
+docs/TUTOR_PLUGIN_AI_CONNECTOR_ENV.md
+```
