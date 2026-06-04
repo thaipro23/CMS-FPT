@@ -14,6 +14,8 @@ from .views import (
     delete_library_problem,
     session_me,
     session_bridge,
+    create_quiz_node,
+    insert_problem_banks,
 )
 
 # NOTE:
@@ -33,6 +35,10 @@ urlpatterns = [
     path("courses/<path:course_id>/studio-content", studio_course_content, name="ai_connector_studio_content"),
     path("courses/<path:course_id>/problems", publish_problem, name="ai_connector_publish_problem"),
     path("courses/<path:course_id>/libraries", ensure_chapter_library, name="ai_connector_ensure_chapter_library"),
+    path("courses/<path:course_id>/quiz-nodes", create_quiz_node, name="ai_connector_create_quiz_node"),
+    path("courses/<path:course_id>/quiz-nodes/", create_quiz_node, name="ai_connector_create_quiz_node_slash"),
+    path("courses/<path:course_id>/problem-banks", insert_problem_banks, name="ai_connector_insert_problem_banks"),
+    path("courses/<path:course_id>/problem-banks/", insert_problem_banks, name="ai_connector_insert_problem_banks_slash"),
     path("libraries/<path:library_key>/problems", import_problem_to_library, name="ai_connector_import_problem_to_library"),
     path("libraries/<path:library_key>/backfill-tags", backfill_library_tags, name="ai_connector_backfill_library_tags"),
     path("libraries/<path:library_key>/backfill-tags/", backfill_library_tags, name="ai_connector_backfill_library_tags_slash"),

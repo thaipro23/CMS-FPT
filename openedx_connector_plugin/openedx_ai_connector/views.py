@@ -192,7 +192,7 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.13.48',
+        'version': '25.9.14.3',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -836,6 +836,457 @@ def studio_course_content(request, course_id: str):
         'blocks': blocks,
     })
 
+
+
+# ---------------------------------------------------------------------------
+# v25.9.14.3 CMS Quiz Node Creator
+# ---------------------------------------------------------------------------
+
+def _normalize_xblock_title(value: str | None, fallback: str, max_len: int = 120) -> str:
+    text = ' '.join(str(value or '').split()).strip()
+    if not text:
+        text = fallback
+    return text[:max_len]
+
+
+def _draft_course_block(store: Any, course_key: Any) -> Any:
+    for key in (_as_draft_key(course_key), course_key):
+        try:
+            course = store.get_course(key)
+            if course:
+                return course
+        except Exception:
+            continue
+    raise RuntimeError(f'Course not found in modulestore: {course_key}')
+
+
+def _resolve_modulestore_parent(store: Any, course_id: str, parent_node_id: str) -> Any:
+    CourseKey, _ = _load_openedx_modules()
+    course_key = CourseKey.from_string(course_id)
+    parent = (parent_node_id or '').strip()
+    if not parent or parent in {'course', course_id, str(course_key)}:
+        return _draft_course_block(store, course_key)
+    try:
+        from opaque_keys.edx.keys import UsageKey  # type: ignore
+        usage_key = UsageKey.from_string(unquote(parent))
+    except Exception as exc:
+        raise ValueError(f'parent_node_id không phải usage key hợp lệ: {parent_node_id}') from exc
+    block = _get_item_best_effort(store, usage_key)
+    if block is None:
+        raise ValueError(f'Không tìm thấy parent_node_id trong Studio draft modulestore: {parent_node_id}')
+    return block
+
+
+def _created_node_payload(block: Any, parent: Any | None, *, created: bool) -> dict:
+    location = getattr(block, 'location', block)
+    return {
+        'usage_key': _safe_str(location),
+        'block_id': _block_id(block),
+        'block_type': _block_type(block),
+        'display_name': _display_name(block),
+        'parent_usage_key': _safe_str(getattr(parent, 'location', parent)) if parent is not None else None,
+        'created': bool(created),
+        'children': [str(child) for child in _children_locations(block)] if hasattr(block, 'children') else [],
+    }
+
+
+def _find_existing_child_block(store: Any, parent_block: Any, category: str, display_name: str) -> Any | None:
+    expected = (display_name or '').strip().lower()
+    for child_key in _children_locations(parent_block):
+        child = _get_item_best_effort(store, child_key)
+        if child is None:
+            continue
+        if (_block_type(child) or '').lower() != category:
+            continue
+        if (_display_name(child) or '').strip().lower() == expected:
+            return child
+    return None
+
+
+def _stable_child_block_id(parent_location: Any, category: str, display_name: str, metadata: dict | None = None) -> str:
+    metadata = metadata or {}
+    idempotency = metadata.get('idempotency_key') or metadata.get('quiz_idempotency_key') or ''
+    seed = f'{parent_location}|{category}|{display_name}|{idempotency}'
+    digest = hashlib.sha1(seed.encode('utf-8')).hexdigest()[:8]
+    return f'{_safe_slug(display_name, max_len=40, fallback=category)}-{digest}'
+
+
+def _update_created_block_fields(store: Any, block: Any, user: Any, fields: dict[str, Any]) -> None:
+    applied: dict[str, Any] = {}
+    for key, value in (fields or {}).items():
+        try:
+            setattr(block, key, value)
+            applied[key] = value
+        except Exception:
+            # Some XBlock fields are release-specific.  Unknown fields are ignored
+            # here; verification after re-read decides whether the operation is real.
+            continue
+    user_id = getattr(user, 'id', user)
+    attempts = [
+        lambda: store.update_item(block, user_id),
+        lambda: store.update_item(block, user_id=user_id),
+        lambda: store.update_item(block, user),
+    ]
+    last_exc = None
+    for attempt in attempts:
+        try:
+            attempt()
+            return
+        except Exception as exc:
+            last_exc = exc
+            continue
+    if last_exc:
+        raise RuntimeError(f'Tạo block xong nhưng update fields thất bại: {last_exc}') from last_exc
+
+
+def _create_child_xblock(
+    store: Any,
+    user: Any,
+    parent_block: Any,
+    category: str,
+    display_name: str,
+    metadata: dict | None = None,
+    extra_fields: dict[str, Any] | None = None,
+) -> tuple[Any, bool, list[dict]]:
+    existing = _find_existing_child_block(store, parent_block, category, display_name)
+    if existing is not None:
+        if extra_fields:
+            _update_created_block_fields(store, existing, user, {'display_name': display_name, **extra_fields})
+            existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
+        return existing, False, [{'mode': 'reuse_existing_child_by_display_name', 'status': 'ok'}]
+
+    parent_location = getattr(parent_block, 'location', parent_block)
+    block_id = _stable_child_block_id(parent_location, category, display_name, metadata)
+    fields = {'display_name': display_name, **(extra_fields or {})}
+    user_id = getattr(user, 'id', user)
+    attempts: list[tuple[str, Any]] = [
+        ('keyword_fields', lambda: store.create_child(user_id, parent_location, category, block_id=block_id, fields=fields)),
+        ('positional_block_id_fields', lambda: store.create_child(user_id, parent_location, category, block_id, fields)),
+        ('keyword_display_name', lambda: store.create_child(user_id, parent_location, category, block_id=block_id, display_name=display_name)),
+        ('minimal_then_update', lambda: store.create_child(user_id, parent_location, category, block_id=block_id)),
+        ('minimal_no_block_id', lambda: store.create_child(user_id, parent_location, category)),
+    ]
+    diagnostics: list[dict] = []
+    last_exc = None
+    for mode, attempt in attempts:
+        try:
+            created = attempt()
+            if created is None:
+                diagnostics.append({'mode': mode, 'status': 'returned_none'})
+                continue
+            if not hasattr(created, 'location'):
+                created = _get_item_best_effort(store, created) or created
+            _update_created_block_fields(store, created, user, fields)
+            diagnostics.append({'mode': mode, 'status': 'ok', 'field_names': sorted(fields.keys())})
+            reread = _get_item_best_effort(store, getattr(created, 'location', created))
+            return reread or created, True, diagnostics
+        except Exception as exc:
+            last_exc = exc
+            diagnostics.append({'mode': mode, 'status': 'failed', 'detail': _exception_detail(exc, f'create_child.{category}.{mode}')})
+            existing = _find_existing_child_block(store, parent_block, category, display_name)
+            if existing is not None:
+                diagnostics.append({'mode': 'reuse_existing_after_create_error', 'status': 'ok'})
+                if extra_fields:
+                    _update_created_block_fields(store, existing, user, fields)
+                    existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
+                return existing, False, diagnostics
+            continue
+    raise RuntimeError(f'Không tạo được XBlock {category} dưới parent {parent_location}. create_child không tương thích hoặc bị từ chối.') from last_exc
+
+
+@csrf_exempt
+def create_quiz_node(request, course_id: str):
+    """Create a real Studio draft quiz container under a selected course node.
+
+    v25.9.14.3 intentionally creates only the CMS/Studio node structure. It does
+    not insert Problem Bank blocks yet; that is v25.9.14.4. The endpoint fails
+    loudly if modulestore cannot create draft children, so AI Server never shows
+    fake success.
+    """
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
+    if request.method != 'POST':
+        return HttpResponseBadRequest('POST required')
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return HttpResponseBadRequest('Invalid JSON')
+
+    parent_node_id = payload.get('parent_node_id') or payload.get('parent_usage_key') or payload.get('chapter_node_id') or ''
+    quiz_title = _normalize_xblock_title(payload.get('quiz_title') or payload.get('display_name'), 'AI Learning Check')
+    unit_title = _normalize_xblock_title(payload.get('unit_title'), 'Quiz tự luyện')
+    metadata = payload.get('metadata') or {}
+
+    try:
+        _, modulestore = _load_openedx_modules()
+        store = modulestore()
+        user = _request_publish_user(request)
+        parent_block = _resolve_modulestore_parent(store, course_id, parent_node_id)
+        parent_type = (_block_type(parent_block) or '').lower()
+        created_nodes: list[dict] = []
+        diagnostics: list[dict] = []
+
+        if parent_type == 'course':
+            chapter, created, diag = _create_child_xblock(store, user, parent_block, 'chapter', quiz_title, metadata)
+            diagnostics.extend(diag)
+            created_nodes.append(_created_node_payload(chapter, parent_block, created=created))
+            sequential_title = _normalize_xblock_title(metadata.get('sequential_title'), 'AI Learning Check')
+            sequential, created, diag = _create_child_xblock(store, user, chapter, 'sequential', sequential_title, metadata)
+            diagnostics.extend(diag)
+            created_nodes.append(_created_node_payload(sequential, chapter, created=created))
+            vertical, created, diag = _create_child_xblock(store, user, sequential, 'vertical', unit_title, metadata)
+            diagnostics.extend(diag)
+            created_nodes.append(_created_node_payload(vertical, sequential, created=created))
+        elif parent_type == 'chapter':
+            sequential, created, diag = _create_child_xblock(store, user, parent_block, 'sequential', quiz_title, metadata)
+            diagnostics.extend(diag)
+            created_nodes.append(_created_node_payload(sequential, parent_block, created=created))
+            vertical, created, diag = _create_child_xblock(store, user, sequential, 'vertical', unit_title, metadata)
+            diagnostics.extend(diag)
+            created_nodes.append(_created_node_payload(vertical, sequential, created=created))
+        elif parent_type == 'sequential':
+            vertical_title = unit_title or quiz_title
+            vertical, created, diag = _create_child_xblock(store, user, parent_block, 'vertical', vertical_title, metadata)
+            diagnostics.extend(diag)
+            created_nodes.append(_created_node_payload(vertical, parent_block, created=created))
+        else:
+            return _connector_error(
+                f'Node đã chọn có type={parent_type!r}. v25.9.14.3 chỉ tạo quiz node dưới course/chapter/sequential. '
+                'Nếu muốn thêm Problem Bank vào Unit/vertical hiện có, cần bước v25.9.14.4 Problem Bank Auto Insert.',
+                status=400,
+                code='unsupported_parent_node_type',
+                detail={'parent_node_id': parent_node_id, 'parent_type': parent_type},
+            )
+
+        leaf = created_nodes[-1] if created_nodes else None
+        if not leaf or not leaf.get('usage_key'):
+            raise RuntimeError('Tạo node không trả về usage_key thật từ modulestore.')
+        return _json_response({
+            'ok': True,
+            'created': any(node.get('created') for node in created_nodes),
+            'status': 'created_or_existing',
+            'course_id': course_id,
+            'parent_node_id': parent_node_id,
+            'parent_type': parent_type,
+            'quiz_title': quiz_title,
+            'unit_title': unit_title,
+            'created_nodes': created_nodes,
+            'leaf_unit_node_id': leaf.get('usage_key'),
+            'leaf_unit_type': leaf.get('block_type'),
+            'manual_publish_required': True,
+            'problem_bank_auto_inserted': False,
+            'message': 'Đã tạo node Quiz draft trong Studio. Chưa tự insert Problem Bank blocks; bước đó thuộc v25.9.14.4.',
+            'diagnostics': diagnostics,
+        })
+    except ValueError as exc:
+        return _connector_error(str(exc), status=400, code='invalid_quiz_node_request', detail=_exception_detail(exc, 'create_quiz_node.validation'))
+    except Exception as exc:
+        return _connector_error(_message_from_exception(exc, 'Tạo Quiz node trong CMS thất bại'), status=502, code='openedx_quiz_node_create_failed', detail=_exception_detail(exc, 'create_quiz_node'))
+
+
+
+# ---------------------------------------------------------------------------
+# v25.9.14.4 Problem Bank Auto Insert
+# ---------------------------------------------------------------------------
+
+def _field_value(block: Any, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(block, name)
+    except Exception:
+        return default
+
+
+def _block_field_snapshot(block: Any, names: list[str]) -> dict:
+    return {name: _safe_str(_field_value(block, name)) if _field_value(block, name) is not None else None for name in names}
+
+
+def _problem_bank_slot_display_name(slot: dict) -> str:
+    slot_no = int(slot.get('slot_no') or 0)
+    family_names = slot.get('family_names') or []
+    if not family_names and isinstance(slot.get('families'), list):
+        family_names = [family.get('family_name') for family in slot.get('families') if isinstance(family, dict) and family.get('family_name')]
+    label = ' + '.join(str(name) for name in family_names if name) or str(slot.get('difficulty') or 'Problem Bank')
+    return _normalize_xblock_title(f'Problem Bank Slot {slot_no:02d} - {label}', f'Problem Bank Slot {slot_no:02d}', max_len=120)
+
+
+def _problem_bank_fields(slot: dict, metadata: dict | None = None) -> dict[str, Any]:
+    metadata = metadata or {}
+    library_key = str(slot.get('library_key') or metadata.get('library_key') or '').strip()
+    problem_ids = [str(item).strip() for item in (slot.get('openedx_problem_ids') or slot.get('problem_ids') or []) if str(item).strip()]
+    pick_count = int(slot.get('pick_count') or 1)
+    # library_content is the Open edX randomized content/problem-bank XBlock.
+    # These fields are intentionally conservative and based on the public schema:
+    # source_library_id, manual, shuffle, max_count and capa_type.
+    fields: dict[str, Any] = {
+        'display_name': _problem_bank_slot_display_name(slot),
+        'source_library_id': library_key,
+        'source_library_version': None,
+        'manual': True,
+        'shuffle': True,
+        'max_count': max(pick_count, 1),
+        'capa_type': 'any',
+        # Older releases may still expect mode=random. Unknown fields are ignored
+        # by XBlock descriptors and verified after re-read.
+        'mode': 'random',
+    }
+    # Best-effort manual selection fields. Some Ulmo/Sumac-era builds keep chosen
+    # components as children after a Studio handler copies them into the course;
+    # others may reject direct assignment. We never claim selection is verified
+    # unless the re-read block actually exposes matching child refs.
+    if problem_ids:
+        fields['children'] = problem_ids
+        fields['selected'] = [('problem', item) for item in problem_ids]
+        fields['selected_blocks'] = problem_ids
+        fields['source_library_usage_keys'] = problem_ids
+    return fields
+
+
+def _verify_problem_bank_block(block: Any, slot: dict) -> dict:
+    expected_library = str(slot.get('library_key') or '').strip()
+    expected_problem_ids = [str(item).strip() for item in (slot.get('openedx_problem_ids') or slot.get('problem_ids') or []) if str(item).strip()]
+    source_library_id = _safe_str(_field_value(block, 'source_library_id'))
+    max_count = _field_value(block, 'max_count')
+    manual = _field_value(block, 'manual')
+    shuffle = _field_value(block, 'shuffle')
+    child_refs = [str(item) for item in _children_locations(block)]
+    library_ok = bool(expected_library and source_library_id == expected_library)
+    max_count_ok = int(max_count or 0) == int(slot.get('pick_count') or 1)
+    # Direct component selection is only considered verified when the block has
+    # child refs and each expected library component can be seen in those refs.
+    # This is deliberately strict to avoid pretending that an empty Problem Bank
+    # is ready for learners.
+    joined_children = '\n'.join(child_refs)
+    selection_verified = bool(expected_problem_ids) and all(pid in joined_children for pid in expected_problem_ids)
+    return {
+        'source_library_id': source_library_id,
+        'library_ok': library_ok,
+        'max_count': max_count,
+        'max_count_ok': max_count_ok,
+        'manual': manual,
+        'shuffle': shuffle,
+        'child_count': len(child_refs),
+        'children': child_refs,
+        'expected_problem_ids': expected_problem_ids,
+        'selection_verified': selection_verified,
+        'field_snapshot': _block_field_snapshot(block, ['source_library_id', 'source_library_version', 'manual', 'shuffle', 'max_count', 'capa_type', 'mode']),
+    }
+
+
+def _problem_bank_payload(block: Any, parent: Any, slot: dict, *, created: bool, verification: dict, diagnostics: list[dict]) -> dict:
+    base = _created_node_payload(block, parent, created=created)
+    base.update({
+        'slot_no': slot.get('slot_no'),
+        'difficulty': slot.get('difficulty'),
+        'family_names': slot.get('family_names') or [],
+        'pick_count': slot.get('pick_count') or 1,
+        'library_key': slot.get('library_key'),
+        'openedx_problem_ids': slot.get('openedx_problem_ids') or slot.get('problem_ids') or [],
+        'verification': verification,
+        'selection_verified': bool(verification.get('selection_verified')),
+        'diagnostics': diagnostics,
+    })
+    return base
+
+
+@csrf_exempt
+def insert_problem_banks(request, course_id: str):
+    """Insert one native library_content/Problem Bank block per Family Slot.
+
+    The endpoint creates real draft XBlocks under a Studio Unit/vertical. It
+    verifies that each block exists and points to the requested Library. Direct
+    selected-component attachment is release-dependent in Open edX, so the
+    response explicitly reports selection_verified/manual_component_selection_required
+    instead of pretending the bank is learner-ready.
+    """
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
+    if request.method != 'POST':
+        return HttpResponseBadRequest('POST required')
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return HttpResponseBadRequest('Invalid JSON')
+
+    unit_node_id = payload.get('unit_node_id') or payload.get('unit_usage_key') or payload.get('leaf_unit_node_id') or ''
+    slots = payload.get('slots') or []
+    metadata = payload.get('metadata') or {}
+    if not isinstance(slots, list) or not slots:
+        return _connector_error('Không có slot Problem Bank nào để insert.', status=400, code='empty_problem_bank_slots')
+
+    try:
+        _, modulestore = _load_openedx_modules()
+        store = modulestore()
+        user = _request_publish_user(request)
+        unit_block = _resolve_modulestore_parent(store, course_id, unit_node_id)
+        unit_type = (_block_type(unit_block) or '').lower()
+        if unit_type != 'vertical':
+            return _connector_error(
+                f'unit_node_id phải là Unit/vertical, hiện tại type={unit_type!r}. Hãy tạo Quiz node trước rồi dùng leaf_unit_node_id.',
+                status=400,
+                code='problem_bank_parent_must_be_vertical',
+                detail={'unit_node_id': unit_node_id, 'unit_type': unit_type},
+            )
+
+        blocks: list[dict] = []
+        warnings: list[str] = []
+        for slot in slots:
+            if not isinstance(slot, dict):
+                warnings.append('Bỏ qua một slot không hợp lệ vì không phải object.')
+                continue
+            display_name = _problem_bank_slot_display_name(slot)
+            if not slot.get('library_key'):
+                raise ValueError(f'Slot {slot.get("slot_no")} thiếu library_key; hãy publish Family Bank Plan trước khi insert Problem Bank.')
+            fields = _problem_bank_fields(slot, metadata)
+            bank, created, diagnostics = _create_child_xblock(
+                store,
+                user,
+                unit_block,
+                'library_content',
+                display_name,
+                {**metadata, 'slot_no': slot.get('slot_no'), 'idempotency_key': metadata.get('idempotency_key')},
+                extra_fields=fields,
+            )
+            reread = _get_item_best_effort(store, getattr(bank, 'location', bank)) or bank
+            verification = _verify_problem_bank_block(reread, slot)
+            if not verification.get('library_ok'):
+                raise RuntimeError(
+                    f'Problem Bank Slot {slot.get("slot_no")} đã tạo block nhưng source_library_id không đúng. '
+                    f'expected={slot.get("library_key")} actual={verification.get("source_library_id")}.'
+                )
+            if not verification.get('selection_verified'):
+                warnings.append(
+                    f'Slot {slot.get("slot_no")} đã tạo Problem Bank và trỏ tới Library, nhưng chưa verify được danh sách component đã chọn. '
+                    'Có thể Ulmo.3 cần handler riêng để Add components vào bank; hãy kiểm tra trong Studio.'
+                )
+            blocks.append(_problem_bank_payload(reread, unit_block, slot, created=created, verification=verification, diagnostics=diagnostics))
+
+        if not blocks:
+            raise RuntimeError('Không tạo được Problem Bank block nào.')
+        manual_required = any(not block.get('selection_verified') for block in blocks)
+        return _json_response({
+            'ok': True,
+            'created': any(block.get('created') for block in blocks),
+            'status': 'created_with_manual_selection_required' if manual_required else 'created_and_selection_verified',
+            'course_id': course_id,
+            'unit_node_id': unit_node_id,
+            'unit_type': unit_type,
+            'problem_bank_blocks': blocks,
+            'slots_requested': len(slots),
+            'slots_inserted': len(blocks),
+            'manual_component_selection_required': manual_required,
+            'warnings': warnings,
+            'message': (
+                'Đã tạo Problem Bank blocks thật trong Studio, nhưng cần kiểm tra/Add components thủ công cho slot chưa verify.'
+                if manual_required else
+                'Đã tạo Problem Bank blocks và verify được selected components.'
+            ),
+        })
+    except ValueError as exc:
+        return _connector_error(str(exc), status=400, code='invalid_problem_bank_request', detail=_exception_detail(exc, 'insert_problem_banks.validation'))
+    except Exception as exc:
+        return _connector_error(_message_from_exception(exc, 'Insert Problem Bank blocks thất bại'), status=502, code='openedx_problem_bank_insert_failed', detail=_exception_detail(exc, 'insert_problem_banks'))
 
 
 # ---------------------------------------------------------------------------
@@ -2437,7 +2888,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.13.48',
+        'version': '25.9.14.3',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(_setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME')),
