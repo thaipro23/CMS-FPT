@@ -339,10 +339,42 @@ def _safe_str(value: Any) -> str:
             return value.decode('latin-1', errors='ignore')
     if isinstance(value, (str, int, float, bool)):
         return str(value)
+    # Opaque keys and most Open edX objects have a canonical __str__.
+    # json.dumps(..., default=str) would wrap those values in extra quotes,
+    # e.g. '"block-v1:..."', which UsageKey.from_string cannot parse.
+    if not isinstance(value, (dict, list, tuple)):
+        return str(value)
     try:
         return json.dumps(value, ensure_ascii=False, default=str)
     except Exception:
         return str(value)
+
+
+def _clean_usage_key(value: Any) -> str:
+    """Return a canonical unquoted Open edX usage key string.
+
+    v25.9.14.4.1: older connector responses could JSON-encode opaque key
+    objects and return values such as '"block-v1:..."'.  Normalize at the
+    CMS boundary so both new and already persisted values are accepted.
+    """
+    text = _safe_str(value).strip()
+    for _ in range(3):
+        decoded = unquote(text).strip()
+        if decoded != text:
+            text = decoded
+            continue
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+            text = text[1:-1].strip()
+            continue
+        try:
+            loaded = json.loads(text)
+            if isinstance(loaded, str) and loaded.strip() != text:
+                text = loaded.strip()
+                continue
+        except Exception:
+            pass
+        break
+    return text
 
 
 def _normalize_text(value: Any) -> str:
@@ -863,7 +895,7 @@ def _draft_course_block(store: Any, course_key: Any) -> Any:
 def _resolve_modulestore_parent(store: Any, course_id: str, parent_node_id: str) -> Any:
     CourseKey, _ = _load_openedx_modules()
     course_key = CourseKey.from_string(course_id)
-    parent = (parent_node_id or '').strip()
+    parent = _clean_usage_key(parent_node_id)
     if not parent or parent in {'course', course_id, str(course_key)}:
         return _draft_course_block(store, course_key)
     try:
@@ -880,11 +912,11 @@ def _resolve_modulestore_parent(store: Any, course_id: str, parent_node_id: str)
 def _created_node_payload(block: Any, parent: Any | None, *, created: bool) -> dict:
     location = getattr(block, 'location', block)
     return {
-        'usage_key': _safe_str(location),
+        'usage_key': _clean_usage_key(location),
         'block_id': _block_id(block),
         'block_type': _block_type(block),
         'display_name': _display_name(block),
-        'parent_usage_key': _safe_str(getattr(parent, 'location', parent)) if parent is not None else None,
+        'parent_usage_key': _clean_usage_key(getattr(parent, 'location', parent)) if parent is not None else None,
         'created': bool(created),
         'children': [str(child) for child in _children_locations(block)] if hasattr(block, 'children') else [],
     }
@@ -1530,22 +1562,26 @@ def _tag_value_from_metadata(course_id: str, metadata: dict, tag_names: list | N
     course_code = _course_code_from_id(course_id or metadata.get('course_id') or '').upper()
     difficulty = _safe_str(metadata.get('difficulty') or '').strip().upper()
     chapter_title = _clean_tag_name(metadata.get('chapter_title') or metadata.get('chapter_node_id') or '', 80)
-    source_type = _safe_slug(metadata.get('source_type') or 'unknown', 30, 'source-type')
-    tags = [
+    # Keep the six visible taxonomy tags focused on teacher filtering. The old
+    # order filled all six positions before family:* was appended, so family
+    # tags were silently cut off by [:6]. source_type remains in metadata and
+    # does not need to occupy the visible taxonomy dropdown.
+    base_tags = [
         'ai-learning-check',
         f'course:{course_code}' if course_code else '',
         f'chapter:{chapter_title}' if chapter_title else '',
         f'difficulty:{difficulty}' if difficulty else '',
-        f'source-type:{source_type}' if source_type else '',
-        'generated',
     ]
-    # Preserve only extra tags that are not noisy ids/hashes.
+    extras = []
     for item in _dedupe_tags(tag_names or []):
         low = item.lower()
-        if low.startswith(('question:', 'source:', 'chapter-title:')):
+        if low.startswith(('question:', 'source:', 'chapter-title:', 'source-type:')):
             continue
-        if item not in tags:
-            tags.append(item)
+        if item not in base_tags:
+            extras.append(item)
+    family_tags = [item for item in extras if item.lower().startswith('family:')]
+    other_tags = [item for item in extras if not item.lower().startswith('family:') and item.lower() != 'generated']
+    tags = [*base_tags, *family_tags, 'generated', *other_tags]
     return _dedupe_tags(tags)[:6]
 
 def _ensure_ai_tag_taxonomy(course_id: str, metadata: dict | None = None):
@@ -1993,7 +2029,7 @@ def _publish_component_draft_without_post_tasks(library_key, usage_key, user_id:
             'status': 'no_unpublished_component_draft',
             'learning_package_id': learning_package.id,
             'component_key': _safe_str(getattr(component, 'key', '')),
-            'usage_key': _safe_str(usage_key),
+            'usage_key': _clean_usage_key(usage_key),
             'draft_count': 0,
             'post_publish_events': 'skipped',
         }
@@ -2037,7 +2073,7 @@ def _publish_component_draft_without_post_tasks(library_key, usage_key, user_id:
         'publish_log_id': getattr(publish_log, 'id', None),
         'published_by': user_id,
         'component_key': _safe_str(getattr(component, 'key', '')),
-        'usage_key': _safe_str(usage_key),
+        'usage_key': _clean_usage_key(usage_key),
         'draft_count': draft_count,
         'post_publish_events': post_publish_result,
     }
@@ -2447,7 +2483,7 @@ def backfill_library_tags(request, library_key: str):
             'source_type': base_metadata.get('source_type') or 'problem',
         }
         tag_result = _apply_openedx_component_tags(usage_key, course_id, item_metadata, tag_names)
-        results.append({'usage_key': _safe_str(usage_key), 'display_name': _component_display_name(component), 'tag_result': tag_result})
+        results.append({'usage_key': _clean_usage_key(usage_key), 'display_name': _component_display_name(component), 'tag_result': tag_result})
 
     return _json_response({
         'ok': True,
@@ -2550,7 +2586,7 @@ def verify_library_problem(request, library_key: str):
         if matched:
             component, usage_key = matched
             data['problem_exists'] = True
-            data['usage_key'] = _safe_str(usage_key)
+            data['usage_key'] = _clean_usage_key(usage_key)
             data['component'] = _metadata_obj_to_dict(component)
             # Draft/pending flags differ by release; inspect common attrs.
             flags = []
@@ -2687,7 +2723,7 @@ def _component_exists_in_library(library_key, usage_key) -> dict:
         'component_count': None,
         'matched': None,
         'match_reason': None,
-        'usage_key': _safe_str(usage_key),
+        'usage_key': _clean_usage_key(usage_key),
         'local_id': _usage_key_local_id(usage_key),
         'sample_candidates': [],
         'error': None,
