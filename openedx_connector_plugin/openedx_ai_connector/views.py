@@ -10,6 +10,7 @@ returns the best available data instead of failing the whole sync.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import hmac
 import ipaddress
@@ -37,7 +38,7 @@ from django.contrib.auth.views import redirect_to_login
 
 
 _CONTAINER_TYPES = {'course', 'chapter', 'sequential', 'vertical'}
-_LEARNING_TYPES = {'html', 'problem', 'video', 'pdf', 'file', 'asset', 'document', 'library_content'}
+_LEARNING_TYPES = {'html', 'problem', 'video', 'pdf', 'file', 'asset', 'document', 'library_content', 'itembank'}
 _TEXT_FIELD_NAMES = (
     'data', 'content', 'html', 'text', 'body', 'source_code', 'xml_data',
     'markdown', 'description', 'transcript', 'display_name'
@@ -192,7 +193,7 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.14.3',
+        'version': '25.9.14.6',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -664,15 +665,40 @@ def _load_openedx_modules():
     return CourseKey, modulestore
 
 
+def _usage_key_from_value(value: Any) -> Any | None:
+    """Normalize a create_child return value into an Open edX UsageKey when possible.
+
+    Split modulestore implementations/releases do not consistently return the same
+    object from ``create_child``.  Some return an XBlock descriptor, some return an
+    opaque UsageKey, and Ulmo deployments may return the usage key as a plain string.
+    Never pass that raw string to ``store.update_item``.
+    """
+    if value is None:
+        return None
+    if hasattr(value, 'course_key') or hasattr(value, 'block_type'):
+        return value
+    text = _clean_usage_key(value)
+    if not text:
+        return None
+    try:
+        from opaque_keys.edx.keys import UsageKey  # type: ignore
+        return UsageKey.from_string(unquote(text))
+    except Exception:
+        return None
+
+
 def _get_item_best_effort(store: Any, usage_key: Any) -> Any | None:
-    keys = [_as_draft_key(usage_key), usage_key]
+    normalized = _usage_key_from_value(usage_key) or usage_key
+    keys = [_as_draft_key(normalized), normalized]
     seen = set()
     for key in keys:
         if key is None or str(key) in seen:
             continue
         seen.add(str(key))
         try:
-            return store.get_item(key)
+            item = store.get_item(key)
+            if item is not None:
+                return item
         except Exception:
             continue
     return None
@@ -944,6 +970,11 @@ def _stable_child_block_id(parent_location: Any, category: str, display_name: st
 
 
 def _update_created_block_fields(store: Any, block: Any, user: Any, fields: dict[str, Any]) -> None:
+    if block is None or not hasattr(block, 'location'):
+        raise TypeError(
+            'update_item cần XBlock descriptor thật, nhưng connector nhận '
+            f'{type(block).__name__}: {block!r}'
+        )
     applied: dict[str, Any] = {}
     for key, value in (fields or {}).items():
         try:
@@ -969,6 +1000,55 @@ def _update_created_block_fields(store: Any, block: Any, user: Any, fields: dict
             continue
     if last_exc:
         raise RuntimeError(f'Tạo block xong nhưng update fields thất bại: {last_exc}') from last_exc
+
+
+def _resolve_created_child_block(
+    store: Any,
+    created: Any,
+    parent_location: Any,
+    category: str,
+    block_id: str,
+) -> Any | None:
+    """Resolve every known ``create_child`` return shape to an XBlock descriptor.
+
+    Ulmo.3 can return a usage-key string from ``create_child``.  The previous code
+    accidentally passed that string to ``store.update_item``, causing
+    ``'str' object has no attribute 'block_type'`` after the child had already been
+    created.  Resolve the returned key, then fall back to the deterministic expected
+    child location before updating fields.
+    """
+    if created is not None and hasattr(created, 'location'):
+        return created
+
+    resolved = _get_item_best_effort(store, created)
+    if resolved is not None and hasattr(resolved, 'location'):
+        return resolved
+
+    expected_locations: list[Any] = []
+    replace = getattr(parent_location, 'replace', None)
+    if replace:
+        for kwargs in (
+            {'block_type': category, 'block_id': block_id},
+            {'category': category, 'name': block_id},
+        ):
+            try:
+                expected_locations.append(replace(**kwargs))
+            except Exception:
+                continue
+
+    course_key = getattr(parent_location, 'course_key', None)
+    make_usage_key = getattr(course_key, 'make_usage_key', None)
+    if make_usage_key:
+        try:
+            expected_locations.append(make_usage_key(category, block_id))
+        except Exception:
+            pass
+
+    for expected in expected_locations:
+        resolved = _get_item_best_effort(store, expected)
+        if resolved is not None and hasattr(resolved, 'location'):
+            return resolved
+    return None
 
 
 def _create_child_xblock(
@@ -1002,20 +1082,34 @@ def _create_child_xblock(
     last_exc = None
     for mode, attempt in attempts:
         try:
-            created = attempt()
-            if created is None:
+            created_raw = attempt()
+            if created_raw is None:
                 diagnostics.append({'mode': mode, 'status': 'returned_none'})
                 continue
-            if not hasattr(created, 'location'):
-                created = _get_item_best_effort(store, created) or created
+            created = _resolve_created_child_block(store, created_raw, parent_location, category, block_id)
+            if created is None:
+                diagnostics.append({
+                    'mode': mode,
+                    'status': 'created_but_unresolvable',
+                    'returned_type': type(created_raw).__name__,
+                    'returned_value': _safe_str(created_raw),
+                })
+                continue
             _update_created_block_fields(store, created, user, fields)
-            diagnostics.append({'mode': mode, 'status': 'ok', 'field_names': sorted(fields.keys())})
+            diagnostics.append({
+                'mode': mode,
+                'status': 'ok',
+                'returned_type': type(created_raw).__name__,
+                'resolved_usage_key': _clean_usage_key(getattr(created, 'location', created)),
+                'field_names': sorted(fields.keys()),
+            })
             reread = _get_item_best_effort(store, getattr(created, 'location', created))
             return reread or created, True, diagnostics
         except Exception as exc:
             last_exc = exc
             diagnostics.append({'mode': mode, 'status': 'failed', 'detail': _exception_detail(exc, f'create_child.{category}.{mode}')})
-            existing = _find_existing_child_block(store, parent_block, category, display_name)
+            refreshed_parent = _get_item_best_effort(store, parent_location) or parent_block
+            existing = _find_existing_child_block(store, refreshed_parent, category, display_name)
             if existing is not None:
                 diagnostics.append({'mode': 'reuse_existing_after_create_error', 'status': 'ok'})
                 if extra_fields:
@@ -1030,10 +1124,9 @@ def _create_child_xblock(
 def create_quiz_node(request, course_id: str):
     """Create a real Studio draft quiz container under a selected course node.
 
-    v25.9.14.3 intentionally creates only the CMS/Studio node structure. It does
-    not insert Problem Bank blocks yet; that is v25.9.14.4. The endpoint fails
-    loudly if modulestore cannot create draft children, so AI Server never shows
-    fake success.
+    This endpoint creates only the CMS/Studio container structure. The AI Server
+    immediately follows it with the native ItemBank insert endpoint. It fails
+    loudly if modulestore cannot create draft children, so no fake success is shown.
     """
     guard = _require_connector_write(request)
     if guard:
@@ -1084,8 +1177,7 @@ def create_quiz_node(request, course_id: str):
             created_nodes.append(_created_node_payload(vertical, parent_block, created=created))
         else:
             return _connector_error(
-                f'Node đã chọn có type={parent_type!r}. v25.9.14.3 chỉ tạo quiz node dưới course/chapter/sequential. '
-                'Nếu muốn thêm Problem Bank vào Unit/vertical hiện có, cần bước v25.9.14.4 Problem Bank Auto Insert.',
+                f'Node đã chọn có type={parent_type!r}. Chỉ hỗ trợ tạo Quiz dưới course/chapter/sequential.',
                 status=400,
                 code='unsupported_parent_node_type',
                 detail={'parent_node_id': parent_node_id, 'parent_type': parent_type},
@@ -1108,7 +1200,7 @@ def create_quiz_node(request, course_id: str):
             'leaf_unit_type': leaf.get('block_type'),
             'manual_publish_required': True,
             'problem_bank_auto_inserted': False,
-            'message': 'Đã tạo node Quiz draft trong Studio. Chưa tự insert Problem Bank blocks; bước đó thuộc v25.9.14.4.',
+            'message': 'Đã tạo cấu trúc Quiz draft trong Studio. AI Server có thể tiếp tục tạo native Problem Bank Beta vào leaf Unit.',
             'diagnostics': diagnostics,
         })
     except ValueError as exc:
@@ -1119,7 +1211,7 @@ def create_quiz_node(request, course_id: str):
 
 
 # ---------------------------------------------------------------------------
-# v25.9.14.4 Problem Bank Auto Insert
+# v25.9.14.6 Native Ulmo ItemBank Auto Insert
 # ---------------------------------------------------------------------------
 
 def _field_value(block: Any, name: str, default: Any = None) -> Any:
@@ -1142,66 +1234,315 @@ def _problem_bank_slot_display_name(slot: dict) -> str:
     return _normalize_xblock_title(f'Problem Bank Slot {slot_no:02d} - {label}', f'Problem Bank Slot {slot_no:02d}', max_len=120)
 
 
-def _problem_bank_fields(slot: dict, metadata: dict | None = None) -> dict[str, Any]:
-    metadata = metadata or {}
-    library_key = str(slot.get('library_key') or metadata.get('library_key') or '').strip()
-    problem_ids = [str(item).strip() for item in (slot.get('openedx_problem_ids') or slot.get('problem_ids') or []) if str(item).strip()]
-    pick_count = int(slot.get('pick_count') or 1)
-    # library_content is the Open edX randomized content/problem-bank XBlock.
-    # These fields are intentionally conservative and based on the public schema:
-    # source_library_id, manual, shuffle, max_count and capa_type.
-    fields: dict[str, Any] = {
-        'display_name': _problem_bank_slot_display_name(slot),
-        'source_library_id': library_key,
-        'source_library_version': None,
-        'manual': True,
-        'shuffle': True,
-        'max_count': max(pick_count, 1),
-        'capa_type': 'any',
-        # Older releases may still expect mode=random. Unknown fields are ignored
-        # by XBlock descriptors and verified after re-read.
-        'mode': 'random',
-    }
-    # Best-effort manual selection fields. Some Ulmo/Sumac-era builds keep chosen
-    # components as children after a Studio handler copies them into the course;
-    # others may reject direct assignment. We never claim selection is verified
-    # unless the re-read block actually exposes matching child refs.
-    if problem_ids:
-        fields['children'] = problem_ids
-        fields['selected'] = [('problem', item) for item in problem_ids]
-        fields['selected_blocks'] = problem_ids
-        fields['source_library_usage_keys'] = problem_ids
-    return fields
+def _expected_library_component_refs(slot: dict) -> list[str]:
+    refs = [
+        _clean_usage_key(item)
+        for item in (slot.get('openedx_problem_ids') or slot.get('problem_ids') or [])
+        if _clean_usage_key(item)
+    ]
+    if not refs:
+        raise ValueError(f'Slot {slot.get("slot_no")} không có Open edX Library component nào.')
+    duplicate_refs = sorted({ref for ref in refs if refs.count(ref) > 1})
+    if duplicate_refs:
+        raise ValueError(
+            f'Slot {slot.get("slot_no")} chứa cùng một Library component nhiều lần; từ chối tăng trọng số câu: {duplicate_refs[:3]}'
+        )
+    invalid = [ref for ref in refs if not ref.startswith('lb:') or ':problem:' not in ref]
+    if invalid:
+        raise ValueError(
+            f'Slot {slot.get("slot_no")} chứa component key không phải Library V2 problem: {invalid[:3]}'
+        )
+    return refs
 
 
-def _verify_problem_bank_block(block: Any, slot: dict) -> dict:
-    expected_library = str(slot.get('library_key') or '').strip()
-    expected_problem_ids = [str(item).strip() for item in (slot.get('openedx_problem_ids') or slot.get('problem_ids') or []) if str(item).strip()]
-    source_library_id = _safe_str(_field_value(block, 'source_library_id'))
-    max_count = _field_value(block, 'max_count')
-    manual = _field_value(block, 'manual')
-    shuffle = _field_value(block, 'shuffle')
-    child_refs = [str(item) for item in _children_locations(block)]
-    library_ok = bool(expected_library and source_library_id == expected_library)
-    max_count_ok = int(max_count or 0) == int(slot.get('pick_count') or 1)
-    # Direct component selection is only considered verified when the block has
-    # child refs and each expected library component can be seen in those refs.
-    # This is deliberately strict to avoid pretending that an empty Problem Bank
-    # is ready for learners.
-    joined_children = '\n'.join(child_refs)
-    selection_verified = bool(expected_problem_ids) and all(pid in joined_children for pid in expected_problem_ids)
+def _upstream_belongs_to_library(upstream_ref: str, library_key: str) -> bool:
+    upstream_ref = _clean_usage_key(upstream_ref)
+    library_key = _clean_usage_key(library_key)
+    if not upstream_ref or not library_key:
+        return False
+    if library_key.startswith('lib:'):
+        return upstream_ref.startswith(f'lb:{library_key[4:]}:')
+    if library_key.startswith('lb:'):
+        return upstream_ref.startswith(f'{library_key}:')
+    return library_key in upstream_ref
+
+
+def _load_native_itembank_handlers():
+    """Load the exact Studio handler functions used by Ulmo.3.
+
+    Studio's native Problem Bank picker posts ``category=problem``,
+    ``parent_locator=<itembank>`` and ``library_content_key=<lb:...>``.  The
+    storage handler creates the course-local ProblemBlock and then calls
+    ``sync_library_content`` to populate OLX/assets/upstream metadata.
+    """
+    from cms.djangoapps.contentstore.xblock_storage_handlers import view_handlers as storage_handlers  # type: ignore
+
+    create_xblock = getattr(storage_handlers, 'create_xblock', None)
+    sync_library_content = getattr(storage_handlers, 'sync_library_content', None)
+    delete_item = getattr(storage_handlers, '_delete_item', None)
+    if not callable(create_xblock) or not callable(sync_library_content):
+        raise RuntimeError(
+            'Ulmo CMS không expose create_xblock/sync_library_content trong native storage handler; '
+            'không thể tạo Problem Bank Beta an toàn.'
+        )
+    return storage_handlers, create_xblock, sync_library_content, delete_item
+
+
+def _request_as_publish_user(request: Any, user: Any) -> Any:
+    """Clone the connector request and attach the configured Studio publish user."""
+    try:
+        proxied = copy.copy(request)
+    except Exception:
+        proxied = request
+    try:
+        proxied.user = user
+    except Exception:
+        pass
+    try:
+        proxied._cached_user = user
+    except Exception:
+        pass
+    return proxied
+
+
+def _native_delete_item(delete_item: Any, store: Any, usage_key: Any, user: Any) -> dict:
+    """Delete a draft block using the native Studio helper, with defensive fallbacks."""
+    location = _usage_key_from_value(usage_key) or usage_key
+    diagnostics = {'usage_key': _clean_usage_key(location), 'deleted': False, 'mode': None, 'errors': []}
+    if callable(delete_item):
+        try:
+            delete_item(location, user)
+            diagnostics.update({'deleted': True, 'mode': 'studio_storage_handler._delete_item'})
+            return diagnostics
+        except Exception as exc:
+            diagnostics['errors'].append(_exception_detail(exc, 'native_itembank.delete.storage_handler'))
+    user_id = getattr(user, 'id', user)
+    for mode, attempt in (
+        ('modulestore.delete_item_user_id', lambda: store.delete_item(location, user_id)),
+        ('modulestore.delete_item_user_kw', lambda: store.delete_item(location, user_id=user_id)),
+        ('modulestore.delete_item_user_object', lambda: store.delete_item(location, user)),
+    ):
+        try:
+            attempt()
+            diagnostics.update({'deleted': True, 'mode': mode})
+            return diagnostics
+        except Exception as exc:
+            diagnostics['errors'].append(_exception_detail(exc, f'native_itembank.delete.{mode}'))
+    return diagnostics
+
+
+def _rollback_native_itembank_nodes(delete_item: Any, store: Any, user: Any, created_locations: list[Any]) -> list[dict]:
+    return [_native_delete_item(delete_item, store, location, user) for location in reversed(created_locations)]
+
+
+def _find_existing_upstream_child(store: Any, bank: Any, upstream_ref: str) -> Any | None:
+    expected = _clean_usage_key(upstream_ref)
+    for child_key in _children_locations(bank):
+        child = _get_item_best_effort(store, child_key)
+        if child is None:
+            continue
+        if _clean_usage_key(_field_value(child, 'upstream')) == expected:
+            return child
+    return None
+
+
+def _native_create_or_reuse_itembank(
+    create_xblock: Any,
+    delete_item: Any,
+    store: Any,
+    user: Any,
+    unit_block: Any,
+    slot: dict,
+) -> tuple[Any, bool, list[dict]]:
+    display_name = _problem_bank_slot_display_name(slot)
+    existing = _find_existing_child_block(store, unit_block, 'itembank', display_name)
+    diagnostics: list[dict] = []
+    if existing is not None:
+        bank = existing
+        created = False
+        diagnostics.append({'phase': 'itembank.create', 'mode': 'reuse_existing_by_display_name', 'status': 'ok'})
+    else:
+        bank = create_xblock(
+            parent_locator=getattr(unit_block, 'location', unit_block),
+            user=user,
+            category='itembank',
+            display_name=display_name,
+            boilerplate=None,
+        )
+        bank = _get_item_best_effort(store, getattr(bank, 'location', bank)) or bank
+        created = True
+        diagnostics.append({'phase': 'itembank.create', 'mode': 'native_studio_create_xblock', 'status': 'ok'})
+    if (_block_type(bank) or '').lower() != 'itembank':
+        raise RuntimeError(
+            f'Tạo Problem Bank sai block type: expected=itembank actual={_block_type(bank)!r}.'
+        )
+    try:
+        _update_created_block_fields(store, bank, user, {
+            'display_name': display_name,
+            'max_count': 1,
+        })
+    except Exception:
+        if created:
+            diagnostics.append(_native_delete_item(delete_item, store, getattr(bank, 'location', bank), user))
+        raise
+    bank = _get_item_best_effort(store, getattr(bank, 'location', bank)) or bank
+    return bank, created, diagnostics
+
+
+def _native_add_library_problem_to_itembank(
+    request: Any,
+    create_xblock: Any,
+    sync_library_content: Any,
+    delete_item: Any,
+    store: Any,
+    user: Any,
+    bank: Any,
+    upstream_ref: str,
+) -> tuple[Any, bool, list[dict]]:
+    existing = _find_existing_upstream_child(store, bank, upstream_ref)
+    if existing is not None:
+        return existing, False, [{
+            'phase': 'itembank.child.sync',
+            'mode': 'reuse_existing_upstream_child',
+            'status': 'ok',
+            'upstream': upstream_ref,
+        }]
+
+    publish_request = _request_as_publish_user(request, user)
+    child = None
+    diagnostics: list[dict] = []
+    try:
+        child = create_xblock(
+            parent_locator=getattr(bank, 'location', bank),
+            user=user,
+            category='problem',
+            display_name=None,
+            boilerplate=None,
+        )
+        child = _get_item_best_effort(store, getattr(child, 'location', child)) or child
+        child.upstream = upstream_ref
+        notices = sync_library_content(child, publish_request, store)
+        child = _get_item_best_effort(store, getattr(child, 'location', child)) or child
+        diagnostics.append({
+            'phase': 'itembank.child.sync',
+            'mode': 'native_create_xblock_plus_sync_library_content',
+            'status': 'ok',
+            'upstream': upstream_ref,
+            'usage_key': _clean_usage_key(getattr(child, 'location', child)),
+            'static_file_notices': _to_jsonable(notices),
+        })
+        return child, True, diagnostics
+    except Exception as exc:
+        if child is not None:
+            diagnostics.append(_native_delete_item(delete_item, store, getattr(child, 'location', child), user))
+        diagnostics.append({'phase': 'itembank.child.sync', 'status': 'failed', 'detail': _exception_detail(exc, 'native_itembank.sync_library_content')})
+        error = RuntimeError(f'Không đồng bộ được Library component {upstream_ref} vào native Problem Bank: {_message_from_exception(exc, "sync_library_content failed")}')
+        setattr(error, 'diagnostics', diagnostics)
+        raise error from exc
+
+
+def _cleanup_legacy_ai_randomized_blocks(delete_item: Any, store: Any, user: Any, unit_block: Any) -> list[dict]:
+    """Remove only legacy blocks created by the old AI connector implementation.
+
+    v25.9.14.4 generated ``library_content`` blocks with deterministic block IDs
+    beginning with ``problem-bank-slot-``.  They are not native Problem Bank Beta
+    blocks and would confuse teachers/learners if left beside new ItemBankBlocks.
+    Generic/manual Randomized Content Blocks are never removed.
+    """
+    results: list[dict] = []
+    for child_key in list(_children_locations(unit_block)):
+        child = _get_item_best_effort(store, child_key)
+        if child is None or (_block_type(child) or '').lower() != 'library_content':
+            continue
+        location = getattr(child, 'location', None)
+        block_id = _safe_str(getattr(location, 'block_id', None) or getattr(child, 'block_id', None) or _block_id(child)).lower()
+        if not block_id.startswith('problem-bank-slot-'):
+            continue
+        result = _native_delete_item(delete_item, store, getattr(child, 'location', child), user)
+        result['legacy_block_type'] = 'library_content'
+        result['legacy_display_name'] = _display_name(child)
+        results.append(result)
+        if not result.get('deleted'):
+            raise RuntimeError(
+                f'Không dọn được legacy Randomized Content Block {result.get("usage_key")}; '
+                'connector dừng để tránh trộn block cũ và native Problem Bank.'
+            )
+    return results
+
+
+def _verify_native_itembank_block(store: Any, block: Any, slot: dict) -> dict:
+    expected_upstreams = _expected_library_component_refs(slot)
+    expected_set = set(expected_upstreams)
+    library_key = _clean_usage_key(slot.get('library_key'))
+    bank_key = _clean_usage_key(getattr(block, 'location', block))
+    max_count = int(_field_value(block, 'max_count', 0) or 0)
+    child_details: list[dict] = []
+    child_upstreams: list[str] = []
+    course_local_children: list[str] = []
+    invalid_children: list[dict] = []
+
+    for child_key in _children_locations(block):
+        child = _get_item_best_effort(store, child_key)
+        if child is None:
+            invalid_children.append({'usage_key': _clean_usage_key(child_key), 'reason': 'child_not_found'})
+            continue
+        upstream = _clean_usage_key(_field_value(child, 'upstream'))
+        parent_key = _clean_usage_key(_field_value(child, 'parent'))
+        category = (_block_type(child) or '').lower()
+        usage_key = _clean_usage_key(getattr(child, 'location', child))
+        upstream_version = _field_value(child, 'upstream_version')
+        has_problem_data = bool(_field_value(child, 'data'))
+        detail = {
+            'usage_key': usage_key,
+            'category': category,
+            'parent_usage_key': parent_key,
+            'upstream': upstream,
+            'upstream_version': upstream_version,
+            'upstream_display_name': _safe_str(_field_value(child, 'upstream_display_name')),
+            'has_problem_data': has_problem_data,
+        }
+        child_details.append(detail)
+        course_local_children.append(usage_key)
+        if upstream:
+            child_upstreams.append(upstream)
+        if category != 'problem' or parent_key != bank_key or not upstream or upstream_version is None or not has_problem_data:
+            invalid_children.append(detail)
+
+    actual_set = set(child_upstreams)
+    duplicate_upstreams = sorted({item for item in child_upstreams if child_upstreams.count(item) > 1})
+    missing_upstreams = sorted(expected_set - actual_set)
+    unexpected_upstreams = sorted(actual_set - expected_set)
+    bank_type_ok = (_block_type(block) or '').lower() == 'itembank'
+    max_count_ok = max_count == 1
+    library_ok = bool(library_key) and all(_upstream_belongs_to_library(item, library_key) for item in expected_upstreams)
+    exact_children_ok = (
+        len(course_local_children) == len(expected_upstreams)
+        and not duplicate_upstreams
+        and not missing_upstreams
+        and not unexpected_upstreams
+        and not invalid_children
+    )
+    selection_verified = bank_type_ok and max_count_ok and library_ok and exact_children_ok
     return {
-        'source_library_id': source_library_id,
-        'library_ok': library_ok,
+        'implementation': 'native_ulmo_itembank',
+        'bank_type': _block_type(block),
+        'bank_type_ok': bank_type_ok,
         'max_count': max_count,
         'max_count_ok': max_count_ok,
-        'manual': manual,
-        'shuffle': shuffle,
-        'child_count': len(child_refs),
-        'children': child_refs,
-        'expected_problem_ids': expected_problem_ids,
+        'library_key': library_key,
+        'library_ok': library_ok,
+        'expected_component_count': len(expected_upstreams),
+        'child_count': len(course_local_children),
+        'course_local_children': course_local_children,
+        'expected_upstreams': expected_upstreams,
+        'child_upstreams': child_upstreams,
+        'missing_upstreams': missing_upstreams,
+        'unexpected_upstreams': unexpected_upstreams,
+        'duplicate_upstreams': duplicate_upstreams,
+        'invalid_children': invalid_children,
+        'child_details': child_details,
         'selection_verified': selection_verified,
-        'field_snapshot': _block_field_snapshot(block, ['source_library_id', 'source_library_version', 'manual', 'shuffle', 'max_count', 'capa_type', 'mode']),
+        'field_snapshot': _block_field_snapshot(block, ['display_name', 'max_count', 'rerandomize', 'showanswer', 'show_correctness']),
     }
 
 
@@ -1214,8 +1555,8 @@ def _problem_bank_payload(block: Any, parent: Any, slot: dict, *, created: bool,
         'pick_count': slot.get('pick_count') or 1,
         'library_key': slot.get('library_key'),
         'openedx_problem_ids': slot.get('openedx_problem_ids') or slot.get('problem_ids') or [],
-        'verification': verification,
         'selection_verified': bool(verification.get('selection_verified')),
+        'verification': verification,
         'diagnostics': diagnostics,
     })
     return base
@@ -1223,13 +1564,13 @@ def _problem_bank_payload(block: Any, parent: Any, slot: dict, *, created: bool,
 
 @csrf_exempt
 def insert_problem_banks(request, course_id: str):
-    """Insert one native library_content/Problem Bank block per Family Slot.
+    """Create native Ulmo.3 Problem Bank Beta blocks and attach V2 Library components.
 
-    The endpoint creates real draft XBlocks under a Studio Unit/vertical. It
-    verifies that each block exists and points to the requested Library. Direct
-    selected-component attachment is release-dependent in Open edX, so the
-    response explicitly reports selection_verified/manual_component_selection_required
-    instead of pretending the bank is learner-ready.
+    The implementation mirrors Studio exactly: create an ``itembank`` under the
+    Unit, then add each selected Library V2 problem sequentially by creating a
+    course-local ``problem`` child, setting ``upstream`` and calling
+    ``sync_library_content``.  It never creates legacy ``library_content`` blocks
+    and never reports success unless every bank and child is verified.
     """
     guard = _require_connector_write(request)
     if guard:
@@ -1247,10 +1588,13 @@ def insert_problem_banks(request, course_id: str):
     if not isinstance(slots, list) or not slots:
         return _connector_error('Không có slot Problem Bank nào để insert.', status=400, code='empty_problem_bank_slots')
 
+    created_locations: list[Any] = []
+    rollback_diagnostics: list[dict] = []
     try:
         _, modulestore = _load_openedx_modules()
         store = modulestore()
         user = _request_publish_user(request)
+        _, create_xblock, sync_library_content, delete_item = _load_native_itembank_handlers()
         unit_block = _resolve_modulestore_parent(store, course_id, unit_node_id)
         unit_type = (_block_type(unit_block) or '').lower()
         if unit_type != 'vertical':
@@ -1261,64 +1605,154 @@ def insert_problem_banks(request, course_id: str):
                 detail={'unit_node_id': unit_node_id, 'unit_type': unit_type},
             )
 
-        blocks: list[dict] = []
-        warnings: list[str] = []
+        # Defense in depth: the same Library component must never be placed in
+        # more than one slot, even if a malformed request bypasses AI Server's
+        # deterministic Hard Duplicate Guard.
+        all_refs: list[str] = []
         for slot in slots:
             if not isinstance(slot, dict):
-                warnings.append('Bỏ qua một slot không hợp lệ vì không phải object.')
-                continue
-            display_name = _problem_bank_slot_display_name(slot)
+                raise ValueError('Family Bank Plan chứa slot không hợp lệ.')
             if not slot.get('library_key'):
-                raise ValueError(f'Slot {slot.get("slot_no")} thiếu library_key; hãy publish Family Bank Plan trước khi insert Problem Bank.')
-            fields = _problem_bank_fields(slot, metadata)
-            bank, created, diagnostics = _create_child_xblock(
-                store,
-                user,
-                unit_block,
-                'library_content',
-                display_name,
-                {**metadata, 'slot_no': slot.get('slot_no'), 'idempotency_key': metadata.get('idempotency_key')},
-                extra_fields=fields,
+                raise ValueError(f'Slot {slot.get("slot_no")} thiếu library_key; hãy hoàn tất bước Chuẩn bị thư viện trước.')
+            if int(slot.get('pick_count') or 1) != 1:
+                raise ValueError(f'Slot {slot.get("slot_no")} phải có pick_count=1 để mỗi Problem Bank chỉ hiện một câu.')
+            all_refs.extend(_expected_library_component_refs(slot))
+        duplicate_refs = sorted({ref for ref in all_refs if all_refs.count(ref) > 1})
+        if duplicate_refs:
+            raise ValueError(f'Cùng một Library component xuất hiện ở nhiều slot; connector từ chối tạo đề trùng: {duplicate_refs[:5]}')
+
+        legacy_cleanup = (
+            _cleanup_legacy_ai_randomized_blocks(delete_item, store, user, unit_block)
+            if metadata.get('cleanup_legacy_ai_randomized_blocks', True)
+            else []
+        )
+
+        blocks: list[dict] = []
+        total_children = 0
+        for slot in slots:
+            diagnostics: list[dict] = []
+            expected_refs = _expected_library_component_refs(slot)
+            bank, bank_created, bank_diagnostics = _native_create_or_reuse_itembank(
+                create_xblock, delete_item, store, user, unit_block, slot,
             )
-            reread = _get_item_best_effort(store, getattr(bank, 'location', bank)) or bank
-            verification = _verify_problem_bank_block(reread, slot)
-            if not verification.get('library_ok'):
+            diagnostics.extend(bank_diagnostics)
+            if bank_created:
+                created_locations.append(getattr(bank, 'location', bank))
+
+            # Existing AI-managed bank may be resumed only when every existing
+            # child belongs to the current plan. Never silently remove teacher
+            # content or stale children.
+            existing_verification = _verify_native_itembank_block(store, bank, {
+                **slot,
+                'openedx_problem_ids': [
+                    _clean_usage_key(_field_value(_get_item_best_effort(store, key), 'upstream'))
+                    for key in _children_locations(bank)
+                    if _get_item_best_effort(store, key) is not None and _field_value(_get_item_best_effort(store, key), 'upstream')
+                ] or expected_refs,
+            })
+            current_upstreams = set(existing_verification.get('child_upstreams') or [])
+            unexpected_existing = sorted(current_upstreams - set(expected_refs))
+            unlinked_existing = existing_verification.get('invalid_children') or []
+            if unexpected_existing or unlinked_existing:
                 raise RuntimeError(
-                    f'Problem Bank Slot {slot.get("slot_no")} đã tạo block nhưng source_library_id không đúng. '
-                    f'expected={slot.get("library_key")} actual={verification.get("source_library_id")}.'
+                    f'Problem Bank Slot {slot.get("slot_no")} đã tồn tại nhưng khác kế hoạch hiện tại. '
+                    f'unexpected={unexpected_existing[:3]} invalid_children={len(unlinked_existing)}. '
+                    'Hãy xóa bank cũ trong Studio hoặc dùng một Unit Quiz mới; connector không tự xóa nội dung giáo viên.'
                 )
+
+            # Studio itself adds selected blocks sequentially to avoid a race
+            # condition. Do exactly the same here.
+            for upstream_ref in expected_refs:
+                child, child_created, child_diagnostics = _native_add_library_problem_to_itembank(
+                    request,
+                    create_xblock,
+                    sync_library_content,
+                    delete_item,
+                    store,
+                    user,
+                    bank,
+                    upstream_ref,
+                )
+                diagnostics.extend(child_diagnostics)
+                if child_created:
+                    created_locations.append(getattr(child, 'location', child))
+                    total_children += 1
+
+            bank = _get_item_best_effort(store, getattr(bank, 'location', bank)) or bank
+            verification = _verify_native_itembank_block(store, bank, slot)
             if not verification.get('selection_verified'):
-                warnings.append(
-                    f'Slot {slot.get("slot_no")} đã tạo Problem Bank và trỏ tới Library, nhưng chưa verify được danh sách component đã chọn. '
-                    'Có thể Ulmo.3 cần handler riêng để Add components vào bank; hãy kiểm tra trong Studio.'
+                raise RuntimeError(
+                    f'Native Problem Bank Slot {slot.get("slot_no")} chưa verify được. '
+                    f'missing={verification.get("missing_upstreams")} '
+                    f'unexpected={verification.get("unexpected_upstreams")} '
+                    f'invalid_children={len(verification.get("invalid_children") or [])} '
+                    f'bank_type={verification.get("bank_type")} max_count={verification.get("max_count")}.'
                 )
-            blocks.append(_problem_bank_payload(reread, unit_block, slot, created=created, verification=verification, diagnostics=diagnostics))
+            blocks.append(_problem_bank_payload(
+                bank,
+                unit_block,
+                slot,
+                created=bank_created,
+                verification=verification,
+                diagnostics=diagnostics,
+            ))
 
         if not blocks:
-            raise RuntimeError('Không tạo được Problem Bank block nào.')
-        manual_required = any(not block.get('selection_verified') for block in blocks)
+            raise RuntimeError('Không tạo được native Problem Bank nào.')
         return _json_response({
             'ok': True,
-            'created': any(block.get('created') for block in blocks),
-            'status': 'created_with_manual_selection_required' if manual_required else 'created_and_selection_verified',
+            'created': bool(created_locations),
+            'status': 'native_itembanks_created_and_verified',
+            'implementation': 'native_ulmo_itembank',
             'course_id': course_id,
-            'unit_node_id': unit_node_id,
+            'unit_node_id': _clean_usage_key(unit_node_id),
             'unit_type': unit_type,
             'problem_bank_blocks': blocks,
             'slots_requested': len(slots),
             'slots_inserted': len(blocks),
-            'manual_component_selection_required': manual_required,
-            'warnings': warnings,
+            'course_local_problem_children_created': total_children,
+            'legacy_ai_randomized_blocks_removed': len(legacy_cleanup),
+            'legacy_cleanup': legacy_cleanup,
+            'manual_component_selection_required': False,
+            'warnings': [],
             'message': (
-                'Đã tạo Problem Bank blocks thật trong Studio, nhưng cần kiểm tra/Add components thủ công cho slot chưa verify.'
-                if manual_required else
-                'Đã tạo Problem Bank blocks và verify được selected components.'
+                f'Đã dọn {len(legacy_cleanup)} block cũ và tạo native Problem Bank Beta; mọi component đã được xác minh.'
+                if legacy_cleanup else
+                'Đã tạo native Problem Bank Beta và xác minh đầy đủ component cho mọi Family Slot.'
             ),
         })
     except ValueError as exc:
-        return _connector_error(str(exc), status=400, code='invalid_problem_bank_request', detail=_exception_detail(exc, 'insert_problem_banks.validation'))
+        if created_locations:
+            try:
+                _, modulestore = _load_openedx_modules()
+                store = modulestore()
+                user = _request_publish_user(request)
+                _, _, _, delete_item = _load_native_itembank_handlers()
+                rollback_diagnostics = _rollback_native_itembank_nodes(delete_item, store, user, created_locations)
+            except Exception as rollback_exc:
+                rollback_diagnostics.append(_exception_detail(rollback_exc, 'native_itembank.rollback.validation_error'))
+        return _connector_error(
+            str(exc),
+            status=400,
+            code='invalid_problem_bank_request',
+            detail={**_exception_detail(exc, 'insert_problem_banks.validation'), 'rollback': rollback_diagnostics},
+        )
     except Exception as exc:
-        return _connector_error(_message_from_exception(exc, 'Insert Problem Bank blocks thất bại'), status=502, code='openedx_problem_bank_insert_failed', detail=_exception_detail(exc, 'insert_problem_banks'))
+        if created_locations:
+            try:
+                _, modulestore = _load_openedx_modules()
+                store = modulestore()
+                user = _request_publish_user(request)
+                _, _, _, delete_item = _load_native_itembank_handlers()
+                rollback_diagnostics = _rollback_native_itembank_nodes(delete_item, store, user, created_locations)
+            except Exception as rollback_exc:
+                rollback_diagnostics.append(_exception_detail(rollback_exc, 'native_itembank.rollback.failure'))
+        return _connector_error(
+            _message_from_exception(exc, 'Insert native Problem Bank thất bại'),
+            status=502,
+            code='openedx_native_itembank_insert_failed',
+            detail={**_exception_detail(exc, 'insert_problem_banks.native_itembank'), 'rollback': rollback_diagnostics},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2924,7 +3358,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.14.3',
+        'version': '25.9.14.6',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(_setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME')),
