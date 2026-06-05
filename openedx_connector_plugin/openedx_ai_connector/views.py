@@ -1363,7 +1363,7 @@ def _native_create_or_reuse_itembank(
         diagnostics.append({'phase': 'itembank.create', 'mode': 'reuse_existing_by_display_name', 'status': 'ok'})
     else:
         bank = create_xblock(
-            parent_locator=getattr(unit_block, 'location', unit_block),
+            parent_locator=_clean_usage_key(getattr(unit_block, 'location', unit_block)),
             user=user,
             category='itembank',
             display_name=display_name,
@@ -1413,7 +1413,7 @@ def _native_add_library_problem_to_itembank(
     diagnostics: list[dict] = []
     try:
         child = create_xblock(
-            parent_locator=getattr(bank, 'location', bank),
+            parent_locator=_clean_usage_key(getattr(bank, 'location', bank)),
             user=user,
             category='problem',
             display_name=None,
