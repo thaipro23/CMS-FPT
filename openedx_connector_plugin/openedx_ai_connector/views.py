@@ -1210,6 +1210,67 @@ def create_quiz_node(request, course_id: str):
 
 
 
+@csrf_exempt
+def delete_quiz_node(request, course_id: str):
+    """Best-effort rollback for Quiz nodes created by AI Server.
+
+    AI Server only calls this for CourseQuizInstance rollback. The endpoint is
+    intentionally narrow: delete one Studio draft node by usage key, verify it
+    is gone, and return manual_cleanup_required when Open edX cannot confirm.
+    """
+    guard = _require_connector_write(request)
+    if guard:
+        return guard
+    if request.method != 'POST':
+        return HttpResponseBadRequest('POST required')
+    try:
+        payload = json.loads(request.body.decode('utf-8'))
+    except Exception:
+        return HttpResponseBadRequest('Invalid JSON')
+
+    node_id = payload.get('node_id') or payload.get('unit_node_id') or payload.get('quiz_node_id') or ''
+    if not node_id:
+        return _connector_error('Thiếu node_id cần xóa.', status=400, code='missing_node_id')
+    try:
+        _, modulestore = _load_openedx_modules()
+        store = modulestore()
+        user = _request_publish_user(request)
+        _, _, _, delete_item = _load_native_itembank_handlers()
+        usage_key = _usage_key_from_value(node_id)
+        if usage_key is None:
+            raise ValueError(f'node_id không phải usage key hợp lệ: {node_id}')
+        existing = _get_item_best_effort(store, usage_key)
+        if existing is None:
+            return _json_response({
+                'ok': True,
+                'deleted': True,
+                'already_missing': True,
+                'course_id': course_id,
+                'node_id': _clean_usage_key(node_id),
+                'manual_cleanup_required': False,
+                'message': 'Quiz node đã không còn tồn tại trong Studio draft.',
+            })
+        before = _created_node_payload(existing, None, created=False)
+        delete_result = _native_delete_item(delete_item, store, usage_key, user)
+        still_exists = _get_item_best_effort(store, usage_key) is not None
+        deleted = bool(delete_result.get('deleted')) and not still_exists
+        return _json_response({
+            'ok': deleted,
+            'deleted': deleted,
+            'course_id': course_id,
+            'node_id': _clean_usage_key(node_id),
+            'before': before,
+            'delete_result': delete_result,
+            'manual_cleanup_required': not deleted,
+            'message': 'Đã xóa Quiz node trong Studio draft.' if deleted else 'Chưa xác minh được việc xóa Quiz node; cần kiểm tra thủ công trong Studio.',
+        })
+    except ValueError as exc:
+        return _connector_error(str(exc), status=400, code='invalid_quiz_node_delete_request', detail=_exception_detail(exc, 'delete_quiz_node.validation'))
+    except Exception as exc:
+        return _connector_error(_message_from_exception(exc, 'Xóa Quiz node trong CMS thất bại'), status=502, code='openedx_quiz_node_delete_failed', detail=_exception_detail(exc, 'delete_quiz_node'))
+
+
+
 # ---------------------------------------------------------------------------
 # v25.9.14.6 Native Ulmo ItemBank Auto Insert
 # ---------------------------------------------------------------------------
