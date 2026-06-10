@@ -1182,8 +1182,12 @@ def create_quiz_node(request, course_id: str):
 
     parent_node_id = payload.get('parent_node_id') or payload.get('parent_usage_key') or payload.get('chapter_node_id') or ''
     quiz_title = _normalize_xblock_title(payload.get('quiz_title') or payload.get('display_name'), 'AI Learning Check')
-    unit_title = _normalize_xblock_title(payload.get('unit_title'), 'Quiz tự luyện')
+    unit_title = _normalize_xblock_title(payload.get('unit_title'), 'Quiz')
     metadata = payload.get('metadata') or {}
+    sequential_fields = {
+        'format': metadata.get('format') or metadata.get('grade_as') or 'Quiz',
+        'graded': True if metadata.get('graded') is None else bool(metadata.get('graded')),
+    }
 
     try:
         _, modulestore = _load_openedx_modules()
@@ -1199,20 +1203,21 @@ def create_quiz_node(request, course_id: str):
             diagnostics.extend(diag)
             created_nodes.append(_created_node_payload(chapter, parent_block, created=created))
             sequential_title = _normalize_xblock_title(metadata.get('sequential_title'), 'AI Learning Check')
-            sequential, created, diag = _create_child_xblock(store, user, chapter, 'sequential', sequential_title, metadata)
+            sequential, created, diag = _create_child_xblock(store, user, chapter, 'sequential', sequential_title, metadata, extra_fields=sequential_fields)
             diagnostics.extend(diag)
             created_nodes.append(_created_node_payload(sequential, chapter, created=created))
             vertical, created, diag = _create_child_xblock(store, user, sequential, 'vertical', unit_title, metadata)
             diagnostics.extend(diag)
             created_nodes.append(_created_node_payload(vertical, sequential, created=created))
         elif parent_type == 'chapter':
-            sequential, created, diag = _create_child_xblock(store, user, parent_block, 'sequential', quiz_title, metadata)
+            sequential, created, diag = _create_child_xblock(store, user, parent_block, 'sequential', quiz_title, metadata, extra_fields=sequential_fields)
             diagnostics.extend(diag)
             created_nodes.append(_created_node_payload(sequential, parent_block, created=created))
             vertical, created, diag = _create_child_xblock(store, user, sequential, 'vertical', unit_title, metadata)
             diagnostics.extend(diag)
             created_nodes.append(_created_node_payload(vertical, sequential, created=created))
         elif parent_type == 'sequential':
+            _update_created_block_fields(store, parent_block, user, sequential_fields)
             vertical_title = unit_title or quiz_title
             vertical, created, diag = _create_child_xblock(store, user, parent_block, 'vertical', vertical_title, metadata)
             diagnostics.extend(diag)
