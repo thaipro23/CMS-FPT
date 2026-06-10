@@ -308,7 +308,7 @@ def quiz_session_runtime_js(request):
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
     var count = await autoSubmit();
     lock();
-    window.parent && window.parent.postMessage({type:'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE', submitted_problem_count: count}, window.location.origin);
+    window.parent && window.parent.postMessage({type:'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE', submitted_problem_count: count}, '*');
   });
 })();
 """

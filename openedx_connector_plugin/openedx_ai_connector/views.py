@@ -1996,6 +1996,12 @@ def _library_slug_from_payload(course_id: str, library_key: str | None, display_
 def _v2_library_key_string(course_id: str, library_key: str | None, display_name: str, metadata: dict | None = None) -> str:
     raw_key = str(library_key or (metadata or {}).get('library_key') or '').strip()
     if raw_key.startswith('lib:'):
+        parts = raw_key.split(':', 2)
+        if len(parts) >= 3:
+            # Match Open edX LearningPackage slug normalization. This prevents
+            # get_library/set_library_block_olx from using `FA26` while the
+            # persisted LearningPackage key is `fa26`.
+            return f'lib:{parts[1]}:{_safe_slug(parts[2], max_len=48, fallback="ai-library")}'
         return raw_key
     org = _course_org(course_id, metadata)
     slug = _library_slug_from_payload(course_id, raw_key, display_name, metadata)
@@ -2055,6 +2061,32 @@ def _metadata_obj_to_dict(obj: Any) -> dict:
     if not data:
         data['repr'] = _safe_str(obj)
     return data
+
+
+def _canonical_library_key_from_metadata(meta: dict | None, fallback: str) -> str:
+    """Return the exact Library V2 key that Open edX actually stored.
+
+    Ulmo's create_library() may normalize the slug (for example uppercase
+    `FA26` becomes lowercase in the persisted LearningPackage key). If the
+    connector keeps using the pre-create requested key, set_library_block_olx()
+    can later fail with `LearningPackage matching query does not exist`.
+    """
+    meta = meta or {}
+    candidates = [
+        meta.get('key'),
+        meta.get('library_key'),
+        meta.get('openedx_library_key'),
+        meta.get('openedx_library_id'),
+    ]
+    for value in candidates:
+        text = _safe_str(value).strip()
+        if text.startswith('lib:'):
+            return text
+    return fallback
+
+
+def _canonicalize_existing_library_key(library_meta: Any, fallback_key: str) -> str:
+    return _canonical_library_key_from_metadata(_metadata_obj_to_dict(library_meta), fallback_key)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -2787,6 +2819,14 @@ def _ensure_content_library_v2(request, course_id: str, display_name: str, libra
         else:
             raise
 
+    # Always switch to the exact key returned by Open edX. Ulmo can normalize
+    # the persisted LearningPackage key (usually slug casing), and later block
+    # operations must use that exact value.
+    meta = _metadata_obj_to_dict(library_meta)
+    actual_library_key = _canonical_library_key_from_metadata(meta, normalized_key)
+    normalized_key = actual_library_key
+    locator = _library_locator(normalized_key)
+
     # Grant current publishing user admin access when the release supports it.
     if user is not None:
         try:
@@ -2796,7 +2836,6 @@ def _ensure_content_library_v2(request, course_id: str, display_name: str, libra
             # values. Do not fail library creation solely for this best-effort step.
             pass
 
-    meta = _metadata_obj_to_dict(library_meta)
     return {
         'ok': True,
         'status': 'library_created' if created else 'library_exists',
@@ -2806,6 +2845,7 @@ def _ensure_content_library_v2(request, course_id: str, display_name: str, libra
         'display_name': display_name,
         'library_key': normalized_key,
         'openedx_library_id': normalized_key,
+        'requested_library_key': library_key,
         'openedx_library_metadata': meta,
         'tag_names': metadata.get('tag_names') or metadata.get('tags') or [],
         'metadata': metadata,
@@ -2837,6 +2877,18 @@ def _import_problem_olx_v2(request, course_id: str, library_key: str, display_na
 
     normalized_key = _v2_library_key_string(course_id, library_key, display_name, metadata)
     locator = _library_locator(normalized_key)
+    # Be defensive when callers pass a requested key whose slug casing differs
+    # from the LearningPackage key Open edX persisted. This is the common cause
+    # of `LearningPackage matching query does not exist` during set OLX.
+    try:
+        from openedx.core.djangoapps.content_libraries.api.libraries import get_library  # type: ignore
+        library_meta = get_library(locator)
+        actual_library_key = _canonicalize_existing_library_key(library_meta, normalized_key)
+        if actual_library_key != normalized_key:
+            normalized_key = actual_library_key
+            locator = _library_locator(normalized_key)
+    except Exception:
+        pass
     user = _request_publish_user(request)
     user_id = getattr(user, 'id', None)
     question_id = str(metadata.get('question_id') or '')

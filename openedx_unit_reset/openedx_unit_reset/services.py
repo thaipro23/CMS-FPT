@@ -372,7 +372,7 @@ def get_status_for_current_user(request, course_id, unit_usage_key):
     }
 
 
-def reset_unit_for_current_user(request, course_id, unit_usage_key, *, ignore_cooldown=False):
+def reset_unit_for_current_user(request, course_id, unit_usage_key):
     course_key, unit_key = parse_keys(course_id, unit_usage_key)
     assert_user_can_reset(request, course_key)
 
@@ -408,7 +408,7 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, *, ignore_co
         if max_resets > 0 and record.reset_count >= max_resets:
             raise ResetLimitExceededError("Bạn đã vượt quá số lần làm lại cho Unit này.")
 
-        if (not ignore_cooldown) and getattr(settings, "UNIT_RESET_REQUIRE_COOLDOWN", True):
+        if getattr(settings, "UNIT_RESET_REQUIRE_COOLDOWN", True):
             if computed_next_allowed_at and now < computed_next_allowed_at:
                 wait_seconds = int((computed_next_allowed_at - now).total_seconds())
                 record.cooldown_seconds = cooldown_seconds
@@ -759,7 +759,7 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
         if latest.reset_available_at and timezone.now() < latest.reset_available_at:
             wait = int((latest.reset_available_at - timezone.now()).total_seconds())
             raise ResetCooldownError(wait, latest.reset_available_at, latest.attempt_no, latest.cooldown_seconds)
-    reset_result = reset_unit_for_current_user(request, str(course_key), str(unit_key), ignore_cooldown=True)
+    reset_result = reset_unit_for_current_user(request, str(course_key), str(unit_key))
     start_result = start_quiz_session_for_current_user(request, str(course_key), str(unit_key))
     start_result['reset_result'] = reset_result
     start_result['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
