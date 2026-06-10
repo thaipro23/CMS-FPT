@@ -712,6 +712,48 @@ def _children_locations(block: Any) -> list[Any]:
     return list(children)
 
 
+
+
+def _try_save_unit_quiz_timer_config(course_id: str, leaf_unit_node_id: str, created_nodes: list[dict], quiz_title: str, unit_title: str, metadata: dict, user: Any) -> dict:
+    """Best-effort write into openedx_unit_reset if that plugin is installed.
+
+    This keeps timer config server-side and avoids Open edX native Timed Exam.
+    """
+    timer = (metadata or {}).get('timer_config') or {}
+    if not timer or not timer.get('custom_timer_enabled'):
+        return {'enabled': False, 'status': 'not_requested'}
+    try:
+        from openedx_unit_reset.services import upsert_unit_quiz_timer_config  # type: ignore
+    except Exception as exc:  # plugin not installed in CMS image
+        return {'enabled': True, 'status': 'unit_reset_plugin_unavailable_in_cms', 'manual_lms_config_required': True, 'error': str(exc)}
+    sequence_usage_key = ''
+    try:
+        # created_nodes normally: chapter/sequential/vertical or sequential/vertical.
+        for node in reversed(created_nodes or []):
+            if (node.get('block_type') or '').lower() == 'sequential':
+                sequence_usage_key = node.get('usage_key') or ''
+                break
+    except Exception:
+        sequence_usage_key = ''
+    try:
+        result = upsert_unit_quiz_timer_config(
+            course_id=course_id,
+            sequence_usage_key=sequence_usage_key,
+            unit_usage_key=leaf_unit_node_id,
+            title=unit_title or quiz_title or 'Quiz tự luyện',
+            duration_seconds=timer.get('duration_seconds') or int(timer.get('time_limit_minutes') or 15) * 60,
+            cooldown_seconds=timer.get('cooldown_seconds') if timer.get('cooldown_seconds') is not None else int(timer.get('retake_cooldown_minutes') or 0) * 60,
+            enabled=True,
+            auto_submit_on_timeout=timer.get('auto_submit_on_timeout', True),
+            lock_after_timeout=timer.get('lock_after_timeout', True),
+            native_timed_exam=False,
+            actor=getattr(user, 'username', '') or str(getattr(user, 'id', '') or ''),
+            metadata_json={'source': 'ai_connector_create_quiz_node', 'quiz_title': quiz_title, 'metadata': metadata or {}},
+        )
+        return {'enabled': True, 'status': 'saved', **(result or {})}
+    except Exception as exc:
+        return {'enabled': True, 'status': 'save_failed', 'manual_lms_config_required': True, 'error': str(exc)}
+
 def _block_to_payload(request, block: Any, parent: Any | None = None) -> dict:
     block_id = _block_id(block)
     block_type = _block_type(block)
@@ -1186,6 +1228,7 @@ def create_quiz_node(request, course_id: str):
         leaf = created_nodes[-1] if created_nodes else None
         if not leaf or not leaf.get('usage_key'):
             raise RuntimeError('Tạo node không trả về usage_key thật từ modulestore.')
+        timer_config_result = _try_save_unit_quiz_timer_config(course_id, leaf.get('usage_key'), created_nodes, quiz_title, unit_title, metadata, user)
         return _json_response({
             'ok': True,
             'created': any(node.get('created') for node in created_nodes),
@@ -1200,6 +1243,8 @@ def create_quiz_node(request, course_id: str):
             'leaf_unit_type': leaf.get('block_type'),
             'manual_publish_required': True,
             'problem_bank_auto_inserted': False,
+            'custom_timer_configured': bool(timer_config_result.get('status') == 'saved'),
+            'timer_config_result': timer_config_result,
             'message': 'Đã tạo cấu trúc Quiz draft trong Studio. AI Server có thể tiếp tục tạo native Problem Bank Beta vào leaf Unit.',
             'diagnostics': diagnostics,
         })

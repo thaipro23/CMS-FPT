@@ -27,5 +27,10 @@ class UnitResetConfig(AppConfig):
                 "production": {"relative_path": "settings.production"},
                 "devstack": {"relative_path": "settings.devstack"},
             },
+            "cms.djangoapp": {
+                "common": {"relative_path": "settings.common"},
+                "production": {"relative_path": "settings.production"},
+                "devstack": {"relative_path": "settings.devstack"},
+            },
         },
     }
