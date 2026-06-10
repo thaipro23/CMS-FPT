@@ -90,3 +90,51 @@ class UnitQuizSessionSubmitGuardMiddleware:
             except Exception:
                 course_id = None
         return course_id, problem_usage_key
+
+
+class UnitQuizSessionRuntimeInjectionMiddleware:
+    """Inject timer runtime JS into LMS-rendered problem frames.
+
+    Learning MFE shows the clock, but Problem/XBlock HTML can be rendered inside
+    LMS-origin frames. This makes those frames listen for the timeout message and
+    auto-submit selected answers before locking inputs.
+    """
+
+    PATH_MARKERS = (
+        '/courseware/',
+        '/xblock/',
+        '/xmodule/',
+        '/handler/',
+        'student_view',
+    )
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        try:
+            if request.method != 'GET':
+                return response
+            path = (getattr(request, 'path', '') or '').lower()
+            if not any(marker in path for marker in self.PATH_MARKERS):
+                return response
+            content_type = (response.get('Content-Type', '') or '').lower()
+            if 'text/html' not in content_type:
+                return response
+            if getattr(response, 'streaming', False):
+                return response
+            body = response.content.decode(response.charset or 'utf-8')
+            if 'openedx-unit-reset-quiz-runtime-js' in body:
+                return response
+            script = '<script id="openedx-unit-reset-quiz-runtime-js" src="/api/unit-reset/v1/quiz-session/runtime.js" defer></script>'
+            if '</body>' in body:
+                body = body.replace('</body>', script + '</body>', 1)
+            else:
+                body += script
+            response.content = body.encode(response.charset or 'utf-8')
+            if response.has_header('Content-Length'):
+                response['Content-Length'] = str(len(response.content))
+        except Exception:
+            log.exception('Could not inject timed quiz runtime JS')
+        return response
