@@ -372,13 +372,16 @@ def get_status_for_current_user(request, course_id, unit_usage_key):
     }
 
 
-def reset_unit_for_current_user(request, course_id, unit_usage_key, *, ignore_cooldown=False):
+def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_seconds_override=None, bypass_cooldown=False):
     course_key, unit_key = parse_keys(course_id, unit_usage_key)
     assert_user_can_reset(request, course_key)
 
     base_keys = collect_unit_usage_keys(unit_key)
     reset_keys = expand_randomized_selected_keys(request.user, course_key, base_keys)
-    cooldown_seconds = get_block_cooldown_seconds(reset_keys)
+    if cooldown_seconds_override is None:
+        cooldown_seconds = get_block_cooldown_seconds(reset_keys)
+    else:
+        cooldown_seconds = int(cooldown_seconds_override)
 
     now = timezone.now()
     max_resets = int(getattr(settings, "UNIT_RESET_MAX_RESETS_PER_UNIT", 0) or 0)
@@ -408,7 +411,7 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, *, ignore_co
         if max_resets > 0 and record.reset_count >= max_resets:
             raise ResetLimitExceededError("Bạn đã vượt quá số lần làm lại cho Unit này.")
 
-        if (not ignore_cooldown) and getattr(settings, "UNIT_RESET_REQUIRE_COOLDOWN", True):
+        if getattr(settings, "UNIT_RESET_REQUIRE_COOLDOWN", True) and not bypass_cooldown:
             if computed_next_allowed_at and now < computed_next_allowed_at:
                 wait_seconds = int((computed_next_allowed_at - now).total_seconds())
                 record.cooldown_seconds = cooldown_seconds
@@ -618,6 +621,39 @@ def _get_timer_config(course_id, unit_usage_key):
         raise UnitResetError('Unit này chưa được cấu hình thời gian làm quiz.', 'QUIZ_TIMER_CONFIG_NOT_FOUND', 404) from exc
 
 
+def get_timer_config_or_none(course_id, unit_usage_key):
+    try:
+        return UnitQuizTimerConfig.objects.get(course_id=str(course_id), unit_usage_key=str(unit_usage_key), enabled=True)
+    except UnitQuizTimerConfig.DoesNotExist:
+        return None
+
+
+def get_legacy_compatible_timer_status_for_current_user(request, course_id, unit_usage_key):
+    """Return timer status using the old reset/status response shape.
+
+    This prevents the old reset UI/endpoint from showing the legacy block
+    cooldown (for example 10 minutes) when a Unit is controlled by the custom
+    timed-practice quiz config (for example 3 or 4 minutes).
+    """
+    data = get_quiz_session_status_for_current_user(request, course_id, unit_usage_key)
+    config = data.get('config') or {}
+    wait_seconds = int(data.get('reset_wait_seconds') or data.get('wait_seconds') or 0)
+    can_reset = bool(data.get('can_reset', wait_seconds <= 0 and data.get('status') in ('RESET_READY', 'NOT_STARTED')))
+    return {
+        'success': True,
+        'timer_managed': True,
+        'can_reset': can_reset,
+        'wait_seconds': max(wait_seconds, 0),
+        'cooldown_seconds': int(config.get('cooldown_seconds') or data.get('cooldown_seconds') or 0),
+        'reset_count': int(data.get('attempt_no') or 0),
+        'last_attempt_at': data.get('started_at'),
+        'last_reset_at': None,
+        'next_reset_allowed_at': data.get('reset_available_at'),
+        'reset_keys_count': 0,
+        'quiz_session': data,
+    }
+
+
 def _latest_quiz_session(user, config):
     return UnitQuizSession.objects.filter(user=user, config=config).order_by('-attempt_no', '-created_at').first()
 
@@ -670,9 +706,16 @@ def start_quiz_session_for_current_user(request, course_id, unit_usage_key):
                 data['success'] = True
                 data['has_session'] = True
                 return data
-            if session.reset_available_at and now < session.reset_available_at:
-                wait = int((session.reset_available_at - now).total_seconds())
-                raise ResetCooldownError(wait, session.reset_available_at, session.attempt_no, session.cooldown_seconds)
+            # Important: page refresh must not silently create a new timed
+            # attempt. A new attempt is allowed only through quiz-session/reset,
+            # because reset must clear StudentModule/randomized state first.
+            if session.status in (UnitQuizSession.STATUS_EXPIRED, UnitQuizSession.STATUS_RESET_WAIT, UnitQuizSession.STATUS_RESET_READY):
+                data = _serialize_quiz_session(session, config)
+                data['success'] = True
+                data['has_session'] = True
+                data['requires_reset'] = True
+                data['message'] = 'Lượt làm đã kết thúc. Bấm Làm lại bài sau khi hết thời gian chờ để random lại câu.'
+                return data
             attempt_no = session.attempt_no + 1
         else:
             attempt_no = 1
@@ -754,17 +797,61 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     assert_user_can_reset(request, course_key)
     config = _get_timer_config(str(course_key), str(unit_key))
     latest = _latest_quiz_session(request.user, config)
+    now = timezone.now()
+
     if latest:
         latest = _update_expired_session(latest)
-        if latest.reset_available_at and timezone.now() < latest.reset_available_at:
-            wait = int((latest.reset_available_at - timezone.now()).total_seconds())
+        if latest.status in (UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING):
+            next_allowed = latest.expires_at + timedelta(seconds=latest.cooldown_seconds)
+            wait = max(int((next_allowed - now).total_seconds()), 0)
+            raise ResetCooldownError(wait, next_allowed, latest.attempt_no, latest.cooldown_seconds)
+        if latest.reset_available_at and now < latest.reset_available_at:
+            wait = int((latest.reset_available_at - now).total_seconds())
             raise ResetCooldownError(wait, latest.reset_available_at, latest.attempt_no, latest.cooldown_seconds)
-    reset_result = reset_unit_for_current_user(request, str(course_key), str(unit_key), ignore_cooldown=True)
-    start_result = start_quiz_session_for_current_user(request, str(course_key), str(unit_key))
-    start_result['reset_result'] = reset_result
-    start_result['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
-    return start_result
 
+    reset_result = reset_unit_for_current_user(
+        request,
+        str(course_key),
+        str(unit_key),
+        cooldown_seconds_override=config.cooldown_seconds,
+        bypass_cooldown=True,
+    )
+
+    # Mark older timer sessions as superseded/ready so start creates the next
+    # attempt after the Unit state has been reset.
+    UnitQuizSession.objects.filter(user=request.user, config=config).exclude(status=UnitQuizSession.STATUS_ACTIVE).update(
+        status=UnitQuizSession.STATUS_RESET_READY,
+        reset_available_at=now,
+        updated_at=now,
+    )
+
+    # Now create a fresh timed attempt. Because previous sessions are not ACTIVE
+    # and their reset_available_at is in the past, this creates attempt_no + 1.
+    # Temporarily bypass the refresh guard by creating directly.
+    previous = _latest_quiz_session(request.user, config)
+    attempt_no = (previous.attempt_no + 1) if previous else 1
+    new_session = UnitQuizSession.objects.create(
+        user=request.user,
+        config=config,
+        course_id=str(course_key),
+        sequence_usage_key=config.sequence_usage_key,
+        unit_usage_key=str(unit_key),
+        attempt_no=attempt_no,
+        duration_seconds=config.duration_seconds,
+        cooldown_seconds=config.cooldown_seconds,
+        started_at=now,
+        expires_at=now + timedelta(seconds=config.duration_seconds),
+        status=UnitQuizSession.STATUS_ACTIVE,
+        last_ip=get_client_ip(request),
+        last_user_agent=(request.META.get('HTTP_USER_AGENT', '') or '')[:2000],
+    )
+    audit_reset(request, course_key, unit_key, action='quiz_session_reset', success=True, code='QUIZ_SESSION_RESET', message='Đã reset Unit và bắt đầu lượt quiz mới.', cooldown_seconds=config.cooldown_seconds)
+    data = _serialize_quiz_session(new_session, config)
+    data['success'] = True
+    data['has_session'] = True
+    data['reset_result'] = reset_result
+    data['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
+    return data
 
 def is_late_submit_blocked(user, course_id, problem_usage_key):
     """Best-effort server-side guard for problem_check after timer expired.

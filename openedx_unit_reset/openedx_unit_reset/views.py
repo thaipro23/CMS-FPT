@@ -1,8 +1,13 @@
+import hashlib
+import hmac
 import json
 import logging
+import os
+import time
 
+from django.conf import settings
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_protect
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 from django.contrib.auth.decorators import login_required
 
@@ -12,6 +17,8 @@ from .services import (
     UnitResetError,
     audit_reset,
     get_status_for_current_user,
+    get_legacy_compatible_timer_status_for_current_user,
+    get_timer_config_or_none,
     parse_keys,
     reset_unit_for_current_user,
     get_quiz_session_status_for_current_user,
@@ -32,6 +39,48 @@ def _json_body(request):
         return {}
 
 
+def _request_path_with_query(request):
+    path = request.path or ''
+    query = request.META.get('QUERY_STRING') or ''
+    return f'{path}?{query}' if query else path
+
+
+def _connector_hmac_secret():
+    return (
+        getattr(settings, 'AI_CONNECTOR_HMAC_SECRET', '')
+        or getattr(settings, 'OPENEDX_CONNECTOR_HMAC_SECRET', '')
+        or os.environ.get('AI_CONNECTOR_HMAC_SECRET')
+        or os.environ.get('OPENEDX_CONNECTOR_HMAC_SECRET')
+        or ''
+    )
+
+
+def _valid_connector_hmac(request):
+    secret = str(_connector_hmac_secret() or '')
+    if not secret:
+        return False
+    timestamp = request.META.get('HTTP_X_AI_CONNECTOR_TIMESTAMP') or ''
+    supplied = request.META.get('HTTP_X_AI_CONNECTOR_SIGNATURE') or ''
+    try:
+        ts = int(timestamp)
+    except Exception:
+        return False
+    skew = int(os.environ.get('AI_CONNECTOR_HMAC_SKEW_SECONDS') or getattr(settings, 'AI_CONNECTOR_HMAC_SKEW_SECONDS', 300) or 300)
+    if abs(int(time.time()) - ts) > skew:
+        return False
+    body_hash = hashlib.sha256(request.body or b'').hexdigest()
+    message = f'{timestamp}.{request.method.upper()}.{_request_path_with_query(request)}.{body_hash}'
+    expected = hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, supplied)
+
+
+def _staff_or_hmac(request):
+    user = getattr(request, 'user', None)
+    if _valid_connector_hmac(request):
+        return True
+    return bool(getattr(user, 'is_authenticated', False) and (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False)))
+
+
 @login_required
 @require_GET
 def reset_unit_status(request):
@@ -45,7 +94,10 @@ def reset_unit_status(request):
         )
 
     try:
-        data = get_status_for_current_user(request, course_id, unit_usage_key)
+        if get_timer_config_or_none(course_id, unit_usage_key):
+            data = get_legacy_compatible_timer_status_for_current_user(request, course_id, unit_usage_key)
+        else:
+            data = get_status_for_current_user(request, course_id, unit_usage_key)
         return JsonResponse(data, status=200)
     except UnitResetError as exc:
         return JsonResponse({"success": False, "code": exc.code, "message": str(exc)}, status=exc.status_code)
@@ -80,7 +132,10 @@ def reset_unit_attempt(request):
         )
 
     try:
-        result = reset_unit_for_current_user(request, course_id, unit_usage_key)
+        if get_timer_config_or_none(course_id, unit_usage_key):
+            result = reset_quiz_session_for_current_user(request, course_id, unit_usage_key)
+        else:
+            result = reset_unit_for_current_user(request, course_id, unit_usage_key)
         return JsonResponse(result, status=200)
 
     except ResetCooldownError as exc:
@@ -232,11 +287,11 @@ def quiz_session_reset(request):
         return _quiz_error_response(exc)
 
 
-@csrf_protect
+@csrf_exempt
 @require_POST
 def quiz_timer_config_upsert(request):
-    if not request.user.is_authenticated or not (request.user.is_staff or request.user.is_superuser):
-        return JsonResponse({'success': False, 'code': 'STAFF_REQUIRED', 'message': 'Staff required'}, status=403)
+    if not _staff_or_hmac(request):
+        return JsonResponse({'success': False, 'code': 'CONNECTOR_AUTH_REQUIRED', 'message': 'HMAC hoặc staff required'}, status=403)
     payload = _json_body(request)
     try:
         result = upsert_unit_quiz_timer_config(
@@ -308,7 +363,7 @@ def quiz_session_runtime_js(request):
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
     var count = await autoSubmit();
     lock();
-    window.parent && window.parent.postMessage({type:'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE', submitted_problem_count: count}, window.location.origin);
+    window.parent && window.parent.postMessage({type:'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE', submitted_problem_count: count}, '*');
   });
 })();
 """

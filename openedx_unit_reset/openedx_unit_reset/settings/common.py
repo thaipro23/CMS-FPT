@@ -29,7 +29,6 @@ UNIT_RESET_QUIZ_TIMER_DEFAULT_DURATION_SECONDS = 900
 UNIT_RESET_QUIZ_TIMER_DEFAULT_COOLDOWN_SECONDS = 300
 UNIT_RESET_QUIZ_TIMER_SERVER_GUARD_ENABLED = True
 UNIT_RESET_QUIZ_TIMER_REQUIRE_CONFIG = True
-UNIT_RESET_QUIZ_TIMER_INJECT_RUNTIME_JS = True
 
 
 def plugin_settings(settings):
@@ -105,11 +104,6 @@ def plugin_settings(settings):
         "UNIT_RESET_QUIZ_TIMER_REQUIRE_CONFIG",
         UNIT_RESET_QUIZ_TIMER_REQUIRE_CONFIG,
     )
-    settings.UNIT_RESET_QUIZ_TIMER_INJECT_RUNTIME_JS = getattr(
-        settings,
-        "UNIT_RESET_QUIZ_TIMER_INJECT_RUNTIME_JS",
-        UNIT_RESET_QUIZ_TIMER_INJECT_RUNTIME_JS,
-    )
 
     # Install a lightweight server-side submit guard. It blocks late problem_check
     # requests after a custom practice quiz session has expired.
@@ -117,9 +111,4 @@ def plugin_settings(settings):
     guard = "openedx_unit_reset.middleware.UnitQuizSessionSubmitGuardMiddleware"
     if guard not in middleware:
         middleware.append(guard)
-
-    injector = "openedx_unit_reset.middleware.UnitQuizSessionRuntimeInjectionMiddleware"
-    if getattr(settings, "UNIT_RESET_QUIZ_TIMER_INJECT_RUNTIME_JS", True) and injector not in middleware:
-        middleware.append(injector)
-
-    settings.MIDDLEWARE = middleware
+        settings.MIDDLEWARE = middleware
