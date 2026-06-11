@@ -336,6 +336,7 @@ def quiz_session_runtime_js(request):
     });
   }
   function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
+  // v0.4.6: server-side grace allows these delayed problem_check requests after the clock reaches 00:00.
   async function autoSubmit(){
     var problems = Array.prototype.slice.call(document.querySelectorAll('.problem,.xblock-student_view,[data-usage-id]'));
     var submitted = 0;
@@ -346,7 +347,7 @@ def quiz_session_runtime_js(request):
       if (!btn || btn.disabled) continue;
       btn.click();
       submitted += 1;
-      await sleep(800);
+      await sleep(500);
     }
     return submitted;
   }

@@ -497,6 +497,51 @@ def _seconds_left(target_dt):
     return max(int((target_dt - timezone.now()).total_seconds()), 0)
 
 
+def _auto_submit_grace_seconds():
+    """Server-side grace window for the automatic timeout submit.
+
+    The browser can only start clicking Open edX problem submit buttons when the
+    countdown reaches zero. Those individual problem_check requests may arrive
+    a few seconds after expires_at. Without a grace window the submit guard
+    blocks the system's own auto-submit.
+    """
+    try:
+        return max(int(getattr(settings, 'UNIT_RESET_QUIZ_AUTOSUBMIT_GRACE_SECONDS', 60) or 60), 0)
+    except Exception:
+        return 60
+
+
+def _session_allows_auto_submit_grace(session, now=None):
+    """Return True while the system auto-submit is still allowed to finish.
+
+    This is intentionally short-lived and only applies before the final
+    quiz-session/lock call marks auto_submit_done. It prevents the server-side
+    submit guard from blocking problem_check requests produced by runtime.js.
+    """
+    now = now or timezone.now()
+    grace_seconds = _auto_submit_grace_seconds()
+    if grace_seconds <= 0:
+        return False
+
+    payload = session.timeout_payload or {}
+    if payload.get('auto_submit_done') is True:
+        return False
+
+    # SUBMITTING means quiz-session/timeout already ran and runtime.js is
+    # clicking the selected problem submit/check buttons. Always allow this
+    # state until quiz-session/lock finalizes the attempt.
+    if session.status == UnitQuizSession.STATUS_SUBMITTING:
+        return True
+
+    if session.status != UnitQuizSession.STATUS_EXPIRED:
+        return False
+
+    grace_base = session.auto_submitted_at or session.expires_at
+    if not grace_base:
+        return False
+    return now <= grace_base + timedelta(seconds=grace_seconds)
+
+
 def _serialize_timer_config(config):
     return {
         'id': config.id,
@@ -545,6 +590,8 @@ def _serialize_quiz_session(session, config=None):
         'reset_available_at': _iso(session.reset_available_at),
         'reset_wait_seconds': reset_wait_seconds,
         'can_reset': status == UnitQuizSession.STATUS_RESET_READY or (session.reset_available_at and now >= session.reset_available_at),
+        'auto_submit_grace_seconds': _auto_submit_grace_seconds(),
+        'auto_submit_grace_active': _session_allows_auto_submit_grace(session, now),
         'auto_submit_on_timeout': config.auto_submit_on_timeout,
         'lock_after_timeout': config.lock_after_timeout,
         'message': _quiz_session_message(status, remaining_seconds, reset_wait_seconds),
@@ -661,11 +708,11 @@ def _latest_quiz_session(user, config):
 def _update_expired_session(session):
     if session.status == UnitQuizSession.STATUS_ACTIVE and timezone.now() >= session.expires_at:
         session.status = UnitQuizSession.STATUS_EXPIRED
-        if not session.locked_at:
-            session.locked_at = session.expires_at
+        # Do not set locked_at here. The attempt is only finally locked after
+        # runtime.js finishes auto-submitting and calls quiz-session/lock.
         if not session.reset_available_at:
             session.reset_available_at = session.expires_at + timedelta(seconds=session.cooldown_seconds)
-        session.save(update_fields=['status', 'locked_at', 'reset_available_at', 'updated_at'])
+        session.save(update_fields=['status', 'reset_available_at', 'updated_at'])
     if session.status == UnitQuizSession.STATUS_EXPIRED and session.reset_available_at and timezone.now() >= session.reset_available_at:
         session.status = UnitQuizSession.STATUS_RESET_READY
         session.save(update_fields=['status', 'updated_at'])
@@ -751,11 +798,15 @@ def timeout_quiz_session_for_current_user(request, course_id, unit_usage_key, pa
         if not session:
             raise UnitResetError('Chưa có lượt làm quiz để timeout.', 'QUIZ_SESSION_NOT_STARTED', 400)
         if session.status not in (UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING):
-            data = _serialize_quiz_session(session, config)
-            data['success'] = True
-            return data
+            # Race-safe path: if status polling marked the attempt EXPIRED just
+            # before the browser could call /timeout, reopen it briefly as
+            # SUBMITTING so the system auto-submit can finish.
+            if not _session_allows_auto_submit_grace(session, now):
+                data = _serialize_quiz_session(session, config)
+                data['success'] = True
+                return data
         session.status = UnitQuizSession.STATUS_SUBMITTING
-        session.auto_submitted_at = now
+        session.auto_submitted_at = session.auto_submitted_at or now
         session.timeout_payload = payload or {}
         session.last_ip = get_client_ip(request)
         session.last_user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:2000]
@@ -911,8 +962,14 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
                 reset_keys = expand_randomized_selected_keys(user, course_key, reset_keys)
             reset_key_strings = {str(k) for k in reset_keys}
             if problem_key is not None and problem_key in reset_keys:
+                if _session_allows_auto_submit_grace(session):
+                    log.info('Allowing timed quiz auto-submit during grace window session_id=%s user_id=%s', session.id, user.id)
+                    return False, None
                 return True, session
             if str(problem_usage_key) in reset_key_strings:
+                if _session_allows_auto_submit_grace(session):
+                    log.info('Allowing timed quiz auto-submit during grace window session_id=%s user_id=%s', session.id, user.id)
+                    return False, None
                 return True, session
         except Exception:
             log.exception('Could not evaluate timed quiz submit guard')
