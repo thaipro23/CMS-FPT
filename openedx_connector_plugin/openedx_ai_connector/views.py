@@ -1342,7 +1342,7 @@ def _problem_bank_slot_display_name(slot: dict) -> str:
     if not family_names and isinstance(slot.get('families'), list):
         family_names = [family.get('family_name') for family in slot.get('families') if isinstance(family, dict) and family.get('family_name')]
     label = ' + '.join(str(name) for name in family_names if name) or str(slot.get('difficulty') or 'Problem Bank')
-    return _normalize_xblock_title(f'Problem Bank Slot {slot_no:02d} - {label}', f'Problem Bank Slot {slot_no:02d}', max_len=120)
+    return _normalize_xblock_title(f'Problem Bank {str(slot.get("difficulty") or slot_no).upper()} - {label}', f'Problem Bank {slot_no:02d}', max_len=120)
 
 
 def _expected_library_component_refs(slot: dict) -> list[str]:
@@ -1490,7 +1490,7 @@ def _native_create_or_reuse_itembank(
     try:
         _update_created_block_fields(store, bank, user, {
             'display_name': display_name,
-            'max_count': 1,
+            'max_count': max(1, int(slot.get('pick_count') or slot.get('max_count') or 1)),
         })
     except Exception:
         if created:
@@ -1624,7 +1624,8 @@ def _verify_native_itembank_block(store: Any, block: Any, slot: dict) -> dict:
     missing_upstreams = sorted(expected_set - actual_set)
     unexpected_upstreams = sorted(actual_set - expected_set)
     bank_type_ok = (_block_type(block) or '').lower() == 'itembank'
-    max_count_ok = max_count == 1
+    expected_max_count = max(1, int(slot.get('pick_count') or slot.get('max_count') or 1))
+    max_count_ok = max_count == expected_max_count
     library_ok = bool(library_key) and all(_upstream_belongs_to_library(item, library_key) for item in expected_upstreams)
     exact_children_ok = (
         len(course_local_children) == len(expected_upstreams)
@@ -1639,6 +1640,7 @@ def _verify_native_itembank_block(store: Any, block: Any, slot: dict) -> dict:
         'bank_type': _block_type(block),
         'bank_type_ok': bank_type_ok,
         'max_count': max_count,
+        'expected_max_count': expected_max_count,
         'max_count_ok': max_count_ok,
         'library_key': library_key,
         'library_ok': library_ok,
@@ -1725,8 +1727,9 @@ def insert_problem_banks(request, course_id: str):
                 raise ValueError('Family Bank Plan chứa slot không hợp lệ.')
             if not slot.get('library_key'):
                 raise ValueError(f'Slot {slot.get("slot_no")} thiếu library_key; hãy hoàn tất bước Chuẩn bị thư viện trước.')
-            if int(slot.get('pick_count') or 1) != 1:
-                raise ValueError(f'Slot {slot.get("slot_no")} phải có pick_count=1 để mỗi Problem Bank chỉ hiện một câu.')
+            pick_count = int(slot.get('pick_count') or slot.get('max_count') or 1)
+            if pick_count < 1:
+                raise ValueError(f'Slot {slot.get("slot_no")} có pick_count không hợp lệ.')
             all_refs.extend(_expected_library_component_refs(slot))
         duplicate_refs = sorted({ref for ref in all_refs if all_refs.count(ref) > 1})
         if duplicate_refs:
