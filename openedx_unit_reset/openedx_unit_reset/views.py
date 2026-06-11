@@ -320,52 +320,172 @@ def quiz_session_runtime_js(request):
 (function(){
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
+
+  var pendingProblemChecks = 0;
+  var startedProblemChecks = 0;
+  var finishedProblemChecks = 0;
+  var autoSubmitting = false;
+
+  function lower(value){ return ((value || '') + '').toLowerCase(); }
+  function isProblemCheckUrl(url){
+    url = lower(url);
+    return url.indexOf('problem_check') >= 0 || url.indexOf('xmodule_handler/problem_check') >= 0;
+  }
+  function markProblemCheckStart(url){
+    if (!isProblemCheckUrl(url)) return false;
+    startedProblemChecks += 1;
+    pendingProblemChecks += 1;
+    return true;
+  }
+  function markProblemCheckDone(wasTracked){
+    if (!wasTracked) return;
+    pendingProblemChecks = Math.max(0, pendingProblemChecks - 1);
+    finishedProblemChecks += 1;
+  }
+
+  // Track native Open edX problem_check requests. The Learning MFE must not lock
+  // the timed attempt until these requests finish; otherwise only the first
+  // problem_check succeeds and the rest are blocked as QUIZ_TIME_EXPIRED.
+  try {
+    if (window.fetch && !window.fetch.__openedxUnitResetTracked) {
+      var originalFetch = window.fetch;
+      var trackedFetch = function(input, init){
+        var url = '';
+        try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (error) { url = ''; }
+        var tracked = markProblemCheckStart(url);
+        return originalFetch.apply(this, arguments).finally(function(){ markProblemCheckDone(tracked); });
+      };
+      trackedFetch.__openedxUnitResetTracked = true;
+      window.fetch = trackedFetch;
+    }
+  } catch (error) { /* best effort */ }
+
+  try {
+    if (window.XMLHttpRequest && !window.XMLHttpRequest.__openedxUnitResetTracked) {
+      var OriginalXHR = window.XMLHttpRequest;
+      var originalOpen = OriginalXHR.prototype.open;
+      var originalSend = OriginalXHR.prototype.send;
+      OriginalXHR.prototype.open = function(method, url){
+        try { this.__openedxUnitResetUrl = url || ''; } catch (error) { /* ignore */ }
+        return originalOpen.apply(this, arguments);
+      };
+      OriginalXHR.prototype.send = function(){
+        var tracked = false;
+        try { tracked = markProblemCheckStart(this.__openedxUnitResetUrl || ''); } catch (error) { tracked = false; }
+        if (tracked) {
+          try { this.addEventListener('loadend', function(){ markProblemCheckDone(true); }, { once: true }); } catch (error) { /* ignore */ }
+        }
+        return originalSend.apply(this, arguments);
+      };
+      window.XMLHttpRequest.__openedxUnitResetTracked = true;
+    }
+  } catch (error) { /* best effort */ }
+
+  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
+  function isVisible(el){
+    if (!el) return false;
+    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
+    var style = getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+  function problemRoot(el){
+    return el && (el.closest('.problem') || el.closest('.xblock-student_view') || el.closest('[data-usage-id]') || document);
+  }
   function selected(problem){
     var checked = problem.querySelector('input[type="radio"]:checked,input[type="checkbox"]:checked');
     if (checked) return true;
-    var textInputs = Array.prototype.slice.call(problem.querySelectorAll('input[type="text"],textarea'));
+    var textInputs = Array.prototype.slice.call(problem.querySelectorAll('input[type="text"],input[type="number"],textarea'));
     if (textInputs.some(function(el){ return el.value && el.value.trim().length > 0; })) return true;
     var selects = Array.prototype.slice.call(problem.querySelectorAll('select'));
     return selects.some(function(el){ return el.value && el.value.trim().length > 0; });
   }
-  function submitButton(problem){
-    var buttons = Array.prototype.slice.call(problem.querySelectorAll('button,input[type="button"],input[type="submit"]'));
-    return buttons.find(function(btn){
-      var text = ((btn.innerText || btn.value || '') + '').trim().toLowerCase();
-      return ['submit','check','nộp bài','nop bai','kiểm tra','kiem tra'].some(function(x){ return text.indexOf(x) >= 0; });
+  function isSubmitButton(btn){
+    var text = lower(((btn.innerText || btn.value || btn.getAttribute('aria-label') || '') + '').trim());
+    if (!text) return false;
+    return ['submit','check','save','nộp bài','nop bai','kiểm tra','kiem tra','lưu','luu'].some(function(x){ return text.indexOf(x) >= 0; })
+      && text.indexOf('hint') < 0
+      && text.indexOf('show answer') < 0
+      && text.indexOf('xem đáp án') < 0
+      && text.indexOf('submission history') < 0;
+  }
+  function submitButtons(){
+    var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
+    var seen = new Set();
+    return all.filter(function(btn){
+      if (!btn || seen.has(btn)) return false;
+      seen.add(btn);
+      return !btn.disabled && isVisible(btn) && isSubmitButton(btn) && selected(problemRoot(btn));
     });
   }
-  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
-  // v0.4.6: server-side grace allows these delayed problem_check requests after the clock reaches 00:00.
-  async function autoSubmit(){
-    var problems = Array.prototype.slice.call(document.querySelectorAll('.problem,.xblock-student_view,[data-usage-id]'));
-    var submitted = 0;
-    for (var i=0; i<problems.length; i++){
-      var p = problems[i];
-      if (!selected(p)) continue;
-      var btn = submitButton(p);
-      if (!btn || btn.disabled) continue;
-      btn.click();
-      submitted += 1;
-      await sleep(500);
+  async function waitForProblemCheckAfterClick(beforeStarted){
+    var startDeadline = Date.now() + 1200;
+    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(50);
+    if (startedProblemChecks <= beforeStarted) {
+      await sleep(250);
+      return false;
     }
-    return submitted;
+    var finishDeadline = Date.now() + 7000;
+    while (Date.now() < finishDeadline && pendingProblemChecks > 0) await sleep(75);
+    await sleep(150);
+    return true;
   }
+  async function waitForAllPendingProblemChecks(){
+    var deadline = Date.now() + 12000;
+    while (Date.now() < deadline && pendingProblemChecks > 0) await sleep(100);
+  }
+
+  async function autoSubmit(){
+    var buttons = submitButtons();
+    var clicked = 0;
+    var networkStartedBefore = startedProblemChecks;
+    for (var i=0; i<buttons.length; i++){
+      var btn = buttons[i];
+      if (!btn || btn.disabled || !isVisible(btn)) continue;
+      if (!selected(problemRoot(btn))) continue;
+      var beforeStarted = startedProblemChecks;
+      try { btn.click(); clicked += 1; } catch (error) { continue; }
+      await waitForProblemCheckAfterClick(beforeStarted);
+    }
+    await waitForAllPendingProblemChecks();
+    return {
+      clicked: clicked,
+      problem_check_started: Math.max(0, startedProblemChecks - networkStartedBefore),
+      problem_check_finished: finishedProblemChecks,
+      problem_check_pending: pendingProblemChecks
+    };
+  }
+
   function lock(){
     Array.prototype.slice.call(document.querySelectorAll('input,textarea,select,button')).forEach(function(el){
-      var text = ((el.innerText || el.value || '') + '').toLowerCase();
+      var text = lower((el.innerText || el.value || '') + '');
       if (text.indexOf('hint') >= 0 || text.indexOf('show answer') >= 0 || text.indexOf('xem đáp án') >= 0 || text.indexOf('submission history') >= 0) return;
       el.disabled = true;
       el.setAttribute('aria-disabled', 'true');
     });
     document.body.classList.add('ai-quiz-timeout-locked');
   }
+
   window.addEventListener('message', async function(event){
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
-    var count = await autoSubmit();
+    if (autoSubmitting) return;
+    autoSubmitting = true;
+    var result = { clicked: 0, problem_check_started: 0, problem_check_finished: 0, problem_check_pending: pendingProblemChecks };
+    try { result = await autoSubmit(); } catch (error) { /* still lock locally and report best effort */ }
     lock();
-    window.parent && window.parent.postMessage({type:'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE', submitted_problem_count: count}, '*');
+    if (window.parent) {
+      window.parent.postMessage({
+        type: 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE',
+        submitted_problem_count: result.clicked || 0,
+        problem_check_started_count: result.problem_check_started || 0,
+        problem_check_finished_count: result.problem_check_finished || 0,
+        pending_problem_check_count: result.problem_check_pending || 0
+      }, '*');
+    }
+    autoSubmitting = false;
   });
 })();
 """
-    return HttpResponse(js, content_type='application/javascript; charset=utf-8')
+    response = HttpResponse(js, content_type='application/javascript; charset=utf-8')
+    response['Cache-Control'] = 'no-store, max-age=0'
+    return response
+

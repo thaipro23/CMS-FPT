@@ -528,10 +528,14 @@ def _session_allows_auto_submit_grace(session, now=None):
         return False
 
     # SUBMITTING means quiz-session/timeout already ran and runtime.js is
-    # clicking the selected problem submit/check buttons. Always allow this
-    # state until quiz-session/lock finalizes the attempt.
+    # clicking the selected problem submit/check buttons. Allow it only during
+    # the configured grace window; never allow a stuck SUBMITTING session to
+    # accept problem_check forever.
     if session.status == UnitQuizSession.STATUS_SUBMITTING:
-        return True
+        grace_base = session.auto_submitted_at or session.expires_at
+        if not grace_base:
+            return False
+        return now <= grace_base + timedelta(seconds=grace_seconds)
 
     if session.status != UnitQuizSession.STATUS_EXPIRED:
         return False
@@ -706,14 +710,25 @@ def _latest_quiz_session(user, config):
 
 
 def _update_expired_session(session):
-    if session.status == UnitQuizSession.STATUS_ACTIVE and timezone.now() >= session.expires_at:
+    now = timezone.now()
+    if session.status == UnitQuizSession.STATUS_ACTIVE and now >= session.expires_at:
         session.status = UnitQuizSession.STATUS_EXPIRED
         # Do not set locked_at here. The attempt is only finally locked after
         # runtime.js finishes auto-submitting and calls quiz-session/lock.
         if not session.reset_available_at:
             session.reset_available_at = session.expires_at + timedelta(seconds=session.cooldown_seconds)
         session.save(update_fields=['status', 'reset_available_at', 'updated_at'])
-    if session.status == UnitQuizSession.STATUS_EXPIRED and session.reset_available_at and timezone.now() >= session.reset_available_at:
+    if session.status == UnitQuizSession.STATUS_SUBMITTING and not _session_allows_auto_submit_grace(session, now):
+        # Recovery for a browser/tab that started auto-submit but never called
+        # quiz-session/lock. After the grace window, stop allowing problem_check
+        # and move the attempt into the normal expired cooldown path.
+        session.status = UnitQuizSession.STATUS_EXPIRED
+        if not session.locked_at:
+            session.locked_at = now
+        if not session.reset_available_at:
+            session.reset_available_at = now + timedelta(seconds=session.cooldown_seconds)
+        session.save(update_fields=['status', 'locked_at', 'reset_available_at', 'updated_at'])
+    if session.status == UnitQuizSession.STATUS_EXPIRED and session.reset_available_at and now >= session.reset_available_at:
         session.status = UnitQuizSession.STATUS_RESET_READY
         session.save(update_fields=['status', 'updated_at'])
     return session
@@ -826,6 +841,28 @@ def lock_quiz_session_for_current_user(request, course_id, unit_usage_key, paylo
         session = UnitQuizSession.objects.select_for_update().filter(user=request.user, config=config).order_by('-attempt_no', '-created_at').first()
         if not session:
             raise UnitResetError('Chưa có lượt làm quiz để khóa.', 'QUIZ_SESSION_NOT_STARTED', 400)
+        # Old Learning MFE builds have an 8s fallback: if runtime.js has not
+        # reported DONE yet, the MFE may call /lock with submitted_problem_count=0
+        # while later problem_check requests are still running. In that case, do
+        # not lock immediately; keep SUBMITTING open for the grace window so the
+        # remaining problem_check requests are not blocked as QUIZ_TIME_EXPIRED.
+        submitted_count = 0
+        try:
+            submitted_count = int((payload or {}).get('submitted_problem_count') or 0)
+        except Exception:
+            submitted_count = 0
+        if session.status == UnitQuizSession.STATUS_SUBMITTING and submitted_count <= 0 and _session_allows_auto_submit_grace(session, now):
+            merged = session.timeout_payload or {}
+            merged.update(payload or {})
+            merged['lock_deferred_until_grace_end'] = True
+            session.timeout_payload = merged
+            session.last_ip = get_client_ip(request)
+            session.last_user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:2000]
+            session.save(update_fields=['timeout_payload', 'last_ip', 'last_user_agent', 'updated_at'])
+            data = _serialize_quiz_session(session, config)
+            data['success'] = True
+            data['lock_deferred'] = True
+            return data
         session.status = UnitQuizSession.STATUS_EXPIRED
         if not session.auto_submitted_at:
             session.auto_submitted_at = now
@@ -922,12 +959,17 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
     if not user or not user.is_authenticated or not course_id or not problem_usage_key:
         return False, None
 
-    expired = UnitQuizSession.objects.filter(
+    guarded_sessions = UnitQuizSession.objects.filter(
         user=user,
         course_id=str(course_id),
-        status__in=[UnitQuizSession.STATUS_EXPIRED, UnitQuizSession.STATUS_RESET_WAIT, UnitQuizSession.STATUS_RESET_READY],
+        status__in=[
+            UnitQuizSession.STATUS_SUBMITTING,
+            UnitQuizSession.STATUS_EXPIRED,
+            UnitQuizSession.STATUS_RESET_WAIT,
+            UnitQuizSession.STATUS_RESET_READY,
+        ],
     ).select_related('config').order_by('-created_at')[:20]
-    if not expired:
+    if not guarded_sessions:
         return False, None
 
     try:
@@ -941,7 +983,7 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
     except Exception:
         course_key = None
 
-    for session in expired:
+    for session in guarded_sessions:
         try:
             # If a newer ACTIVE/SUBMITTING attempt exists for the same timer config,
             # allow the submit. This is the normal state after the learner clicks
