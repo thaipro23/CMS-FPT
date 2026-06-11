@@ -47,7 +47,62 @@ class UnitQuizSessionSubmitGuardMiddleware:
                     )
             except Exception:
                 log.exception('Timed quiz submit guard failed; allowing request to avoid breaking Open edX submit flow')
-        return self.get_response(request)
+
+        response = self.get_response(request)
+        try:
+            return self._inject_timer_runtime_for_lms_iframe(request, response)
+        except Exception:
+            log.exception('Could not inject timed quiz runtime script; returning original response')
+            return response
+
+    def _inject_timer_runtime_for_lms_iframe(self, request, response):
+        """Inject runtime.js into LMS iframe HTML pages.
+
+        The Learning MFE can only post a timeout message to the LMS iframe.
+        It cannot click the problem submit buttons inside that iframe because the
+        iframe is cross-origin. Therefore the LMS HTML document must also load
+        runtime.js so it can receive AI_QUIZ_TIMEOUT_AUTO_SUBMIT and click the
+        checked problem buttons from inside the iframe.
+
+        This is intentionally generic for authenticated LMS HTML responses. It
+        is harmless outside timed quizzes because the script only acts when it
+        receives the explicit postMessage event from the Learning MFE.
+        """
+        path = (getattr(request, 'path', '') or '').lower()
+        if '/api/unit-reset/v1/quiz-session/runtime.js' in path:
+            return response
+
+        content_type = (response.get('Content-Type', '') or '').lower()
+        if 'text/html' not in content_type:
+            return response
+        if getattr(response, 'streaming', False):
+            return response
+
+        user = getattr(request, 'user', None)
+        if not getattr(user, 'is_authenticated', False):
+            return response
+
+        try:
+            html = response.content.decode(response.charset or 'utf-8')
+        except Exception:
+            return response
+
+        marker = 'openedx-unit-reset-quiz-runtime-js'
+        if marker in html:
+            return response
+
+        script = '<script id="%s" src="/api/unit-reset/v1/quiz-session/runtime.js" defer></script>' % marker
+        lower = html.lower()
+        idx = lower.rfind('</body>')
+        if idx >= 0:
+            html = html[:idx] + script + html[idx:]
+        else:
+            html = html + script
+
+        response.content = html.encode(response.charset or 'utf-8')
+        if response.has_header('Content-Length'):
+            response['Content-Length'] = str(len(response.content))
+        return response
 
     def _looks_like_problem_submit(self, request):
         if request.method not in ('POST', 'PUT', 'PATCH'):

@@ -858,30 +858,61 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
 
     Returns (blocked, session). This intentionally errs on the side of allowing
     submissions when it cannot prove the problem belongs to an expired timed Unit.
+
+    Important reset/timer rule:
+    - old expired/reset-ready sessions must not block a newer active attempt.
+    - after quiz-session/reset, the previous session stays in history, while a
+      fresh ACTIVE session is created for the same Unit. The submit guard must
+      evaluate the latest attempt for that timer config, not merely any expired
+      session in the course.
     """
     if not getattr(settings, 'UNIT_RESET_QUIZ_TIMER_SERVER_GUARD_ENABLED', True):
         return False, None
     if not user or not user.is_authenticated or not course_id or not problem_usage_key:
         return False, None
+
     expired = UnitQuizSession.objects.filter(
         user=user,
         course_id=str(course_id),
         status__in=[UnitQuizSession.STATUS_EXPIRED, UnitQuizSession.STATUS_RESET_WAIT, UnitQuizSession.STATUS_RESET_READY],
-    ).select_related('config').order_by('-created_at')[:10]
+    ).select_related('config').order_by('-created_at')[:20]
     if not expired:
         return False, None
+
     try:
         problem_key = UsageKey.from_string(str(problem_usage_key))
     except Exception:
         problem_key = None
+
+    course_key = None
+    try:
+        course_key = CourseKey.from_string(str(course_id))
+    except Exception:
+        course_key = None
+
     for session in expired:
         try:
+            # If a newer ACTIVE/SUBMITTING attempt exists for the same timer config,
+            # allow the submit. This is the normal state after the learner clicks
+            # "Làm lại bài" and the Unit has been randomized again.
+            latest_for_config = UnitQuizSession.objects.filter(
+                user=user,
+                config=session.config,
+            ).order_by('-attempt_no', '-created_at').first()
+            if latest_for_config and latest_for_config.id != session.id and latest_for_config.status in (
+                UnitQuizSession.STATUS_ACTIVE,
+                UnitQuizSession.STATUS_SUBMITTING,
+            ):
+                continue
+
             unit_key = UsageKey.from_string(session.unit_usage_key)
             reset_keys = collect_unit_usage_keys(unit_key)
-            reset_keys = expand_randomized_selected_keys(user, CourseKey.from_string(str(course_id)), reset_keys)
+            if course_key is not None:
+                reset_keys = expand_randomized_selected_keys(user, course_key, reset_keys)
+            reset_key_strings = {str(k) for k in reset_keys}
             if problem_key is not None and problem_key in reset_keys:
                 return True, session
-            if str(problem_usage_key) in {str(k) for k in reset_keys}:
+            if str(problem_usage_key) in reset_key_strings:
                 return True, session
         except Exception:
             log.exception('Could not evaluate timed quiz submit guard')
