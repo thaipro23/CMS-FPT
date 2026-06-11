@@ -321,6 +321,7 @@ def quiz_session_runtime_js(request):
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
 
+  // v0.4.12: runtime keeps iframe-only behavior, but submits all visible selected problems in one batch.
   // Important: runtime.js may also be loaded in the top Learning MFE window.
   // Auto-submit must run only inside the LMS problem iframe. If the top window
   // handles AI_QUIZ_TIMEOUT_AUTO_SUBMIT it can send DONE too early, making the
@@ -426,49 +427,27 @@ def quiz_session_runtime_js(request):
       return !btn.disabled && isVisible(btn) && isSubmitButton(btn) && selected(problemRoot(btn));
     });
   }
-  async function waitForProblemCheckAfterClick(beforeStarted){
-    // Open edX can start the problem_check request noticeably after a click,
-    // especially for the last problem in a unit or when program blocks save
-    // state first. The old 1.2s window let the runtime send DONE before the
-    // final problem_check even started, so the MFE called /lock and the last
-    // answer was rejected as QUIZ_TIME_EXPIRED. Wait longer for the request to
-    // appear, then wait for it to finish.
-    var startDeadline = Date.now() + 3500;
-    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(75);
-    if (startedProblemChecks <= beforeStarted) {
-      // No problem_check was observed. Give edxapp handlers a final settle
-      // window before moving to the next button.
-      await sleep(900);
-      return false;
-    }
-    var finishDeadline = Date.now() + 12000;
-    while (Date.now() < finishDeadline && pendingProblemChecks > 0) await sleep(100);
-    await sleep(350);
-    return true;
+  async function waitForProblemCheckBurstToStart(beforeStarted){
+    // Submit all selected problems in one burst, then wait briefly for Open edX
+    // to enqueue the native problem_check requests. We do not wait after each
+    // click because there is no server /lock policy in this version.
+    var startDeadline = Date.now() + 2500;
+    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(50);
   }
-  async function waitForNetworkIdle(){
-    // Do not report DONE immediately when pendingProblemChecks reaches zero.
-    // Some handlers start the last request after a short delay. Require a
-    // stable idle window with no new problem_check before allowing /lock.
-    var hardDeadline = Date.now() + 20000;
-    var lastStarted = startedProblemChecks;
-    var idleSince = null;
-    while (Date.now() < hardDeadline) {
-      if (pendingProblemChecks > 0) {
-        idleSince = null;
-        lastStarted = startedProblemChecks;
-        await sleep(150);
-        continue;
+  async function waitForAllPendingProblemChecks(){
+    // After all clicks, wait only for already-started problem_check requests.
+    // This keeps the browser from reporting DONE while problem_check requests
+    // are still in flight, but avoids slow per-problem sequential submit.
+    var deadline = Date.now() + 15000;
+    var stableSince = null;
+    while (Date.now() < deadline) {
+      if (pendingProblemChecks <= 0) {
+        if (stableSince === null) stableSince = Date.now();
+        if (Date.now() - stableSince >= 800) break;
+      } else {
+        stableSince = null;
       }
-      if (startedProblemChecks !== lastStarted) {
-        lastStarted = startedProblemChecks;
-        idleSince = null;
-        await sleep(150);
-        continue;
-      }
-      if (idleSince === null) idleSince = Date.now();
-      if (Date.now() - idleSince >= 2200) break;
-      await sleep(150);
+      await sleep(100);
     }
   }
 
@@ -476,15 +455,20 @@ def quiz_session_runtime_js(request):
     var buttons = submitButtons();
     var clicked = 0;
     var networkStartedBefore = startedProblemChecks;
+
+    // Click every selected problem's Submit/Check button in one pass. This is
+    // intentionally concurrent/batched: Open edX will issue problem_save and
+    // problem_check requests for multiple problems without waiting for each
+    // previous problem_check to finish.
     for (var i=0; i<buttons.length; i++){
       var btn = buttons[i];
       if (!btn || btn.disabled || !isVisible(btn)) continue;
       if (!selected(problemRoot(btn))) continue;
-      var beforeStarted = startedProblemChecks;
-      try { btn.click(); clicked += 1; } catch (error) { continue; }
-      await waitForProblemCheckAfterClick(beforeStarted);
+      try { btn.click(); clicked += 1; } catch (error) { /* keep submitting the rest */ }
     }
-    await waitForNetworkIdle();
+
+    await waitForProblemCheckBurstToStart(networkStartedBefore);
+    await waitForAllPendingProblemChecks();
     return {
       clicked: clicked,
       problem_check_started: Math.max(0, startedProblemChecks - networkStartedBefore),
@@ -509,6 +493,9 @@ def quiz_session_runtime_js(request):
     autoSubmitting = true;
     var result = { clicked: 0, problem_check_started: 0, problem_check_finished: 0, problem_check_pending: pendingProblemChecks };
     try { result = await autoSubmit(); } catch (error) { /* still lock locally and report best effort */ }
+    // v0.4.12: do not rely on the server /lock flow. Local disabling is kept
+    // only inside this iframe after auto-submit finishes; the server-side guard
+    // will expire the SUBMITTING session after the grace window.
     lock();
     if (window.parent) {
       window.parent.postMessage({

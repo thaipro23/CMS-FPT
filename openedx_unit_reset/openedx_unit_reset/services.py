@@ -497,6 +497,30 @@ def _seconds_left(target_dt):
     return max(int((target_dt - timezone.now()).total_seconds()), 0)
 
 
+def _reset_available_at_from_quiz_expiry(session, fallback_now=None):
+    """Return the canonical retake time for a timed quiz attempt.
+
+    The retake cooldown is configured on UnitQuizTimerConfig / UnitQuizSession.
+    Its base time must be the planned quiz expiry, not the later server lock
+    timestamp. Otherwise auto-submit grace windows or delayed lock calls add
+    hidden extra wait time for learners.
+    """
+    base_time = session.expires_at or fallback_now or timezone.now()
+    return base_time + timedelta(seconds=int(session.cooldown_seconds or 0))
+
+
+def _set_reset_available_at_from_expiry(session, fallback_now=None):
+    """Set reset_available_at from expires_at + cooldown if it is missing.
+
+    Do not overwrite an existing value because earlier timeout/status handling may
+    already have committed the correct canonical cooldown boundary.
+    """
+    if not session.reset_available_at:
+        session.reset_available_at = _reset_available_at_from_quiz_expiry(session, fallback_now=fallback_now)
+        return True
+    return False
+
+
 def _auto_submit_grace_seconds():
     """Server-side grace window for the automatic timeout submit.
 
@@ -557,7 +581,10 @@ def _serialize_timer_config(config):
         'duration_seconds': config.duration_seconds,
         'cooldown_seconds': config.cooldown_seconds,
         'auto_submit_on_timeout': config.auto_submit_on_timeout,
-        'lock_after_timeout': config.lock_after_timeout,
+        # v0.4.13 policy: keep auto-submit, but do not let the Learning MFE call /lock.
+        # The server-side grace/expiry guard will close the window after auto-submit.
+        'lock_after_timeout': False,
+        'stored_lock_after_timeout': config.lock_after_timeout,
         'native_timed_exam': config.native_timed_exam,
         'metadata_json': config.metadata_json or {},
         'created_at': _iso(config.created_at),
@@ -597,7 +624,9 @@ def _serialize_quiz_session(session, config=None):
         'auto_submit_grace_seconds': _auto_submit_grace_seconds(),
         'auto_submit_grace_active': _session_allows_auto_submit_grace(session, now),
         'auto_submit_on_timeout': config.auto_submit_on_timeout,
-        'lock_after_timeout': config.lock_after_timeout,
+        # v0.4.13 policy: expose False so existing MFE skips POST /quiz-session/lock.
+        'lock_after_timeout': False,
+        'stored_lock_after_timeout': config.lock_after_timeout,
         'message': _quiz_session_message(status, remaining_seconds, reset_wait_seconds),
     }
 
@@ -713,10 +742,9 @@ def _update_expired_session(session):
     now = timezone.now()
     if session.status == UnitQuizSession.STATUS_ACTIVE and now >= session.expires_at:
         session.status = UnitQuizSession.STATUS_EXPIRED
-        # Do not set locked_at here. The attempt is only finally locked after
-        # runtime.js finishes auto-submitting and calls quiz-session/lock.
-        if not session.reset_available_at:
-            session.reset_available_at = session.expires_at + timedelta(seconds=session.cooldown_seconds)
+        # Cooldown is defined by quiz config and starts from the scheduled
+        # quiz expiry, not from the later lock/status request timestamp.
+        _set_reset_available_at_from_expiry(session, fallback_now=now)
         session.save(update_fields=['status', 'reset_available_at', 'updated_at'])
     if session.status == UnitQuizSession.STATUS_SUBMITTING and not _session_allows_auto_submit_grace(session, now):
         # Recovery for a browser/tab that started auto-submit but never called
@@ -725,8 +753,10 @@ def _update_expired_session(session):
         session.status = UnitQuizSession.STATUS_EXPIRED
         if not session.locked_at:
             session.locked_at = now
-        if not session.reset_available_at:
-            session.reset_available_at = now + timedelta(seconds=session.cooldown_seconds)
+        # Even when a stuck SUBMITTING session is finalized after the grace
+        # window, the retake clock remains expires_at + cooldown_seconds. Do not
+        # add grace/lock delay to the learner's cooldown.
+        _set_reset_available_at_from_expiry(session, fallback_now=now)
         session.save(update_fields=['status', 'locked_at', 'reset_available_at', 'updated_at'])
     if session.status == UnitQuizSession.STATUS_EXPIRED and session.reset_available_at and now >= session.reset_available_at:
         session.status = UnitQuizSession.STATUS_RESET_READY
@@ -822,10 +852,13 @@ def timeout_quiz_session_for_current_user(request, course_id, unit_usage_key, pa
                 return data
         session.status = UnitQuizSession.STATUS_SUBMITTING
         session.auto_submitted_at = session.auto_submitted_at or now
+        # Chốt thời điểm được làm lại ngay khi timeout, lấy từ quiz expiry +
+        # cooldown config. Không lấy từ lock time để tránh cộng thêm grace delay.
+        _set_reset_available_at_from_expiry(session, fallback_now=now)
         session.timeout_payload = payload or {}
         session.last_ip = get_client_ip(request)
         session.last_user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:2000]
-        session.save(update_fields=['status', 'auto_submitted_at', 'timeout_payload', 'last_ip', 'last_user_agent', 'updated_at'])
+        session.save(update_fields=['status', 'auto_submitted_at', 'reset_available_at', 'timeout_payload', 'last_ip', 'last_user_agent', 'updated_at'])
     audit_reset(request, course_key, unit_key, action='quiz_session_timeout', success=True, code='QUIZ_TIMEOUT', message='Hết giờ, bắt đầu tự nộp các câu đã chọn.', cooldown_seconds=config.cooldown_seconds)
     data = _serialize_quiz_session(session, config)
     data['success'] = True
@@ -841,42 +874,33 @@ def lock_quiz_session_for_current_user(request, course_id, unit_usage_key, paylo
         session = UnitQuizSession.objects.select_for_update().filter(user=request.user, config=config).order_by('-attempt_no', '-created_at').first()
         if not session:
             raise UnitResetError('Chưa có lượt làm quiz để khóa.', 'QUIZ_SESSION_NOT_STARTED', 400)
-        # Old Learning MFE builds have an 8s fallback: if runtime.js has not
-        # reported DONE yet, the MFE may call /lock with submitted_problem_count=0
-        # while later problem_check requests are still running. In that case, do
-        # not lock immediately; keep SUBMITTING open for the grace window so the
-        # remaining problem_check requests are not blocked as QUIZ_TIME_EXPIRED.
-        submitted_count = 0
-        try:
-            submitted_count = int((payload or {}).get('submitted_problem_count') or 0)
-        except Exception:
-            submitted_count = 0
-        if session.status == UnitQuizSession.STATUS_SUBMITTING and submitted_count <= 0 and _session_allows_auto_submit_grace(session, now):
-            merged = session.timeout_payload or {}
-            merged.update(payload or {})
-            merged['lock_deferred_until_grace_end'] = True
-            session.timeout_payload = merged
-            session.last_ip = get_client_ip(request)
-            session.last_user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:2000]
-            session.save(update_fields=['timeout_payload', 'last_ip', 'last_user_agent', 'updated_at'])
-            data = _serialize_quiz_session(session, config)
-            data['success'] = True
-            data['lock_deferred'] = True
-            return data
-        session.status = UnitQuizSession.STATUS_EXPIRED
-        if not session.auto_submitted_at:
-            session.auto_submitted_at = now
-        session.locked_at = now
-        session.reset_available_at = now + timedelta(seconds=session.cooldown_seconds)
+
+        # v0.4.13 policy: keep v0.4.12 all-at-once auto-submit, but never finalize-lock the
+        # attempt from this endpoint. This avoids the race where /lock arrives
+        # before the last Open edX problem_check request has finished.
         merged = session.timeout_payload or {}
         merged.update(payload or {})
+        merged['lock_call_skipped_no_lock_policy'] = True
+        merged['lock_call_skipped_at'] = _iso(now)
+        merged['cooldown_base'] = 'expires_at'
         session.timeout_payload = merged
+        # Lock is skipped in v0.4.12+/v0.4.13 policy, but if an old MFE still
+        # calls this endpoint before timeout/status has set reset_available_at,
+        # set it from quiz expiry. Never overwrite an existing value.
+        reset_changed = _set_reset_available_at_from_expiry(session, fallback_now=now)
         session.last_ip = get_client_ip(request)
         session.last_user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:2000]
-        session.save(update_fields=['status', 'auto_submitted_at', 'locked_at', 'reset_available_at', 'timeout_payload', 'last_ip', 'last_user_agent', 'updated_at'])
-    audit_reset(request, course_key, unit_key, action='quiz_session_lock', success=True, code='QUIZ_LOCKED', message='Đã khóa lượt làm quiz sau khi hết giờ.', cooldown_seconds=config.cooldown_seconds)
+        update_fields = ['timeout_payload', 'last_ip', 'last_user_agent', 'updated_at']
+        if reset_changed:
+            update_fields.append('reset_available_at')
+        session.save(update_fields=update_fields)
+
+    audit_reset(request, course_key, unit_key, action='quiz_session_lock_skipped', success=True, code='QUIZ_LOCK_SKIPPED_NO_LOCK_POLICY', message='Đã bỏ qua khóa ngay sau auto-submit theo chính sách v0.4.13.', cooldown_seconds=config.cooldown_seconds)
     data = _serialize_quiz_session(session, config)
     data['success'] = True
+    data['lock_skipped'] = True
+    data['code'] = 'QUIZ_LOCK_SKIPPED_NO_LOCK_POLICY'
+    data['message'] = 'Đã nhận tín hiệu hết giờ/tự nộp, nhưng không khóa ngay theo chính sách v0.4.13.'
     return data
 
 
@@ -890,7 +914,7 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     if latest:
         latest = _update_expired_session(latest)
         if latest.status in (UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING):
-            next_allowed = latest.expires_at + timedelta(seconds=latest.cooldown_seconds)
+            next_allowed = latest.reset_available_at or _reset_available_at_from_quiz_expiry(latest, fallback_now=now)
             wait = max(int((next_allowed - now).total_seconds()), 0)
             raise ResetCooldownError(wait, next_allowed, latest.attempt_no, latest.cooldown_seconds)
         if latest.reset_available_at and now < latest.reset_available_at:
