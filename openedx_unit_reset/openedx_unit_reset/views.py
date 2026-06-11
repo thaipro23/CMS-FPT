@@ -321,6 +321,15 @@ def quiz_session_runtime_js(request):
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
 
+  // Important: runtime.js may also be loaded in the top Learning MFE window.
+  // Auto-submit must run only inside the LMS problem iframe. If the top window
+  // handles AI_QUIZ_TIMEOUT_AUTO_SUBMIT it can send DONE too early, making the
+  // MFE call /lock after the first problem_check while the remaining checks are
+  // still in flight.
+  if (!window.parent || window.parent === window) {
+    return;
+  }
+
   var pendingProblemChecks = 0;
   var startedProblemChecks = 0;
   var finishedProblemChecks = 0;
