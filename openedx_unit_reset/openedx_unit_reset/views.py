@@ -321,7 +321,7 @@ def quiz_session_runtime_js(request):
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
 
-  // v0.4.12: runtime keeps iframe-only behavior, but submits all visible selected problems in one batch.
+  // v0.4.14: iframe-only runtime clicks real Submit/Check buttons only, never Save/Lưu.
   // Important: runtime.js may also be loaded in the top Learning MFE window.
   // Auto-submit must run only inside the LMS problem iframe. If the top window
   // handles AI_QUIZ_TIMEOUT_AUTO_SUBMIT it can send DONE too early, making the
@@ -409,23 +409,40 @@ def quiz_session_runtime_js(request):
     var selects = Array.prototype.slice.call(problem.querySelectorAll('select'));
     return selects.some(function(el){ return el.value && el.value.trim().length > 0; });
   }
-  function isSubmitButton(btn){
-    var text = lower(((btn.innerText || btn.value || btn.getAttribute('aria-label') || '') + '').trim());
-    if (!text) return false;
-    return ['submit','check','save','nộp bài','nop bai','kiểm tra','kiem tra','lưu','luu'].some(function(x){ return text.indexOf(x) >= 0; })
-      && text.indexOf('hint') < 0
-      && text.indexOf('show answer') < 0
-      && text.indexOf('xem đáp án') < 0
-      && text.indexOf('submission history') < 0;
+  function buttonText(btn){
+    return lower(((btn && (btn.innerText || btn.value || btn.getAttribute('aria-label') || btn.getAttribute('title'))) || '') + '').trim();
+  }
+  function isNoiseButtonText(text){
+    return text.indexOf('hint') >= 0
+      || text.indexOf('show answer') >= 0
+      || text.indexOf('xem đáp án') >= 0
+      || text.indexOf('submission history') >= 0;
+  }
+  function isSaveOnlyButtonText(text){
+    // v0.4.14: do not click Save/Lưu. Save only sends problem_save and does
+    // not grade the answer. Auto-submit must click Submit/Check/Nộp bài only.
+    return text.indexOf('save') >= 0 || text.indexOf('lưu') >= 0 || text.indexOf('luu') >= 0;
+  }
+  function isActualSubmitButton(btn){
+    var text = buttonText(btn);
+    if (!text || isNoiseButtonText(text) || isSaveOnlyButtonText(text)) return false;
+    return text.indexOf('submit') >= 0
+      || text.indexOf('check') >= 0
+      || text.indexOf('nộp bài') >= 0
+      || text.indexOf('nop bai') >= 0
+      || text.indexOf('kiểm tra') >= 0
+      || text.indexOf('kiem tra') >= 0;
   }
   function submitButtons(){
     var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
-    var seen = new Set();
-    return all.filter(function(btn){
-      if (!btn || seen.has(btn)) return false;
-      seen.add(btn);
-      return !btn.disabled && isVisible(btn) && isSubmitButton(btn) && selected(problemRoot(btn));
+    var byProblem = new Map();
+    all.forEach(function(btn){
+      if (!btn || btn.disabled || !isVisible(btn) || !isActualSubmitButton(btn)) return;
+      var root = problemRoot(btn);
+      if (!selected(root)) return;
+      if (!byProblem.has(root)) byProblem.set(root, btn);
     });
+    return Array.from(byProblem.values());
   }
   async function waitForProblemCheckBurstToStart(beforeStarted){
     // Submit all selected problems in one burst, then wait briefly for Open edX
