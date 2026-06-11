@@ -427,20 +427,49 @@ def quiz_session_runtime_js(request):
     });
   }
   async function waitForProblemCheckAfterClick(beforeStarted){
-    var startDeadline = Date.now() + 1200;
-    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(50);
+    // Open edX can start the problem_check request noticeably after a click,
+    // especially for the last problem in a unit or when program blocks save
+    // state first. The old 1.2s window let the runtime send DONE before the
+    // final problem_check even started, so the MFE called /lock and the last
+    // answer was rejected as QUIZ_TIME_EXPIRED. Wait longer for the request to
+    // appear, then wait for it to finish.
+    var startDeadline = Date.now() + 3500;
+    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(75);
     if (startedProblemChecks <= beforeStarted) {
-      await sleep(250);
+      // No problem_check was observed. Give edxapp handlers a final settle
+      // window before moving to the next button.
+      await sleep(900);
       return false;
     }
-    var finishDeadline = Date.now() + 7000;
-    while (Date.now() < finishDeadline && pendingProblemChecks > 0) await sleep(75);
-    await sleep(150);
+    var finishDeadline = Date.now() + 12000;
+    while (Date.now() < finishDeadline && pendingProblemChecks > 0) await sleep(100);
+    await sleep(350);
     return true;
   }
-  async function waitForAllPendingProblemChecks(){
-    var deadline = Date.now() + 12000;
-    while (Date.now() < deadline && pendingProblemChecks > 0) await sleep(100);
+  async function waitForNetworkIdle(){
+    // Do not report DONE immediately when pendingProblemChecks reaches zero.
+    // Some handlers start the last request after a short delay. Require a
+    // stable idle window with no new problem_check before allowing /lock.
+    var hardDeadline = Date.now() + 20000;
+    var lastStarted = startedProblemChecks;
+    var idleSince = null;
+    while (Date.now() < hardDeadline) {
+      if (pendingProblemChecks > 0) {
+        idleSince = null;
+        lastStarted = startedProblemChecks;
+        await sleep(150);
+        continue;
+      }
+      if (startedProblemChecks !== lastStarted) {
+        lastStarted = startedProblemChecks;
+        idleSince = null;
+        await sleep(150);
+        continue;
+      }
+      if (idleSince === null) idleSince = Date.now();
+      if (Date.now() - idleSince >= 2200) break;
+      await sleep(150);
+    }
   }
 
   async function autoSubmit(){
@@ -455,7 +484,7 @@ def quiz_session_runtime_js(request):
       try { btn.click(); clicked += 1; } catch (error) { continue; }
       await waitForProblemCheckAfterClick(beforeStarted);
     }
-    await waitForAllPendingProblemChecks();
+    await waitForNetworkIdle();
     return {
       clicked: clicked,
       problem_check_started: Math.max(0, startedProblemChecks - networkStartedBefore),
