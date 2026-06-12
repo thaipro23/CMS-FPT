@@ -119,16 +119,21 @@ def _auth_failed_response(reason: str = 'connector authentication required') -> 
     return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=403)
 
 
-def _require_connector_admin(request):
-    if _valid_connector_hmac(request) or _staff_or_superuser(request):
+def _require_connector_hmac(request, reason: str = 'Endpoint này chỉ nhận request server-to-server đã ký HMAC.'):
+    if _valid_connector_hmac(request):
         return None
-    return _auth_failed_response('Endpoint này chỉ cho AI Server đã ký HMAC hoặc Studio staff/admin.')
+    return _auth_failed_response(reason)
+
+
+def _require_connector_admin(request):
+    # csrf_exempt connector endpoints expose privileged Open edX internals, so they
+    # are HMAC-only. Browser staff/admin flows must use separate csrf_protected views.
+    return _require_connector_hmac(request, 'Endpoint diagnostics yêu cầu HMAC server-to-server; staff cookie không được chấp nhận ở endpoint csrf_exempt.')
 
 
 def _require_connector_write(request):
-    if _valid_connector_hmac(request) or _staff_or_superuser(request):
-        return None
-    return _auth_failed_response('Publish/rollback endpoint yêu cầu HMAC server-to-server hoặc Studio staff/admin; anonymous bị chặn.')
+    # Publish/rollback/quiz-create endpoints are AI Server -> CMS server-to-server only.
+    return _require_connector_hmac(request, 'Publish/rollback endpoint yêu cầu HMAC server-to-server; staff cookie không được chấp nhận ở endpoint csrf_exempt.')
 
 
 def _host_from_request(request) -> str:
@@ -217,8 +222,10 @@ def _sign_session_bridge_payload(payload: dict) -> str:
 def _bridge_allowed_return_hosts(request) -> set[str]:
     raw = str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_ALLOWED_RETURN_HOSTS') or '')
     hosts = {item.strip().lower() for item in raw.split(',') if item.strip()}
-    # Dev/local convenience. Production should set the allowlist explicitly.
-    hosts.update({'localhost', '127.0.0.1'})
+    # Dev/local convenience only. Production must not leak bridge tickets to localhost.
+    allow_local = bool(getattr(settings, 'DEBUG', False)) or _env_bool('AI_CONNECTOR_ALLOW_LOCAL_BRIDGE_RETURN', False)
+    if allow_local:
+        hosts.update({'localhost', '127.0.0.1'})
     return hosts
 
 
@@ -251,11 +258,23 @@ def _course_author_access(user, course_id: str | None) -> bool:
         course_key = CourseKey.from_string(unquote(course_id))
         return bool(has_course_author_access(user, course_key))
     except Exception:
-        # Safe fallback: do not grant course-level teacher access unless the user
-        # is global staff/superuser. This avoids accidentally authorizing a learner
-        # if an Open edX internal import path differs between releases.
-        return bool(getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False))
+        # Fail closed if Open edX internal imports change. Staff must not become
+        # course author/admin just because an import path failed.
+        return bool(getattr(user, 'is_superuser', False))
 
+
+def _user_in_ai_admin_group(user) -> bool:
+    group_names = [
+        item.strip()
+        for item in str(_setting_or_env('AI_CONNECTOR_ADMIN_GROUPS') or 'AI_ADMIN,AI Admin').split(',')
+        if item.strip()
+    ]
+    if not group_names:
+        return False
+    try:
+        return bool(user.groups.filter(name__in=group_names).exists())
+    except Exception:
+        return False
 
 def _cms_user_payload(request, course_id: str | None = None) -> dict[str, Any]:
     user = getattr(request, 'user', None)
@@ -264,7 +283,7 @@ def _cms_user_payload(request, course_id: str | None = None) -> dict[str, Any]:
     is_staff = bool(getattr(user, 'is_staff', False))
     is_superuser = bool(getattr(user, 'is_superuser', False))
     can_author_course = _course_author_access(user, course_id)
-    if is_superuser or is_staff:
+    if is_superuser or _user_in_ai_admin_group(user):
         role = 'admin'
         course_ids = ['*']
     elif can_author_course and course_id:
@@ -1873,6 +1892,10 @@ def insert_problem_banks(request, course_id: str):
 # Real Open edX Library publish helpers (v25.9.13.4)
 # ---------------------------------------------------------------------------
 
+def _connector_debug_errors_enabled() -> bool:
+    return _env_bool('AI_CONNECTOR_DEBUG_ERRORS', bool(getattr(settings, 'DEBUG', False)))
+
+
 def _exception_detail(exc: Exception, phase: str = '') -> dict:
     """Return useful exception data even when str(exc) is empty.
 
@@ -1884,9 +1907,13 @@ def _exception_detail(exc: Exception, phase: str = '') -> dict:
     detail = {
         'phase': phase,
         'exception_class': exc.__class__.__name__,
+    }
+    if not _connector_debug_errors_enabled():
+        return detail
+    detail.update({
         'exception_module': exc.__class__.__module__,
         'exception_repr': repr(exc),
-    }
+    })
     if getattr(exc, 'args', None):
         detail['args'] = [_safe_str(arg) for arg in exc.args]
     for attr in ('messages', 'message_dict', 'params', 'code'):
@@ -1903,6 +1930,8 @@ def _exception_detail(exc: Exception, phase: str = '') -> dict:
 
 
 def _message_from_exception(exc: Exception, fallback: str) -> str:
+    if not _connector_debug_errors_enabled():
+        return fallback
     msg = str(exc).strip()
     if msg:
         return msg
@@ -1910,12 +1939,16 @@ def _message_from_exception(exc: Exception, fallback: str) -> str:
 
 
 def _connector_error(message: str, status: int = 500, code: str = 'openedx_publish_failed', detail: dict | None = None) -> JsonResponse:
+    public_message = message if _connector_debug_errors_enabled() else 'Không thực hiện được thao tác trên Open edX. Xem log CMS theo request_id để biết chi tiết.'
+    public_detail = detail or {}
+    if not _connector_debug_errors_enabled():
+        public_detail = {'phase': public_detail.get('phase'), 'exception_class': public_detail.get('exception_class')} if isinstance(public_detail, dict) else {}
     return _json_response({
         'ok': False,
         'status': 'error',
         'error_code': code,
-        'message': message or 'Open edX connector failed without a text message. See detail.exception_class/traceback_tail.',
-        'detail': detail or {},
+        'message': public_message,
+        'detail': public_detail,
         'implementation': 'content_libraries_v2_python_api',
         'stub': False,
     }, status=status)

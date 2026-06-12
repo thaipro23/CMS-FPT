@@ -29,6 +29,7 @@ UNIT_RESET_QUIZ_TIMER_DEFAULT_DURATION_SECONDS = 900
 UNIT_RESET_QUIZ_TIMER_DEFAULT_COOLDOWN_SECONDS = 300
 UNIT_RESET_QUIZ_TIMER_SERVER_GUARD_ENABLED = True
 UNIT_RESET_QUIZ_TIMER_REQUIRE_CONFIG = True
+AI_QUIZ_RUNTIME_ALLOWED_ORIGINS = ''
 
 
 def plugin_settings(settings):
@@ -103,6 +104,11 @@ def plugin_settings(settings):
         settings,
         "UNIT_RESET_QUIZ_TIMER_REQUIRE_CONFIG",
         UNIT_RESET_QUIZ_TIMER_REQUIRE_CONFIG,
+    )
+    settings.AI_QUIZ_RUNTIME_ALLOWED_ORIGINS = getattr(
+        settings,
+        "AI_QUIZ_RUNTIME_ALLOWED_ORIGINS",
+        AI_QUIZ_RUNTIME_ALLOWED_ORIGINS,
     )
 
     # Install a lightweight server-side submit guard. It blocks late problem_check
