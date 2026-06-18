@@ -277,6 +277,8 @@ def _student_payload_username(item: Any) -> str:
             or item.get('apUsername')
             or item.get('openedx_username')
             or item.get('student_username')
+            or item.get('teacher')
+            or item.get('teacher_username')
         )
     return _normalize_username_input(item)
 
@@ -285,6 +287,93 @@ def _student_payload_code(item: Any) -> str:
     if not isinstance(item, dict):
         return ''
     return str(item.get('student_code') or item.get('studentCode') or item.get('ap_student_code') or '').strip()
+
+
+def _clean_user_token(value: Any) -> str:
+    return _normalize_username_input(value)
+
+
+def _payload_person_type(item: Any) -> str:
+    if not isinstance(item, dict):
+        return 'student'
+    raw = str(item.get('person_type') or item.get('entity_type') or item.get('role') or item.get('kind') or '').strip().lower()
+    if raw in {'teacher', 'staff', 'instructor', 'giang_vien', 'lecturer'}:
+        return 'teacher'
+    return 'student'
+
+
+def _payload_email(item: Any, username: str, person_type: str) -> str:
+    if isinstance(item, dict):
+        raw = str(item.get('email') or item.get('mail') or item.get('openedx_email') or '').strip().lower()
+        if raw and '@' in raw:
+            return raw[:254]
+    # AP often gives only `teacher: ngocnb61`; use FPT mail by convention.
+    if username:
+        return f'{username}@fpt.edu.vn'[:254]
+    return ''
+
+
+def _split_display_name(item: Any, username: str, person_type: str) -> tuple[str, str, str]:
+    if isinstance(item, dict):
+        first = str(item.get('first_name') or item.get('given_name') or '').strip()
+        last = str(item.get('last_name') or item.get('family_name') or '').strip()
+        full = str(item.get('full_name') or item.get('name') or item.get('display_name') or '').strip()
+    else:
+        first = last = full = ''
+    if person_type == 'teacher':
+        # Requirement: teacher only syncs as `teacher: ngocnb61`, so use it for first/last/name.
+        token = username or full
+        return token[:150], token[:150], token[:255]
+    if first or last:
+        return (first or username)[:150], (last or username)[:150], (full or f'{last} {first}'.strip() or username)[:255]
+    if full:
+        parts = full.split()
+        if len(parts) == 1:
+            return parts[0][:150], parts[0][:150], full[:255]
+        # Vietnamese display: keep family/middle name in last_name, given name in first_name.
+        return parts[-1][:150], ' '.join(parts[:-1])[:150], full[:255]
+    token = username or ''
+    return token[:150], token[:150], token[:255]
+
+
+def _ensure_cms_user(item: Any, username: str, person_type: str):
+    """Create a CMS/Open edX auth user when the AP record is authoritative.
+
+    The user is created inactive-password-wise (unusable password) but active in
+    Django, so SSO/password-reset can manage the real authentication lifecycle.
+    """
+    from django.contrib.auth import get_user_model  # type: ignore
+    from django.db import IntegrityError, transaction  # type: ignore
+
+    User = get_user_model()
+    username = _clean_user_token(username)
+    if not username:
+        return None, False, 'missing_username'
+    first_name, last_name, full_name = _split_display_name(item, username, person_type)
+    email = _payload_email(item, username, person_type)
+    try:
+        with transaction.atomic():
+            user = User(username=username, email=email, first_name=first_name, last_name=last_name, is_active=True)
+            if hasattr(user, 'set_unusable_password'):
+                user.set_unusable_password()
+            user.save()
+            created = True
+    except IntegrityError:
+        try:
+            user = User.objects.get(username__iexact=username)
+            created = False
+        except Exception:
+            raise
+    # Keep profile best-effort; Open edX releases differ here.
+    try:
+        from student.models import UserProfile  # type: ignore
+        profile, _profile_created = UserProfile.objects.get_or_create(user=user, defaults={'name': full_name or username})
+        if full_name and not getattr(profile, 'name', ''):
+            profile.name = full_name
+            profile.save()
+    except Exception:
+        pass
+    return user, created, 'created' if created else 'exists'
 
 
 @csrf_exempt
@@ -320,14 +409,16 @@ def student_insight_resolve_users(request):
     max_batch = max(1, min(max_batch, 10000))
     raw_students = raw_students[:max_batch]
 
+    create_missing = bool(data.get('create_missing') is True or data.get('create_missing_users') is True)
     requested: list[dict[str, Any]] = []
     usernames: list[str] = []
     for item in raw_students:
         username = _student_payload_username(item)
         student_code = _student_payload_code(item)
+        person_type = _payload_person_type(item)
         if not username and not student_code:
             continue
-        requested.append({'raw': item, 'username': username, 'student_code': student_code})
+        requested.append({'raw': item, 'username': username, 'student_code': student_code, 'person_type': person_type})
         if username:
             usernames.append(username)
     unique_usernames = sorted(set(usernames))
@@ -373,22 +464,54 @@ def student_insight_resolve_users(request):
             }
             found.append(row)
         else:
-            row = {
-                'student_code': student_code or None,
-                'ap_username': username,
-                'username': username,
-                'exists': False,
-                'match_status': 'missing',
-                'match_method': 'not_found',
-                'openedx_user_id': None,
-                'openedx_username': None,
-                'openedx_email': None,
-                'openedx_is_active': None,
-                'is_active': None,
-                'note': 'Không tìm thấy user CMS/Open edX theo AP username',
-            }
-            if username:
-                missing.append(username)
+            created_user = None
+            created = False
+            create_message = 'Không tìm thấy user CMS/Open edX theo AP username'
+            if create_missing and username:
+                try:
+                    created_user, created, _create_status = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
+                except Exception as exc:
+                    created_user = None
+                    create_message = f'Không tạo được user CMS/Open edX: {exc}'
+            if created_user is not None:
+                full_name = created_user.get_full_name() if hasattr(created_user, 'get_full_name') else ''
+                row = {
+                    'student_code': student_code or None,
+                    'ap_username': username,
+                    'username': username,
+                    'person_type': item.get('person_type') or 'student',
+                    'exists': True,
+                    'created': created,
+                    'match_status': 'matched',
+                    'match_method': 'created_from_ap' if created else 'exact_ap_username',
+                    'openedx_user_id': str(getattr(created_user, 'id', '') or getattr(created_user, 'pk', '')),
+                    'openedx_username': getattr(created_user, 'username', None),
+                    'openedx_email': getattr(created_user, 'email', None),
+                    'openedx_is_active': bool(getattr(created_user, 'is_active', True)),
+                    'is_active': bool(getattr(created_user, 'is_active', True)),
+                    'full_name': full_name,
+                    'note': 'Đã tạo mới user CMS/Open edX từ dữ liệu AP' if created else 'Khớp chính xác AP username = CMS/Open edX username',
+                }
+                found.append(row)
+            else:
+                row = {
+                    'student_code': student_code or None,
+                    'ap_username': username,
+                    'username': username,
+                    'person_type': item.get('person_type') or 'student',
+                    'exists': False,
+                    'created': False,
+                    'match_status': 'missing',
+                    'match_method': 'not_found',
+                    'openedx_user_id': None,
+                    'openedx_username': None,
+                    'openedx_email': None,
+                    'openedx_is_active': None,
+                    'is_active': None,
+                    'note': create_message,
+                }
+                if username:
+                    missing.append(username)
         results.append(row)
     return _json_response({
         'ok': True,
@@ -958,6 +1081,494 @@ def _load_openedx_modules():
     from xmodule.modulestore.django import modulestore  # type: ignore
     return CourseKey, modulestore
 
+
+
+# ---------------------------------------------------------------------------
+# v25.9.16.3.0 Student Insight MVP: enrollment/progress/grade batch APIs
+# ---------------------------------------------------------------------------
+
+def _student_insight_requested_students(data: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_students = data.get('students')
+    if raw_students is None:
+        raw_students = data.get('usernames') or data.get('users') or []
+    if not isinstance(raw_students, list):
+        return []
+    max_batch = int(_setting_or_env('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', '5000') or '5000')
+    max_batch = max(1, min(max_batch, 10000))
+    requested: list[dict[str, Any]] = []
+    for item in raw_students[:max_batch]:
+        username = _student_payload_username(item)
+        student_code = _student_payload_code(item)
+        openedx_user_id = ''
+        if isinstance(item, dict):
+            openedx_user_id = str(item.get('openedx_user_id') or item.get('user_id') or '').strip()
+        if username or student_code or openedx_user_id:
+            raw = item if isinstance(item, dict) else {}
+            person_type = _payload_person_type(item)
+            requested.append({
+                'raw': item,
+                'username': username,
+                'student_code': student_code,
+                'openedx_user_id': openedx_user_id,
+                'person_type': person_type,
+                'role': raw.get('role') or ('teacher' if person_type == 'teacher' else 'student'),
+                'email': raw.get('email') or raw.get('mail'),
+                'full_name': raw.get('full_name') or raw.get('name') or raw.get('display_name'),
+                'first_name': raw.get('first_name'),
+                'last_name': raw.get('last_name'),
+                'create_missing': raw.get('create_missing') is True or raw.get('create_missing_users') is True,
+            })
+    return requested
+
+
+def _student_insight_user_map(requested: list[dict[str, Any]]) -> dict[str, Any]:
+    usernames = sorted({item['username'] for item in requested if item.get('username')})
+    ids = sorted({item['openedx_user_id'] for item in requested if item.get('openedx_user_id')})
+    found: dict[str, Any] = {}
+    if not usernames and not ids:
+        return found
+    try:
+        from django.contrib.auth import get_user_model  # type: ignore
+        from django.db.models import Q  # type: ignore
+        from django.db.models.functions import Lower  # type: ignore
+        User = get_user_model()
+        q = Q()
+        has_filter = False
+        if usernames:
+            q |= Q(username_l__in=usernames)
+            has_filter = True
+        numeric_ids = [int(value) for value in ids if str(value).isdigit()]
+        if numeric_ids:
+            q |= Q(id__in=numeric_ids)
+            has_filter = True
+        if not has_filter:
+            return {}
+        users = User.objects.annotate(username_l=Lower('username')).filter(q)
+        for user in users:
+            username = _normalize_username_input(getattr(user, 'username', ''))
+            if username:
+                found[username] = user
+            found[f'id:{getattr(user, "id", "")}'] = user
+    except Exception:
+        return {}
+    return found
+
+
+def _course_key_from_string(course_id: str):
+    try:
+        from opaque_keys.edx.keys import CourseKey  # type: ignore
+        return CourseKey.from_string(str(course_id or '').strip())
+    except Exception:
+        return None
+
+
+def _enrollment_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[str, Any]]:
+    result: dict[int, dict[str, Any]] = {}
+    if not course_key or not users:
+        return result
+    try:
+        from student.models import CourseEnrollment  # type: ignore
+        user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
+        enrollments = CourseEnrollment.objects.filter(course_id=course_key, user_id__in=user_ids).select_related('user')
+        for enrollment in enrollments:
+            uid = int(getattr(enrollment, 'user_id', 0) or 0)
+            active = bool(getattr(enrollment, 'is_active', False))
+            result[uid] = {
+                'status': 'enrolled' if active else 'inactive',
+                'is_enrolled': active,
+                'mode': str(getattr(enrollment, 'mode', '') or ''),
+                'created': getattr(enrollment, 'created', None).isoformat() if getattr(enrollment, 'created', None) else None,
+            }
+    except Exception:
+        return result
+    return result
+
+
+def _persistent_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[str, Any]]:
+    result: dict[int, dict[str, Any]] = {}
+    if not course_key or not users:
+        return result
+    try:
+        from lms.djangoapps.grades.models import PersistentCourseGrade  # type: ignore
+        user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
+        rows = PersistentCourseGrade.objects.filter(course_id=course_key, user_id__in=user_ids)
+        for row in rows:
+            uid = int(getattr(row, 'user_id', 0) or 0)
+            percent = getattr(row, 'percent_grade', None)
+            passed_timestamp = getattr(row, 'passed_timestamp', None)
+            result[uid] = {
+                'percent': float(percent) if percent is not None else None,
+                'letter_grade': getattr(row, 'letter_grade', None),
+                'passed': bool(passed_timestamp) if passed_timestamp is not None else None,
+                'passed_timestamp': passed_timestamp.isoformat() if passed_timestamp else None,
+                'modified': getattr(row, 'modified', None).isoformat() if getattr(row, 'modified', None) else None,
+            }
+    except Exception:
+        # Some Open edX installs keep grades computable but not persisted yet.
+        # Do not fail the whole class sync: user existence/enrollment remains useful.
+        return result
+    return result
+
+
+def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, dict[str, Any]], int | None]:
+    result: dict[int, dict[str, Any]] = {}
+    total_blocks: int | None = None
+    if not course_key or not users:
+        return result, total_blocks
+    try:
+        from completion.models import BlockCompletion  # type: ignore
+        from django.db.models import Count, Max  # type: ignore
+        user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
+        rows = BlockCompletion.objects.filter(context_key=course_key, user_id__in=user_ids).values('user_id').annotate(completed=Count('id'), last_activity=Max('modified'))
+        for row in rows:
+            uid = int(row.get('user_id') or 0)
+            completed = int(row.get('completed') or 0)
+            last_activity = row.get('last_activity')
+            result[uid] = {
+                'completed_blocks': completed,
+                'last_activity_at': last_activity.isoformat() if last_activity else None,
+            }
+    except Exception:
+        return result, total_blocks
+    try:
+        CourseKey, modulestore = _load_openedx_modules()
+        store = modulestore()
+        course = store.get_course(course_key)
+        visited: set[str] = set()
+        stack = list(getattr(course, 'children', []) or [])
+        count = 0
+        while stack:
+            key = stack.pop()
+            if str(key) in visited:
+                continue
+            visited.add(str(key))
+            block = _get_item_best_effort(store, key)
+            if block is None:
+                continue
+            block_type = _block_type(block)
+            children = _children_locations(block)
+            if children:
+                stack.extend(children)
+            if block_type not in {'course', 'chapter', 'sequential', 'vertical'}:
+                count += 1
+        total_blocks = count or None
+    except Exception:
+        total_blocks = None
+    if total_blocks:
+        for item in result.values():
+            completed = item.get('completed_blocks') or 0
+            item['total_blocks'] = total_blocks
+            item['percent'] = float(completed) / float(total_blocks) if total_blocks else None
+    return result, total_blocks
+
+
+def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    course_key = _course_key_from_string(course_id)
+    found_by_key = _student_insight_user_map(requested)
+    users = []
+    for item in requested:
+        user = None
+        if item.get('username'):
+            user = found_by_key.get(item['username'])
+        if user is None and item.get('openedx_user_id'):
+            user = found_by_key.get(f"id:{item['openedx_user_id']}")
+        if user is not None:
+            users.append(user)
+    enrollment = _enrollment_snapshot(course_key, users)
+    grades = _persistent_grade_snapshot(course_key, users)
+    completion, total_blocks = _completion_snapshot(course_key, users)
+    results: list[dict[str, Any]] = []
+    for item in requested:
+        username = item.get('username') or ''
+        user = found_by_key.get(username) if username else None
+        if user is None and item.get('openedx_user_id'):
+            user = found_by_key.get(f"id:{item['openedx_user_id']}")
+        uid = int(getattr(user, 'id', 0) or 0) if user is not None else 0
+        enroll = enrollment.get(uid) or {'status': 'not_enrolled' if user is not None else 'missing_user', 'is_enrolled': False}
+        grade = grades.get(uid) or {}
+        progress = completion.get(uid) or {}
+        results.append({
+            'student_code': item.get('student_code') or None,
+            'ap_username': username,
+            'username': _normalize_username_input(getattr(user, 'username', username)) if user is not None else username,
+            'openedx_username': getattr(user, 'username', None) if user is not None else None,
+            'openedx_user_id': str(getattr(user, 'id', '') or '') if user is not None else None,
+            'exists': user is not None,
+            'enrollment_status': enroll.get('status'),
+            'enrollment_mode': enroll.get('mode'),
+            'progress_percent': progress.get('percent'),
+            'grade_percent': grade.get('percent'),
+            'passed': grade.get('passed'),
+            'completed_blocks': progress.get('completed_blocks'),
+            'total_blocks': progress.get('total_blocks') or total_blocks,
+            'last_activity_at': progress.get('last_activity_at') or grade.get('modified'),
+            'enrollment': enroll,
+            'progress': progress,
+            'grade': grade,
+        })
+    return results
+
+
+@csrf_exempt
+def student_insight_class_analytics(request):
+    """Return enrollment/progress/grade snapshots for a class in one call.
+
+    URL contract:
+      POST /api/ai-student-insight/v1/class-analytics
+      {course_id, students:[{username, student_code, openedx_user_id?}]}
+    """
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    course_id = str(data.get('course_id') or '').strip()
+    if not course_id:
+        return _json_response({'ok': False, 'message': 'Thiếu course_id'}, status=400)
+    requested = _student_insight_requested_students(data)
+    if not requested:
+        return _json_response({'ok': True, 'course_id': course_id, 'results': [], 'total': 0})
+    try:
+        results = _student_learning_results(course_id, requested)
+    except Exception as exc:
+        return _json_response({'ok': False, 'message': f'Không lấy được dữ liệu học tập CMS/Open edX: {exc}', 'results': []}, status=500)
+    counts: dict[str, int] = {}
+    for item in results:
+        status = str(item.get('enrollment_status') or 'unknown')
+        counts[status] = counts.get(status, 0) + 1
+    return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'results': results})
+
+
+
+def _student_insight_enroll_results(course_id: str, requested: list[dict[str, Any]], *, mode: str = 'audit', force: bool = False, create_missing: bool = False) -> list[dict[str, Any]]:
+    """Enroll AP students and add AP teachers to the mapped Open edX course.
+
+    Students are enrolled as learners. Teachers are created if needed and granted
+    Course Staff role. User creation is exact by AP username only.
+    """
+    course_key = _course_key_from_string(course_id)
+    if course_key is None:
+        return [{
+            'student_code': item.get('student_code') or None,
+            'ap_username': item.get('username') or '',
+            'username': item.get('username') or '',
+            'exists': False,
+            'status': 'failed',
+            'enrollment_status': 'failed',
+            'is_enrolled': False,
+            'message': 'Course ID không hợp lệ',
+        } for item in requested]
+    found_by_key = _student_insight_user_map(requested)
+    clean_mode = str(mode or _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit') or 'audit').strip() or 'audit'
+    results: list[dict[str, Any]] = []
+    try:
+        from student.models import CourseEnrollment  # type: ignore
+    except Exception as exc:
+        return [{
+            'student_code': item.get('student_code') or None,
+            'ap_username': item.get('username') or '',
+            'username': item.get('username') or '',
+            'exists': False,
+            'status': 'failed',
+            'enrollment_status': 'failed',
+            'is_enrolled': False,
+            'message': f'Không import được CourseEnrollment: {exc}',
+        } for item in requested]
+
+    for item in requested:
+        username = item.get('username') or ''
+        person_type = str(item.get('person_type') or item.get('role') or 'student').strip().lower()
+        is_teacher = person_type in {'teacher', 'staff', 'instructor'}
+        user = found_by_key.get(username) if username else None
+        if user is None and item.get('openedx_user_id'):
+            user = found_by_key.get(f"id:{item['openedx_user_id']}")
+        created_user = False
+        if user is None and (create_missing or item.get('create_missing')) and username:
+            try:
+                user, created_user, _create_status = _ensure_cms_user(item.get('raw') if item.get('raw') else item, username, 'teacher' if is_teacher else 'student')
+            except Exception as exc:
+                results.append({
+                    'student_code': item.get('student_code') or None,
+                    'ap_username': username,
+                    'username': username,
+                    'person_type': 'teacher' if is_teacher else 'student',
+                    'exists': False,
+                    'created_user': False,
+                    'status': 'create_user_failed',
+                    'enrollment_status': 'failed',
+                    'is_enrolled': False,
+                    'message': f'Không tạo được user CMS/Open edX: {exc}',
+                })
+                continue
+        base = {
+            'student_code': item.get('student_code') or None,
+            'ap_username': username,
+            'username': username,
+            'person_type': 'teacher' if is_teacher else 'student',
+            'openedx_username': getattr(user, 'username', None) if user is not None else None,
+            'openedx_user_id': str(getattr(user, 'id', '') or '') if user is not None else None,
+            'openedx_email': getattr(user, 'email', None) if user is not None else None,
+            'exists': user is not None,
+            'created_user': created_user,
+            'enrollment_mode': clean_mode,
+        }
+        if user is None:
+            results.append({**base, 'status': 'missing_user', 'enrollment_status': 'missing_user', 'is_enrolled': False, 'message': 'Không tìm thấy user CMS/Open edX'})
+            continue
+        if getattr(user, 'is_active', True) is False:
+            results.append({**base, 'status': 'inactive_user', 'enrollment_status': 'inactive_user', 'is_enrolled': False, 'message': 'User CMS/Open edX inactive'})
+            continue
+        if is_teacher:
+            try:
+                from common.djangoapps.student.roles import CourseStaffRole  # type: ignore
+                role = CourseStaffRole(course_key)
+                already_staff = False
+                try:
+                    already_staff = bool(role.has_user(user))
+                except Exception:
+                    already_staff = False
+                if not already_staff or force:
+                    role.add_users(user)
+                results.append({**base, 'status': 'already_course_staff' if already_staff else 'course_staff_added', 'enrollment_status': 'course_staff', 'is_enrolled': True, 'course_role': 'staff', 'message': 'Giảng viên đã được gán Course Staff'})
+            except Exception as exc:
+                results.append({**base, 'status': 'course_staff_failed', 'enrollment_status': 'failed', 'is_enrolled': False, 'message': f'Không gán được Course Staff cho giảng viên: {exc}'})
+            continue
+        try:
+            enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
+            if enrollment and getattr(enrollment, 'is_active', False) and not force:
+                results.append({**base, 'status': 'already_enrolled', 'enrollment_status': 'enrolled', 'is_enrolled': True, 'enrollment': {'status': 'enrolled', 'is_enrolled': True, 'mode': getattr(enrollment, 'mode', clean_mode)}})
+                continue
+            if enrollment:
+                try:
+                    enrollment.is_active = True
+                    if clean_mode and getattr(enrollment, 'mode', None) != clean_mode:
+                        enrollment.mode = clean_mode
+                    enrollment.save()
+                    status_value = 'reactivated'
+                except Exception:
+                    # Fall back to model helper below.
+                    status_value = ''
+            else:
+                status_value = ''
+            if not enrollment or not status_value:
+                enroll_method = getattr(CourseEnrollment, 'enroll', None)
+                if not enroll_method:
+                    raise RuntimeError('CourseEnrollment.enroll không khả dụng')
+                try:
+                    enroll_method(user, course_key, mode=clean_mode, check_access=False)
+                except TypeError:
+                    try:
+                        enroll_method(user, course_key, mode=clean_mode)
+                    except TypeError:
+                        enroll_method(user, course_key)
+                status_value = 'created'
+            enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
+            mode_value = getattr(enrollment, 'mode', clean_mode) if enrollment else clean_mode
+            active = bool(getattr(enrollment, 'is_active', True)) if enrollment else True
+            results.append({**base, 'status': status_value, 'enrollment_status': 'enrolled' if active else 'inactive', 'is_enrolled': active, 'enrollment_mode': mode_value, 'enrollment': {'status': 'enrolled' if active else 'inactive', 'is_enrolled': active, 'mode': mode_value}})
+        except Exception as exc:
+            results.append({**base, 'status': 'failed', 'enrollment_status': 'failed', 'is_enrolled': False, 'message': str(exc)})
+    return results
+
+
+@csrf_exempt
+def student_insight_course_enrollment_enroll(request):
+    """Enroll resolved CMS/Open edX users into a course.
+
+    URL contract:
+      POST /api/ai-student-insight/v1/course-enrollment/enroll
+      {course_id, mode:'audit', force:false, students:[{username, openedx_user_id?}]}
+    """
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    course_id = str(data.get('course_id') or '').strip()
+    if not course_id:
+        return _json_response({'ok': False, 'message': 'Thiếu course_id'}, status=400)
+    requested = _student_insight_requested_students(data)
+    raw_teachers = data.get('teachers') or []
+    if isinstance(raw_teachers, list):
+        for teacher in raw_teachers:
+            if isinstance(teacher, str):
+                teacher = {'username': teacher, 'person_type': 'teacher', 'role': 'teacher'}
+            elif isinstance(teacher, dict):
+                teacher = {**teacher, 'person_type': 'teacher', 'role': teacher.get('role') or 'teacher'}
+            else:
+                continue
+            extra = _student_insight_requested_students({'students': [teacher]})
+            requested.extend(extra)
+    if not requested:
+        return _json_response({'ok': True, 'course_id': course_id, 'results': [], 'total': 0, 'counts': {}})
+    mode = str(data.get('mode') or _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit') or 'audit')
+    force = bool(data.get('force') is True)
+    create_missing = bool(data.get('create_missing') is True or data.get('create_missing_users') is True)
+    results = _student_insight_enroll_results(course_id, requested, mode=mode, force=force, create_missing=create_missing)
+    counts: dict[str, int] = {}
+    for item in results:
+        status = str(item.get('status') or item.get('enrollment_status') or 'unknown')
+        counts[status] = counts.get(status, 0) + 1
+    return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'results': results})
+
+
+@csrf_exempt
+def student_insight_course_enrollment_batch(request):
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    course_id = str(data.get('course_id') or '').strip()
+    requested = _student_insight_requested_students(data)
+    results = _student_learning_results(course_id, requested) if course_id and requested else []
+    return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'enrollment': item.get('enrollment'), 'enrollment_status': item.get('enrollment_status'), 'enrollment_mode': item.get('enrollment_mode')} for item in results], 'total': len(results)})
+
+
+@csrf_exempt
+def student_insight_course_progress_batch(request):
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    course_id = str(data.get('course_id') or '').strip()
+    requested = _student_insight_requested_students(data)
+    results = _student_learning_results(course_id, requested) if course_id and requested else []
+    return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'progress': item.get('progress'), 'progress_percent': item.get('progress_percent'), 'completed_blocks': item.get('completed_blocks'), 'total_blocks': item.get('total_blocks')} for item in results], 'total': len(results)})
+
+
+@csrf_exempt
+def student_insight_quiz_grades_batch(request):
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    course_id = str(data.get('course_id') or '').strip()
+    requested = _student_insight_requested_students(data)
+    results = _student_learning_results(course_id, requested) if course_id and requested else []
+    return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'grade': item.get('grade'), 'grade_percent': item.get('grade_percent'), 'passed': item.get('passed')} for item in results], 'total': len(results)})
 
 def _usage_key_from_value(value: Any) -> Any | None:
     """Normalize a create_child return value into an Open edX UsageKey when possible.

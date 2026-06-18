@@ -18,6 +18,11 @@ from .views import (
     insert_problem_banks,
     student_insight_resolve_users,
     student_insight_course_search,
+    student_insight_class_analytics,
+    student_insight_course_enrollment_batch,
+    student_insight_course_enrollment_enroll,
+    student_insight_course_progress_batch,
+    student_insight_quiz_grades_batch,
 )
 
 # NOTE:
@@ -30,6 +35,16 @@ urlpatterns = [
     path("users/resolve/", student_insight_resolve_users, name="student_insight_resolve_users_slash"),
     path("courses/search", student_insight_course_search, name="student_insight_course_search"),
     path("courses/search/", student_insight_course_search, name="student_insight_course_search_slash"),
+    path("class-analytics", student_insight_class_analytics, name="student_insight_class_analytics"),
+    path("class-analytics/", student_insight_class_analytics, name="student_insight_class_analytics_slash"),
+    path("course-enrollment/batch", student_insight_course_enrollment_batch, name="student_insight_course_enrollment_batch"),
+    path("course-enrollment/enroll", student_insight_course_enrollment_enroll, name="student_insight_course_enrollment_enroll"),
+    path("course-enrollment/batch/", student_insight_course_enrollment_batch, name="student_insight_course_enrollment_batch_slash"),
+    path("course-enrollment/enroll/", student_insight_course_enrollment_enroll, name="student_insight_course_enrollment_enroll_slash"),
+    path("course-progress/batch", student_insight_course_progress_batch, name="student_insight_course_progress_batch"),
+    path("course-progress/batch/", student_insight_course_progress_batch, name="student_insight_course_progress_batch_slash"),
+    path("quiz-grades/batch", student_insight_quiz_grades_batch, name="student_insight_quiz_grades_batch"),
+    path("quiz-grades/batch/", student_insight_quiz_grades_batch, name="student_insight_quiz_grades_batch_slash"),
     path("health", health, name="ai_connector_health"),
     path("health/", health, name="ai_connector_health_slash"),
     path("session/me", session_me, name="ai_connector_session_me"),
