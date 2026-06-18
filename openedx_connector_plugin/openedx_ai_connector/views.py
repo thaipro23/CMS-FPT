@@ -21,6 +21,7 @@ import re
 import socket
 import time
 import traceback
+from datetime import datetime, timezone
 from html import unescape
 from typing import Any
 from urllib.parse import quote, unquote, urljoin, urlparse, urlencode
@@ -119,6 +120,64 @@ def _auth_failed_response(reason: str = 'connector authentication required') -> 
     return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=403)
 
 
+
+def _student_insight_hmac_secret() -> str:
+    return str(
+        _setting_or_env('AI_STUDENT_INSIGHT_SHARED_SECRET')
+        or _setting_or_env('OPENEDX_STUDENT_INSIGHT_SHARED_SECRET')
+        or _setting_or_env('AI_CONNECTOR_HMAC_SECRET')
+        or _setting_or_env('OPENEDX_CONNECTOR_HMAC_SECRET')
+        or ''
+    )
+
+
+def _valid_student_insight_hmac(request) -> bool:
+    """Validate AI Server -> LMS/CMS Student Insight HMAC.
+
+    Contract used by AI Server:
+      canonical = METHOD + "\\n" + PATH + "\\n" + TIMESTAMP + "\\n" + NONCE + "\\n" + SHA256(raw_body)
+      signature = hex_hmac_sha256(secret, canonical)
+
+    This is intentionally separate from the older ai-connector HMAC so the
+    student-management APIs can be called through `/api/ai-student-insight/v1/*`
+    without reusing browser/session credentials.
+    """
+    secret = _student_insight_hmac_secret()
+    if not secret:
+        return False
+    client = request.META.get('HTTP_X_AI_CLIENT') or ''
+    timestamp = request.META.get('HTTP_X_AI_TIMESTAMP') or ''
+    nonce = request.META.get('HTTP_X_AI_NONCE') or ''
+    supplied = request.META.get('HTTP_X_AI_SIGNATURE') or ''
+    if not client or not timestamp or not nonce or not supplied:
+        return False
+    try:
+        normalized = timestamp.replace('Z', '+00:00')
+        ts = datetime.fromisoformat(normalized)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        skew = int(_setting_or_env('AI_STUDENT_INSIGHT_HMAC_SKEW_SECONDS', '300') or '300')
+        if abs((datetime.now(timezone.utc) - ts).total_seconds()) > skew:
+            return False
+    except Exception:
+        return False
+    body = request.body or b''
+    body_hash = hashlib.sha256(body).hexdigest()
+    path = request.path or ''
+    canonical = '\n'.join([request.method.upper(), path, timestamp, nonce, body_hash])
+    expected = hmac.new(secret.encode('utf-8'), canonical.encode('utf-8'), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, supplied)
+
+
+def _require_student_insight_hmac(request):
+    if _valid_student_insight_hmac(request):
+        return None
+    # Compatibility for operators that point these endpoints at the older
+    # `/api/ai-connector/v1/*` prefix while rolling the Student Insight config.
+    if _valid_connector_hmac(request):
+        return None
+    return _auth_failed_response('Student Insight endpoint yêu cầu HMAC server-to-server từ AI Server.')
+
 def _require_connector_hmac(request, reason: str = 'Endpoint này chỉ nhận request server-to-server đã ký HMAC.'):
     if _valid_connector_hmac(request):
         return None
@@ -193,12 +252,228 @@ def _json_response(data: dict, status: int = 200) -> JsonResponse:
     return JsonResponse(data, status=status, json_dumps_params={'ensure_ascii': False})
 
 
+
+def _read_json_body(request) -> tuple[dict[str, Any] | None, JsonResponse | None]:
+    try:
+        if not (request.body or b''):
+            return {}, None
+        data = json.loads((request.body or b'{}').decode('utf-8'))
+        if not isinstance(data, dict):
+            return None, _json_response({'ok': False, 'message': 'Request body phải là JSON object'}, status=400)
+        return data, None
+    except Exception as exc:
+        return None, _json_response({'ok': False, 'message': f'JSON không hợp lệ: {exc}'}, status=400)
+
+
+def _normalize_username_input(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+
+def _student_payload_username(item: Any) -> str:
+    if isinstance(item, dict):
+        return _normalize_username_input(
+            item.get('username')
+            or item.get('ap_username')
+            or item.get('apUsername')
+            or item.get('openedx_username')
+            or item.get('student_username')
+        )
+    return _normalize_username_input(item)
+
+
+def _student_payload_code(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ''
+    return str(item.get('student_code') or item.get('studentCode') or item.get('ap_student_code') or '').strip()
+
+
+@csrf_exempt
+def student_insight_resolve_users(request):
+    """Resolve AP usernames against Open edX/CMS users.
+
+    URL contract:
+      POST /api/ai-student-insight/v1/users/resolve
+
+    Input supports both compact and rich payloads:
+      {"usernames": ["he173548"]}
+      {"students": [{"username": "he173548", "student_code": "HE173548"}]}
+
+    Matching is intentionally exact by username only.  Name/email fuzzy matching is
+    avoided because student identity errors are more harmful than a visible
+    "Chưa có trên CMS" state.
+    """
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    raw_students = data.get('students')
+    if raw_students is None:
+        raw_students = data.get('usernames') or data.get('users') or []
+    if not isinstance(raw_students, list):
+        return _json_response({'ok': False, 'message': 'students/usernames phải là danh sách'}, status=400)
+    max_batch = int(_setting_or_env('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', '5000') or '5000')
+    max_batch = max(1, min(max_batch, 10000))
+    raw_students = raw_students[:max_batch]
+
+    requested: list[dict[str, Any]] = []
+    usernames: list[str] = []
+    for item in raw_students:
+        username = _student_payload_username(item)
+        student_code = _student_payload_code(item)
+        if not username and not student_code:
+            continue
+        requested.append({'raw': item, 'username': username, 'student_code': student_code})
+        if username:
+            usernames.append(username)
+    unique_usernames = sorted(set(usernames))
+
+    found_by_username: dict[str, Any] = {}
+    if unique_usernames:
+        try:
+            from django.contrib.auth import get_user_model  # type: ignore
+            from django.db.models.functions import Lower  # type: ignore
+
+            User = get_user_model()
+            users = User.objects.annotate(username_l=Lower('username')).filter(username_l__in=unique_usernames)
+            for user in users:
+                key = _normalize_username_input(getattr(user, 'username', ''))
+                if key:
+                    found_by_username[key] = user
+        except Exception as exc:
+            return _json_response({'ok': False, 'message': f'Không truy vấn được auth_user CMS/Open edX: {exc}'}, status=500)
+
+    results: list[dict[str, Any]] = []
+    found: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for item in requested:
+        username = item['username']
+        student_code = item['student_code']
+        user = found_by_username.get(username) if username else None
+        if user is not None:
+            full_name = user.get_full_name() if hasattr(user, 'get_full_name') else ''
+            row = {
+                'student_code': student_code or None,
+                'ap_username': username,
+                'username': username,
+                'exists': True,
+                'match_status': 'matched' if getattr(user, 'is_active', True) else 'inactive',
+                'match_method': 'exact_ap_username',
+                'openedx_user_id': str(getattr(user, 'id', '') or getattr(user, 'pk', '')),
+                'openedx_username': getattr(user, 'username', None),
+                'openedx_email': getattr(user, 'email', None),
+                'openedx_is_active': bool(getattr(user, 'is_active', True)),
+                'is_active': bool(getattr(user, 'is_active', True)),
+                'full_name': full_name,
+                'note': 'Khớp chính xác AP username = CMS/Open edX username',
+            }
+            found.append(row)
+        else:
+            row = {
+                'student_code': student_code or None,
+                'ap_username': username,
+                'username': username,
+                'exists': False,
+                'match_status': 'missing',
+                'match_method': 'not_found',
+                'openedx_user_id': None,
+                'openedx_username': None,
+                'openedx_email': None,
+                'openedx_is_active': None,
+                'is_active': None,
+                'note': 'Không tìm thấy user CMS/Open edX theo AP username',
+            }
+            if username:
+                missing.append(username)
+        results.append(row)
+    return _json_response({
+        'ok': True,
+        'results': results,
+        'found': found,
+        'missing': missing,
+        'total': len(results),
+        'found_count': len(found),
+        'missing_count': len(missing),
+    })
+
+
+def _course_item(course: Any) -> dict[str, Any]:
+    course_id = str(getattr(course, 'id', '') or getattr(course, 'course_id', '') or '')
+    return {
+        'course_id': course_id,
+        'id': course_id,
+        'display_name': str(getattr(course, 'display_name', '') or getattr(course, 'name', '') or ''),
+        'name': str(getattr(course, 'display_name', '') or getattr(course, 'name', '') or ''),
+        'org': str(getattr(course, 'org', '') or ''),
+        'number': str(getattr(course, 'number', '') or ''),
+        'run': str(getattr(course, 'run', '') or ''),
+    }
+
+
+@csrf_exempt
+def student_insight_course_search(request):
+    """Search courses for AI Server academic subject-course auto mapping."""
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    query = str(data.get('query') or data.get('search') or '').strip()
+    exact_course_id = str(data.get('exact_course_id') or data.get('course_id') or '').strip()
+    limit = max(1, min(int(data.get('limit') or 20), 100))
+    needle = (exact_course_id or query).lower()
+    if not needle:
+        return _json_response({'ok': True, 'results': [], 'total': 0})
+    try:
+        from openedx.core.djangoapps.content.course_overviews.models import CourseOverview  # type: ignore
+    except Exception as exc:
+        return _json_response({'ok': False, 'message': f'CourseOverview không khả dụng trong app này: {exc}', 'results': []}, status=501)
+
+    candidates: list[dict[str, Any]] = []
+    try:
+        from django.db.models import Q  # type: ignore
+
+        if exact_course_id:
+            # Exact lookup first: this is the path used by auto-map and avoids
+            # scanning all courses in deployments with 1,500+ course runs.
+            exact_qs = CourseOverview.objects.filter(id=exact_course_id).order_by('id')[:limit]
+            for course in exact_qs:
+                candidates.append(_course_item(course))
+        if not candidates and query:
+            q = Q(id__icontains=query) | Q(display_name__icontains=query)
+            # Some older Open edX CourseOverview models may not expose org/number/run
+            # as concrete fields. Add them only if the model has them.
+            field_names = {field.name for field in CourseOverview._meta.fields}
+            if 'org' in field_names:
+                q |= Q(org__icontains=query)
+            if 'number' in field_names:
+                q |= Q(number__icontains=query)
+            if 'run' in field_names:
+                q |= Q(run__icontains=query)
+            qs = CourseOverview.objects.filter(q).order_by('id')[:limit]
+            for course in qs:
+                row = _course_item(course)
+                haystack = ' '.join([row.get('course_id') or '', row.get('display_name') or '', row.get('org') or '', row.get('number') or '', row.get('run') or '']).lower()
+                if query.lower() in haystack:
+                    candidates.append(row)
+    except Exception as exc:
+        return _json_response({'ok': False, 'message': f'Không tìm kiếm được course CMS/Open edX: {exc}', 'results': []}, status=500)
+    return _json_response({'ok': True, 'results': candidates[:limit], 'courses': candidates[:limit], 'total': len(candidates[:limit])})
+
 def health(request):
     return _json_response({
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.14.6',
+        'version': '25.9.16.2.23',
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -3557,7 +3832,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.14.6',
+        'version': '25.9.16.2.23',
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(_setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME')),

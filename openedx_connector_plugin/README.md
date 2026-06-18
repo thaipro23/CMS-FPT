@@ -101,3 +101,31 @@ Use it when AI Server and Open edX run separately and you do not want to maintai
 ```text
 docs/TUTOR_PLUGIN_AI_CONNECTOR_ENV.md
 ```
+
+
+## v25.9.16.2.23 - Student Insight endpoints
+
+The connector also exposes API-first Student Management endpoints for AI Server:
+
+```http
+POST /api/ai-student-insight/v1/users/resolve
+POST /api/ai-student-insight/v1/courses/search
+```
+
+Security uses HMAC headers from AI Server:
+
+```text
+X-AI-Client
+X-AI-Timestamp
+X-AI-Nonce
+X-AI-Signature
+```
+
+Use the same shared secret as `OPENEDX_CONNECTOR_HMAC_SECRET` unless you want to separate it:
+
+```env
+AI_STUDENT_INSIGHT_SHARED_SECRET=<optional, otherwise AI_CONNECTOR_HMAC_SECRET is used>
+AI_STUDENT_INSIGHT_MAX_BATCH_SIZE=5000
+```
+
+`users/resolve` intentionally matches only by exact username (`AP username = CMS/Open edX username`). It does not fuzzy-match by name or email.

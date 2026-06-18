@@ -16,13 +16,20 @@ from .views import (
     session_bridge,
     create_quiz_node, delete_quiz_node,
     insert_problem_banks,
+    student_insight_resolve_users,
+    student_insight_course_search,
 )
 
 # NOTE:
-# OpenEdxAIConnectorConfig already mounts this module under:
+# OpenEdxAIConnectorConfig mounts this module under both:
 #   /api/ai-connector/v1/
-# Therefore paths here must be RELATIVE. Do not repeat the prefix.
+#   /api/ai-student-insight/v1/
+# Therefore paths here must be RELATIVE. Do not repeat either prefix.
 urlpatterns = [
+    path("users/resolve", student_insight_resolve_users, name="student_insight_resolve_users"),
+    path("users/resolve/", student_insight_resolve_users, name="student_insight_resolve_users_slash"),
+    path("courses/search", student_insight_course_search, name="student_insight_course_search"),
+    path("courses/search/", student_insight_course_search, name="student_insight_course_search_slash"),
     path("health", health, name="ai_connector_health"),
     path("health/", health, name="ai_connector_health_slash"),
     path("session/me", session_me, name="ai_connector_session_me"),
