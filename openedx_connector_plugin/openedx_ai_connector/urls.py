@@ -16,6 +16,8 @@ from .views import (
     session_bridge,
     create_quiz_node, delete_quiz_node,
     insert_problem_banks,
+)
+from .student_insight import (
     student_insight_resolve_users,
     student_insight_course_search,
     student_insight_class_analytics,

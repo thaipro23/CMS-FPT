@@ -129,3 +129,21 @@ AI_STUDENT_INSIGHT_MAX_BATCH_SIZE=5000
 ```
 
 `users/resolve` intentionally matches only by exact username (`AP username = CMS/Open edX username`). It does not fuzzy-match by name or email.
+
+## v25.9.16.4.0 - Student Progress Dashboard component grades
+
+`POST /api/ai-student-insight/v1/class-analytics` now returns best-effort component/subsection grade breakdown when the Open edX deployment has `PersistentSubsectionGrade` rows for the requested users and course.
+
+Response fields per student may include:
+
+```json
+{
+  "grade_percent": 78.5,
+  "component_scores": [
+    {"key":"...", "name":"Quiz 1", "earned":8.0, "possible":10.0, "percent":80.0, "category":"subsection"}
+  ],
+  "grade": {"percent": 78.5, "components": []}
+}
+```
+
+If component grades are not available, the endpoint still returns user/enrollment/progress/course-grade data and leaves `component_scores` empty.
