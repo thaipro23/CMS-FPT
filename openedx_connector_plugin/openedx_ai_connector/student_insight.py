@@ -323,7 +323,21 @@ def student_insight_course_search(request):
         if exact_course_id:
             # Exact lookup first: this is the path used by auto-map and avoids
             # scanning all courses in deployments with 1,500+ course runs.
-            exact_qs = CourseOverview.objects.filter(id=exact_course_id).order_by('id')[:limit]
+            # On Open edX Ulmo.3, CourseOverview.id is a CourseKeyField; comparing
+            # it to a raw string can silently return no rows on some deployments.
+            # Parse the opaque key explicitly so course-v1:FPT+WEB107+SU26 maps
+            # even when the MFE URL already exists.
+            exact_qs = []
+            try:
+                from opaque_keys.edx.keys import CourseKey  # type: ignore
+                exact_key = CourseKey.from_string(exact_course_id)
+                exact_qs = list(CourseOverview.objects.filter(id=exact_key).order_by('id')[:limit])
+            except Exception:
+                exact_qs = []
+            if not exact_qs:
+                # Fallback for older/custom CourseOverview implementations where
+                # id is stored as a string-compatible column.
+                exact_qs = list(CourseOverview.objects.filter(id=exact_course_id).order_by('id')[:limit])
             for course in exact_qs:
                 candidates.append(_course_item(course))
         if not candidates and query:
