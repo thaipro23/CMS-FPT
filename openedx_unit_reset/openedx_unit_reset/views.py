@@ -468,6 +468,121 @@ def quiz_session_runtime_js(request):
     }
   }
 
+
+  // v0.4.14.3: minimal policy.
+  // - While time is ACTIVE: do not disable or force-enable Open edX Submit.
+  //   Open edX owns its normal button state.
+  // - When time is expired/locked: disable form controls locally.
+  // - If Open edX reports stale problem state during ACTIVE, reload once so the
+  //   iframe gets fresh input_state instead of forcing a broken submit.
+  var lastKnownTimerStatus = null;
+
+  function queryParams(){
+    var out = {};
+    try {
+      var q = (document.currentScript && document.currentScript.src && document.currentScript.src.split('?')[1]) || window.location.search.slice(1) || '';
+      q.split('&').forEach(function(part){
+        if (!part) return;
+        var idx = part.indexOf('=');
+        var k = idx >= 0 ? part.slice(0, idx) : part;
+        var v = idx >= 0 ? part.slice(idx + 1) : '';
+        out[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' '));
+      });
+    } catch (e) {}
+    return out;
+  }
+
+  function firstBlockKeyFromText(text){
+    try {
+      var m = String(text || '').match(/block-v1:[^\s"'<>]+/);
+      return m ? m[0].replace(/[),.;]+$/g, '') : '';
+    } catch (e) { return ''; }
+  }
+
+  function inferUnitUsageKey(){
+    var qp = queryParams();
+    if (qp.unit_usage_key) return qp.unit_usage_key;
+    var fromUrl = firstBlockKeyFromText(decodeURIComponent(window.location.href));
+    if (fromUrl) return fromUrl;
+    var candidates = document.querySelectorAll('[data-usage-id],[data-usage-key],[data-block-id]');
+    for (var i=0; i<candidates.length; i++){
+      var el = candidates[i];
+      var v = el.getAttribute('data-usage-id') || el.getAttribute('data-usage-key') || el.getAttribute('data-block-id');
+      if (v && v.indexOf('block-v1:') === 0) return v;
+    }
+    return '';
+  }
+
+  function inferCourseId(unitKey){
+    var qp = queryParams();
+    if (qp.course_id) return qp.course_id;
+    var text = decodeURIComponent(window.location.href);
+    var m = text.match(/course-v1:[^\/\?\#\s"'<>]+/);
+    if (m) return m[0];
+    if (unitKey && unitKey.indexOf('block-v1:') === 0) {
+      var parts = unitKey.split('+');
+      if (parts.length >= 3) return ('course-v1:' + parts[0].replace('block-v1:', '') + '+' + parts[1] + '+' + parts[2]);
+    }
+    return '';
+  }
+
+  function timerStatusUrl(){
+    var unit = inferUnitUsageKey();
+    var course = inferCourseId(unit);
+    if (!course || !unit) return '';
+    return '/api/unit-reset/v1/quiz-session/status?course_id=' + encodeURIComponent(course) + '&unit_usage_key=' + encodeURIComponent(unit);
+  }
+
+  function shouldLockFromStatus(data){
+    if (!data || data.success === false) return false;
+    var status = String(data.status || '').toUpperCase();
+    var remaining = parseInt(data.remaining_seconds || 0, 10);
+    if (status === 'ACTIVE' && remaining > 0) return false;
+    if (status === 'SUBMITTING' || status === 'EXPIRED' || status === 'RESET_WAIT' || status === 'RESET_READY') return true;
+    if (status === 'ACTIVE' && remaining <= 0) return true;
+    return false;
+  }
+
+  function pageHasStaleProblemStateMessage(){
+    var text = lower(document.body && document.body.innerText || '');
+    return text.indexOf('the state of this problem has changed since you loaded this page') >= 0 ||
+           text.indexOf('please refresh your page') >= 0;
+  }
+
+  async function pollTimerStatusOnce(){
+    var url = timerStatusUrl();
+    if (!url) return;
+    try {
+      var res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) return;
+      var data = await res.json();
+      lastKnownTimerStatus = data;
+      if (shouldLockFromStatus(data)) {
+        lock();
+        return;
+      }
+      // If the learner is still within time but this iframe holds stale Open edX
+      // problem state, the only correct fix is a fresh render. Do not force-enable
+      // and submit stale state.
+      if (String(data.status || '').toUpperCase() === 'ACTIVE' && parseInt(data.remaining_seconds || 0, 10) > 0 && pageHasStaleProblemStateMessage()) {
+        var key = 'openedx_unit_reset_stale_reload_' + (data.id || 'active');
+        try {
+          if (!sessionStorage.getItem(key)) {
+            sessionStorage.setItem(key, '1');
+            window.location.reload();
+          }
+        } catch (e) {
+          window.location.reload();
+        }
+      }
+    } catch (e) {}
+  }
+
+  try {
+    setInterval(pollTimerStatusOnce, 1500);
+    setTimeout(pollTimerStatusOnce, 500);
+  } catch (e) {}
+
   async function autoSubmit(){
     var buttons = submitButtons();
     var clicked = 0;
@@ -493,40 +608,6 @@ def quiz_session_runtime_js(request):
       problem_check_pending: pendingProblemChecks
     };
   }
-
-  function hasUsedAllAttempts(problem){
-    var text = lower((problem && problem.innerText) || '');
-    var match = text.match(/you have used\s+(\d+)\s+of\s+(\d+)\s+attempt/);
-    if (match) return parseInt(match[1], 10) >= parseInt(match[2], 10);
-    return false;
-  }
-
-  function unlockSubmitWhileActive(){
-    // Simple rule required by production: while the quiz time is still active,
-    // the learner must be able to press the real Open edX Submit/Check button.
-    // Do not touch Save/Lưu, Hint, Show answer, or anything after local timeout lock.
-    if (document.body.classList.contains('ai-quiz-timeout-locked')) return;
-    var buttons = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
-    buttons.forEach(function(btn){
-      if (!btn || !isActualSubmitButton(btn)) return;
-      var root = problemRoot(btn);
-      if (hasUsedAllAttempts(root)) return;
-      try {
-        btn.disabled = false;
-        btn.removeAttribute('disabled');
-        btn.setAttribute('aria-disabled', 'false');
-        btn.classList.remove('disabled');
-        btn.classList.remove('is-disabled');
-      } catch (error) { /* best effort */ }
-    });
-  }
-
-  try {
-    document.addEventListener('change', unlockSubmitWhileActive, true);
-    document.addEventListener('click', function(){ setTimeout(unlockSubmitWhileActive, 0); }, true);
-    setInterval(unlockSubmitWhileActive, 1000);
-    setTimeout(unlockSubmitWhileActive, 0);
-  } catch (error) { /* best effort */ }
 
   function lock(){
     Array.prototype.slice.call(document.querySelectorAll('input,textarea,select,button')).forEach(function(el){

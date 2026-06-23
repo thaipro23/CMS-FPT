@@ -963,6 +963,12 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     data['has_session'] = True
     data['reset_result'] = reset_result
     data['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
+    # The Unit state has just been deleted/recreated. The existing Open edX problem
+    # iframe can contain stale input_state values, which produces the native
+    # error: 'The state of this problem has changed since you loaded this page'.
+    # Clients should reload the LMS iframe/unit before allowing manual Submit.
+    data['reload_required'] = True
+    data['reload_reason'] = 'unit_state_reset'
     return data
 
 def is_late_submit_blocked(user, course_id, problem_usage_key):
