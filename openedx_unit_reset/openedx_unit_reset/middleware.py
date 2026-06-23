@@ -1,6 +1,6 @@
 import json
 import logging
-from urllib.parse import unquote, quote
+from urllib.parse import unquote
 
 from django.http import JsonResponse
 
@@ -55,27 +55,6 @@ class UnitQuizSessionSubmitGuardMiddleware:
             log.exception('Could not inject timed quiz runtime script; returning original response')
             return response
 
-    def _first_block_key_from_path(self, request):
-        try:
-            path = unquote(getattr(request, 'path', '') or '')
-            if 'block-v1:' not in path:
-                return ''
-            value = path[path.find('block-v1:'):].split('/')[0].split('?')[0]
-            return value.strip()
-        except Exception:
-            return ''
-
-    def _course_id_from_usage_key(self, usage_key):
-        try:
-            if not usage_key or not usage_key.startswith('block-v1:'):
-                return ''
-            parts = usage_key.split('+')
-            if len(parts) >= 3:
-                return 'course-v1:' + parts[0].replace('block-v1:', '') + '+' + parts[1] + '+' + parts[2]
-        except Exception:
-            pass
-        return ''
-
     def _inject_timer_runtime_for_lms_iframe(self, request, response):
         """Inject runtime.js into LMS iframe HTML pages.
 
@@ -112,12 +91,7 @@ class UnitQuizSessionSubmitGuardMiddleware:
         if marker in html:
             return response
 
-        usage_key = self._first_block_key_from_path(request)
-        course_id = self._course_id_from_usage_key(usage_key)
-        src = '/api/unit-reset/v1/quiz-session/runtime.js'
-        if usage_key and course_id:
-            src = src + '?course_id=' + quote(course_id, safe='') + '&unit_usage_key=' + quote(usage_key, safe='')
-        script = '<script id="%s" src="%s" defer></script>' % (marker, src)
+        script = '<script id="%s" src="/api/unit-reset/v1/quiz-session/runtime.js" defer></script>' % marker
         lower = html.lower()
         idx = lower.rfind('</body>')
         if idx >= 0:

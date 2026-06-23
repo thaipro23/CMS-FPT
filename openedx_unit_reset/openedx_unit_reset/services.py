@@ -738,6 +738,47 @@ def _latest_quiz_session(user, config):
     return UnitQuizSession.objects.filter(user=user, config=config).order_by('-attempt_no', '-created_at').first()
 
 
+def _latest_quiz_session_for_unit(user, course_id, unit_usage_key):
+    """Return latest timed-quiz session by stable course/unit strings.
+
+    This intentionally does not rely only on the config FK because timer configs
+    can be upserted/recreated while old sessions remain in history. Server-side
+    submit/reset guards must allow a newer ACTIVE attempt for the same unit to
+    override older EXPIRED/RESET_READY sessions.
+    """
+    if not user or not course_id or not unit_usage_key:
+        return None
+    return (
+        UnitQuizSession.objects
+        .filter(user=user, course_id=str(course_id), unit_usage_key=str(unit_usage_key))
+        .order_by('-attempt_no', '-created_at')
+        .first()
+    )
+
+
+def get_active_quiz_session_for_unit(request, course_id, unit_usage_key):
+    """Return latest ACTIVE/SUBMITTING session for a unit, updating expiry first.
+
+    Used by the legacy reset/status path to avoid falling back to generic unit
+    reset while a timed quiz attempt is still running.
+    """
+    course_key, unit_key = parse_keys(course_id, unit_usage_key)
+    session = _latest_quiz_session_for_unit(request.user, str(course_key), str(unit_key))
+    if not session:
+        return None
+    session = _update_expired_session(session)
+    if session.status in (UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING):
+        return session
+    return None
+
+
+def raise_active_quiz_reset_blocked(session):
+    now = timezone.now()
+    next_allowed = session.reset_available_at or _reset_available_at_from_quiz_expiry(session, fallback_now=now)
+    wait = max(int((next_allowed - now).total_seconds()), 0)
+    raise ResetCooldownError(wait, next_allowed, session.attempt_no, session.cooldown_seconds)
+
+
 def _update_expired_session(session):
     now = timezone.now()
     if session.status == UnitQuizSession.STATUS_ACTIVE and now >= session.expires_at:
@@ -962,13 +1003,9 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     data['success'] = True
     data['has_session'] = True
     data['reset_result'] = reset_result
-    data['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
-    # The Unit state has just been deleted/recreated. The existing Open edX problem
-    # iframe can contain stale input_state values, which produces the native
-    # error: 'The state of this problem has changed since you loaded this page'.
-    # Clients should reload the LMS iframe/unit before allowing manual Submit.
     data['reload_required'] = True
-    data['reload_reason'] = 'unit_state_reset'
+    data['reload_unit'] = True
+    data['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
     return data
 
 def is_late_submit_blocked(user, course_id, problem_usage_key):
@@ -1015,18 +1052,31 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
 
     for session in guarded_sessions:
         try:
-            # If a newer ACTIVE/SUBMITTING attempt exists for the same timer config,
-            # allow the submit. This is the normal state after the learner clicks
-            # "Làm lại bài" and the Unit has been randomized again.
+            # If a newer ACTIVE/SUBMITTING attempt exists for the same timed unit,
+            # allow the submit. Do this by stable course_id + unit_usage_key first,
+            # not only by config FK, because config rows can be upserted/recreated
+            # while historical sessions remain. This prevents old EXPIRED sessions
+            # from blocking a clean retake attempt.
+            latest_for_unit = _latest_quiz_session_for_unit(user, session.course_id, session.unit_usage_key)
+            if latest_for_unit:
+                latest_for_unit = _update_expired_session(latest_for_unit)
+                if latest_for_unit.id != session.id and latest_for_unit.status in (
+                    UnitQuizSession.STATUS_ACTIVE,
+                    UnitQuizSession.STATUS_SUBMITTING,
+                ):
+                    continue
+
             latest_for_config = UnitQuizSession.objects.filter(
                 user=user,
                 config=session.config,
             ).order_by('-attempt_no', '-created_at').first()
-            if latest_for_config and latest_for_config.id != session.id and latest_for_config.status in (
-                UnitQuizSession.STATUS_ACTIVE,
-                UnitQuizSession.STATUS_SUBMITTING,
-            ):
-                continue
+            if latest_for_config:
+                latest_for_config = _update_expired_session(latest_for_config)
+                if latest_for_config.id != session.id and latest_for_config.status in (
+                    UnitQuizSession.STATUS_ACTIVE,
+                    UnitQuizSession.STATUS_SUBMITTING,
+                ):
+                    continue
 
             unit_key = UsageKey.from_string(session.unit_usage_key)
             reset_keys = collect_unit_usage_keys(unit_key)
