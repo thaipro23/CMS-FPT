@@ -17,6 +17,8 @@ from .services import (
     UnitResetError,
     audit_reset,
     get_status_for_current_user,
+    get_legacy_compatible_timer_status_for_current_user,
+    get_timer_config_or_none,
     parse_keys,
     reset_unit_for_current_user,
     get_quiz_session_status_for_current_user,
@@ -79,17 +81,6 @@ def _staff_or_hmac(request):
     return bool(getattr(user, 'is_authenticated', False) and (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False)))
 
 
-def _debug_errors_enabled():
-    value = os.environ.get('AI_CONNECTOR_DEBUG_ERRORS')
-    if value is not None:
-        return value.strip().lower() in {'1', 'true', 'yes', 'on'}
-    return bool(getattr(settings, 'DEBUG', False))
-
-
-def _hmac_required_response():
-    return JsonResponse({'success': False, 'code': 'CONNECTOR_AUTH_REQUIRED', 'message': 'HMAC server-to-server required'}, status=403)
-
-
 @login_required
 @require_GET
 def reset_unit_status(request):
@@ -103,7 +94,10 @@ def reset_unit_status(request):
         )
 
     try:
-        data = get_status_for_current_user(request, course_id, unit_usage_key)
+        if get_timer_config_or_none(course_id, unit_usage_key):
+            data = get_legacy_compatible_timer_status_for_current_user(request, course_id, unit_usage_key)
+        else:
+            data = get_status_for_current_user(request, course_id, unit_usage_key)
         return JsonResponse(data, status=200)
     except UnitResetError as exc:
         return JsonResponse({"success": False, "code": exc.code, "message": str(exc)}, status=exc.status_code)
@@ -138,7 +132,10 @@ def reset_unit_attempt(request):
         )
 
     try:
-        result = reset_unit_for_current_user(request, course_id, unit_usage_key)
+        if get_timer_config_or_none(course_id, unit_usage_key):
+            result = reset_quiz_session_for_current_user(request, course_id, unit_usage_key)
+        else:
+            result = reset_unit_for_current_user(request, course_id, unit_usage_key)
         return JsonResponse(result, status=200)
 
     except ResetCooldownError as exc:
@@ -293,8 +290,8 @@ def quiz_session_reset(request):
 @csrf_exempt
 @require_POST
 def quiz_timer_config_upsert(request):
-    if not _valid_connector_hmac(request):
-        return _hmac_required_response()
+    if not _staff_or_hmac(request):
+        return JsonResponse({'success': False, 'code': 'CONNECTOR_AUTH_REQUIRED', 'message': 'HMAC hoặc staff required'}, status=403)
     payload = _json_body(request)
     try:
         result = upsert_unit_quiz_timer_config(
@@ -308,7 +305,7 @@ def quiz_timer_config_upsert(request):
             auto_submit_on_timeout=payload.get('auto_submit_on_timeout', True),
             lock_after_timeout=payload.get('lock_after_timeout', True),
             native_timed_exam=payload.get('native_timed_exam', False),
-            actor=(getattr(getattr(request, 'user', None), 'username', '') or 'ai-server-hmac'),
+            actor=getattr(request.user, 'username', '') or str(request.user.id),
             metadata_json=payload.get('metadata') or {},
         )
         return JsonResponse(result, status=200)
@@ -319,104 +316,187 @@ def quiz_timer_config_upsert(request):
 @require_GET
 def quiz_session_runtime_js(request):
     from django.http import HttpResponse
-
-    # v0.4.14 — Submit Button Only No Save Hotfix
-    # Open edX problem UIs may expose both Save/Lưu and Submit/Check/Nộp bài.
-    # Auto-submit must never click Save/Lưu because that only triggers problem_save
-    # and does not grade the answer. We only click Submit/Check variants.
     js = """
 (function(){
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
 
-  var PLUGIN_VERSION = '0.4.14';
+  // v0.4.14: iframe-only runtime clicks real Submit/Check buttons only, never Save/Lưu.
+  // Important: runtime.js may also be loaded in the top Learning MFE window.
+  // Auto-submit must run only inside the LMS problem iframe. If the top window
+  // handles AI_QUIZ_TIMEOUT_AUTO_SUBMIT it can send DONE too early, making the
+  // MFE call /lock after the first problem_check while the remaining checks are
+  // still in flight.
+  if (!window.parent || window.parent === window) {
+    return;
+  }
 
+  var pendingProblemChecks = 0;
+  var startedProblemChecks = 0;
+  var finishedProblemChecks = 0;
+  var autoSubmitting = false;
+
+  function lower(value){ return ((value || '') + '').toLowerCase(); }
+  function isProblemCheckUrl(url){
+    url = lower(url);
+    return url.indexOf('problem_check') >= 0 || url.indexOf('xmodule_handler/problem_check') >= 0;
+  }
+  function markProblemCheckStart(url){
+    if (!isProblemCheckUrl(url)) return false;
+    startedProblemChecks += 1;
+    pendingProblemChecks += 1;
+    return true;
+  }
+  function markProblemCheckDone(wasTracked){
+    if (!wasTracked) return;
+    pendingProblemChecks = Math.max(0, pendingProblemChecks - 1);
+    finishedProblemChecks += 1;
+  }
+
+  // Track native Open edX problem_check requests. The Learning MFE must not lock
+  // the timed attempt until these requests finish; otherwise only the first
+  // problem_check succeeds and the rest are blocked as QUIZ_TIME_EXPIRED.
+  try {
+    if (window.fetch && !window.fetch.__openedxUnitResetTracked) {
+      var originalFetch = window.fetch;
+      var trackedFetch = function(input, init){
+        var url = '';
+        try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (error) { url = ''; }
+        var tracked = markProblemCheckStart(url);
+        return originalFetch.apply(this, arguments).finally(function(){ markProblemCheckDone(tracked); });
+      };
+      trackedFetch.__openedxUnitResetTracked = true;
+      window.fetch = trackedFetch;
+    }
+  } catch (error) { /* best effort */ }
+
+  try {
+    if (window.XMLHttpRequest && !window.XMLHttpRequest.__openedxUnitResetTracked) {
+      var OriginalXHR = window.XMLHttpRequest;
+      var originalOpen = OriginalXHR.prototype.open;
+      var originalSend = OriginalXHR.prototype.send;
+      OriginalXHR.prototype.open = function(method, url){
+        try { this.__openedxUnitResetUrl = url || ''; } catch (error) { /* ignore */ }
+        return originalOpen.apply(this, arguments);
+      };
+      OriginalXHR.prototype.send = function(){
+        var tracked = false;
+        try { tracked = markProblemCheckStart(this.__openedxUnitResetUrl || ''); } catch (error) { tracked = false; }
+        if (tracked) {
+          try { this.addEventListener('loadend', function(){ markProblemCheckDone(true); }, { once: true }); } catch (error) { /* ignore */ }
+        }
+        return originalSend.apply(this, arguments);
+      };
+      window.XMLHttpRequest.__openedxUnitResetTracked = true;
+    }
+  } catch (error) { /* best effort */ }
+
+  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
   function isVisible(el){
     if (!el) return false;
-    var style = window.getComputedStyle ? window.getComputedStyle(el) : null;
-    if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
-    var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
-    return !rect || (rect.width > 0 && rect.height > 0);
+    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
+    var style = getComputedStyle(el);
+    return style.visibility !== 'hidden' && style.display !== 'none';
   }
-
-  function textOf(el){
-    return (((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '') + '')).trim().toLowerCase();
+  function problemRoot(el){
+    return el && (el.closest('.problem') || el.closest('.xblock-student_view') || el.closest('[data-usage-id]') || document);
   }
-
   function selected(problem){
     var checked = problem.querySelector('input[type="radio"]:checked,input[type="checkbox"]:checked');
     if (checked) return true;
-    var textInputs = Array.prototype.slice.call(problem.querySelectorAll('input[type="text"],input:not([type]),textarea'));
-    if (textInputs.some(function(el){ return !el.disabled && el.value && el.value.trim().length > 0; })) return true;
+    var textInputs = Array.prototype.slice.call(problem.querySelectorAll('input[type="text"],input[type="number"],textarea'));
+    if (textInputs.some(function(el){ return el.value && el.value.trim().length > 0; })) return true;
     var selects = Array.prototype.slice.call(problem.querySelectorAll('select'));
-    return selects.some(function(el){ return !el.disabled && el.value && el.value.trim().length > 0; });
+    return selects.some(function(el){ return el.value && el.value.trim().length > 0; });
   }
-
-  function isSaveLike(btn){
-    var text = textOf(btn);
-    var name = ((btn.name || btn.id || btn.className || btn.getAttribute('data-value') || '') + '').toLowerCase();
-    var blob = text + ' ' + name;
-    return [
-      'save', 'lưu', 'luu', 'save answer', 'save answers', 'lưu bài', 'luu bai',
-      'save_problem', 'problem_save', 'save-problem'
-    ].some(function(x){ return blob.indexOf(x) >= 0; });
+  function buttonText(btn){
+    return lower(((btn && (btn.innerText || btn.value || btn.getAttribute('aria-label') || btn.getAttribute('title'))) || '') + '').trim();
   }
-
-  function isForbidden(btn){
-    var text = textOf(btn);
-    return isSaveLike(btn) || [
-      'hint', 'show answer', 'xem đáp án', 'xem dap an', 'submission history',
-      'reset', 'clear', 'xóa', 'xoa', 'bookmark'
-    ].some(function(x){ return text.indexOf(x) >= 0; });
+  function isNoiseButtonText(text){
+    return text.indexOf('hint') >= 0
+      || text.indexOf('show answer') >= 0
+      || text.indexOf('xem đáp án') >= 0
+      || text.indexOf('submission history') >= 0;
   }
-
-  function isSubmitLike(btn){
-    var text = textOf(btn);
-    var name = ((btn.name || btn.id || btn.className || btn.getAttribute('data-value') || '') + '').toLowerCase();
-    var blob = text + ' ' + name;
-    return [
-      'submit', 'check', 'nộp bài', 'nop bai', 'nộp', 'nop', 'kiểm tra', 'kiem tra',
-      'problem_check', 'check-problem', 'submit-problem', 'submit-attempt', 'action-check'
-    ].some(function(x){ return blob.indexOf(x) >= 0; });
+  function isSaveOnlyButtonText(text){
+    // v0.4.14: do not click Save/Lưu. Save only sends problem_save and does
+    // not grade the answer. Auto-submit must click Submit/Check/Nộp bài only.
+    return text.indexOf('save') >= 0 || text.indexOf('lưu') >= 0 || text.indexOf('luu') >= 0;
   }
-
-  function submitButton(problem){
-    var buttons = Array.prototype.slice.call(problem.querySelectorAll('button,input[type="button"],input[type="submit"]'));
-    return buttons.find(function(btn){
-      if (!isVisible(btn) || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
-      if (isForbidden(btn)) return false;
-      return isSubmitLike(btn);
+  function isActualSubmitButton(btn){
+    var text = buttonText(btn);
+    if (!text || isNoiseButtonText(text) || isSaveOnlyButtonText(text)) return false;
+    return text.indexOf('submit') >= 0
+      || text.indexOf('check') >= 0
+      || text.indexOf('nộp bài') >= 0
+      || text.indexOf('nop bai') >= 0
+      || text.indexOf('kiểm tra') >= 0
+      || text.indexOf('kiem tra') >= 0;
+  }
+  function submitButtons(){
+    var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
+    var byProblem = new Map();
+    all.forEach(function(btn){
+      if (!btn || btn.disabled || !isVisible(btn) || !isActualSubmitButton(btn)) return;
+      var root = problemRoot(btn);
+      if (!selected(root)) return;
+      if (!byProblem.has(root)) byProblem.set(root, btn);
     });
+    return Array.from(byProblem.values());
   }
-
-  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
+  async function waitForProblemCheckBurstToStart(beforeStarted){
+    // Submit all selected problems in one burst, then wait briefly for Open edX
+    // to enqueue the native problem_check requests. We do not wait after each
+    // click because there is no server /lock policy in this version.
+    var startDeadline = Date.now() + 2500;
+    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(50);
+  }
+  async function waitForAllPendingProblemChecks(){
+    // After all clicks, wait only for already-started problem_check requests.
+    // This keeps the browser from reporting DONE while problem_check requests
+    // are still in flight, but avoids slow per-problem sequential submit.
+    var deadline = Date.now() + 15000;
+    var stableSince = null;
+    while (Date.now() < deadline) {
+      if (pendingProblemChecks <= 0) {
+        if (stableSince === null) stableSince = Date.now();
+        if (Date.now() - stableSince >= 800) break;
+      } else {
+        stableSince = null;
+      }
+      await sleep(100);
+    }
+  }
 
   async function autoSubmit(){
-    var roots = Array.prototype.slice.call(document.querySelectorAll('.problem,.problems-wrapper .vert,.xblock-student_view,[data-usage-id]'));
-    var seen = [];
-    var buttons = [];
-    roots.forEach(function(root){
-      if (!root || seen.indexOf(root) >= 0) return;
-      seen.push(root);
-      if (!selected(root)) return;
-      var btn = submitButton(root);
-      if (btn && buttons.indexOf(btn) < 0) buttons.push(btn);
-    });
-
+    var buttons = submitButtons();
     var clicked = 0;
-    buttons.forEach(function(btn, idx){
-      window.setTimeout(function(){
-        try { btn.click(); } catch(e) {}
-      }, idx * 100);
-      clicked += 1;
-    });
-    if (clicked > 0) await sleep(Math.min(2500, 500 + clicked * 120));
-    return clicked;
+    var networkStartedBefore = startedProblemChecks;
+
+    // Click every selected problem's Submit/Check button in one pass. This is
+    // intentionally concurrent/batched: Open edX will issue problem_save and
+    // problem_check requests for multiple problems without waiting for each
+    // previous problem_check to finish.
+    for (var i=0; i<buttons.length; i++){
+      var btn = buttons[i];
+      if (!btn || btn.disabled || !isVisible(btn)) continue;
+      if (!selected(problemRoot(btn))) continue;
+      try { btn.click(); clicked += 1; } catch (error) { /* keep submitting the rest */ }
+    }
+
+    await waitForProblemCheckBurstToStart(networkStartedBefore);
+    await waitForAllPendingProblemChecks();
+    return {
+      clicked: clicked,
+      problem_check_started: Math.max(0, startedProblemChecks - networkStartedBefore),
+      problem_check_finished: finishedProblemChecks,
+      problem_check_pending: pendingProblemChecks
+    };
   }
 
   function lock(){
     Array.prototype.slice.call(document.querySelectorAll('input,textarea,select,button')).forEach(function(el){
-      var text = textOf(el);
+      var text = lower((el.innerText || el.value || '') + '');
       if (text.indexOf('hint') >= 0 || text.indexOf('show answer') >= 0 || text.indexOf('xem đáp án') >= 0 || text.indexOf('submission history') >= 0) return;
       el.disabled = true;
       el.setAttribute('aria-disabled', 'true');
@@ -424,36 +504,30 @@ def quiz_session_runtime_js(request):
     document.body.classList.add('ai-quiz-timeout-locked');
   }
 
-  var configuredOrigins = __ALLOWED_PARENT_ORIGINS__;
-  function allowedOrigin(origin){
-    if (!origin) return false;
-    if (origin === window.location.origin) return true;
-    return configuredOrigins.indexOf(origin) >= 0;
-  }
-
   window.addEventListener('message', async function(event){
-    if (!allowedOrigin(event.origin)) return;
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
-    var count = await autoSubmit();
-    var delayMs = __LOCK_DELAY_MS__;
-    window.setTimeout(function(){
-      lock();
-      window.parent && window.parent.postMessage({
-        type:'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE',
-        submitted_problem_count: count,
-        clicked_submit_or_check_only: true,
-        plugin_version: PLUGIN_VERSION
-      }, event.origin);
-    }, delayMs);
+    if (autoSubmitting) return;
+    autoSubmitting = true;
+    var result = { clicked: 0, problem_check_started: 0, problem_check_finished: 0, problem_check_pending: pendingProblemChecks };
+    try { result = await autoSubmit(); } catch (error) { /* still lock locally and report best effort */ }
+    // v0.4.12: do not rely on the server /lock flow. Local disabling is kept
+    // only inside this iframe after auto-submit finishes; the server-side guard
+    // will expire the SUBMITTING session after the grace window.
+    lock();
+    if (window.parent) {
+      window.parent.postMessage({
+        type: 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE',
+        submitted_problem_count: result.clicked || 0,
+        problem_check_started_count: result.problem_check_started || 0,
+        problem_check_finished_count: result.problem_check_finished || 0,
+        pending_problem_check_count: result.problem_check_pending || 0
+      }, '*');
+    }
+    autoSubmitting = false;
   });
 })();
 """
-    raw_origins = os.environ.get('AI_QUIZ_RUNTIME_ALLOWED_ORIGINS') or getattr(settings, 'AI_QUIZ_RUNTIME_ALLOWED_ORIGINS', '') or ''
-    allowed_origins = [item.strip().rstrip('/') for item in str(raw_origins).split(',') if item.strip()]
-    js = js.replace('__ALLOWED_PARENT_ORIGINS__', json.dumps(allowed_origins))
-    try:
-        delay_ms = int(os.environ.get('UNIT_RESET_QUIZ_TIMER_RUNTIME_LOCK_DELAY_MS') or getattr(settings, 'UNIT_RESET_QUIZ_TIMER_RUNTIME_LOCK_DELAY_MS', 1500) or 1500)
-    except Exception:
-        delay_ms = 1500
-    js = js.replace('__LOCK_DELAY_MS__', str(max(delay_ms, 0)))
-    return HttpResponse(js, content_type='application/javascript; charset=utf-8')
+    response = HttpResponse(js, content_type='application/javascript; charset=utf-8')
+    response['Cache-Control'] = 'no-store, max-age=0'
+    return response
+
