@@ -433,52 +433,7 @@ def quiz_session_runtime_js(request):
       || text.indexOf('kiểm tra') >= 0
       || text.indexOf('kiem tra') >= 0;
   }
-
-  function hasRemainingAttempts(problem){
-    // Native Open edX disables Submit after the maximum graded attempts are used.
-    // Do not override that legitimate lock. The bug we are fixing is the opposite
-    // case: during an ACTIVE custom-timer attempt, Open edX may render a selected
-    // answer with "You have used 0 of 1 attempt" while Submit remains disabled
-    // because the old Save-only flow was suppressed.
-    try {
-      var text = lower((problem && problem.innerText) || '');
-      var m = text.match(/used\s+(\d+)\s+of\s+(\d+)\s+attempt/);
-      if (m) return parseInt(m[1], 10) < parseInt(m[2], 10);
-      m = text.match(/(\d+)\s*\/\s*(\d+)\s*(lần|lan|attempt)/);
-      if (m) return parseInt(m[1], 10) < parseInt(m[2], 10);
-    } catch (error) { /* allow best effort */ }
-    return true;
-  }
-
-  function unlockSelectedSubmitButtons(){
-    // v0.4.14.2: ACTIVE-attempt submit unlock.
-    // This script must not lock/unlock after timeout. Once the iframe is locally
-    // locked by auto-submit, leave all controls disabled.
-    if (document.body.classList.contains('ai-quiz-timeout-locked')) return 0;
-    var unlocked = 0;
-    var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
-    all.forEach(function(btn){
-      if (!btn || !isVisible(btn) || !isActualSubmitButton(btn)) return;
-      var root = problemRoot(btn);
-      if (!selected(root)) return;
-      if (!hasRemainingAttempts(root)) return;
-      try {
-        if (btn.disabled) {
-          btn.disabled = false;
-          unlocked += 1;
-        }
-        btn.removeAttribute('disabled');
-        btn.removeAttribute('aria-disabled');
-        if (btn.classList) {
-          btn.classList.remove('disabled');
-          btn.classList.remove('is-disabled');
-        }
-      } catch (error) { /* best effort */ }
-    });
-    return unlocked;
-  }
   function submitButtons(){
-    unlockSelectedSubmitButtons();
     var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
     var byProblem = new Map();
     all.forEach(function(btn){
@@ -539,6 +494,40 @@ def quiz_session_runtime_js(request):
     };
   }
 
+  function hasUsedAllAttempts(problem){
+    var text = lower((problem && problem.innerText) || '');
+    var match = text.match(/you have used\s+(\d+)\s+of\s+(\d+)\s+attempt/);
+    if (match) return parseInt(match[1], 10) >= parseInt(match[2], 10);
+    return false;
+  }
+
+  function unlockSubmitWhileActive(){
+    // Simple rule required by production: while the quiz time is still active,
+    // the learner must be able to press the real Open edX Submit/Check button.
+    // Do not touch Save/Lưu, Hint, Show answer, or anything after local timeout lock.
+    if (document.body.classList.contains('ai-quiz-timeout-locked')) return;
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
+    buttons.forEach(function(btn){
+      if (!btn || !isActualSubmitButton(btn)) return;
+      var root = problemRoot(btn);
+      if (hasUsedAllAttempts(root)) return;
+      try {
+        btn.disabled = false;
+        btn.removeAttribute('disabled');
+        btn.setAttribute('aria-disabled', 'false');
+        btn.classList.remove('disabled');
+        btn.classList.remove('is-disabled');
+      } catch (error) { /* best effort */ }
+    });
+  }
+
+  try {
+    document.addEventListener('change', unlockSubmitWhileActive, true);
+    document.addEventListener('click', function(){ setTimeout(unlockSubmitWhileActive, 0); }, true);
+    setInterval(unlockSubmitWhileActive, 1000);
+    setTimeout(unlockSubmitWhileActive, 0);
+  } catch (error) { /* best effort */ }
+
   function lock(){
     Array.prototype.slice.call(document.querySelectorAll('input,textarea,select,button')).forEach(function(el){
       var text = lower((el.innerText || el.value || '') + '');
@@ -548,18 +537,6 @@ def quiz_session_runtime_js(request):
     });
     document.body.classList.add('ai-quiz-timeout-locked');
   }
-
-  // Keep Submit/Check usable while the timed attempt is still active.
-  // Open edX can re-disable the button after radio/checkbox changes or partial
-  // problem rendering, so run on user interaction and short polling.
-  try {
-    document.addEventListener('change', function(){ setTimeout(unlockSelectedSubmitButtons, 0); setTimeout(unlockSelectedSubmitButtons, 250); }, true);
-    document.addEventListener('click', function(){ setTimeout(unlockSelectedSubmitButtons, 0); setTimeout(unlockSelectedSubmitButtons, 250); }, true);
-    setTimeout(unlockSelectedSubmitButtons, 0);
-    setTimeout(unlockSelectedSubmitButtons, 500);
-    setTimeout(unlockSelectedSubmitButtons, 1500);
-    setInterval(unlockSelectedSubmitButtons, 1000);
-  } catch (error) { /* best effort */ }
 
   window.addEventListener('message', async function(event){
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
