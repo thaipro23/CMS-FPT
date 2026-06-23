@@ -8,6 +8,7 @@ user-resolution APIs.
 from __future__ import annotations
 
 from datetime import datetime
+import importlib
 import secrets
 from typing import Any
 
@@ -93,6 +94,105 @@ def _split_display_name(item: Any, username: str, person_type: str) -> tuple[str
         return parts[-1][:150], ' '.join(parts[:-1])[:150], full[:255]
     token = username or ''
     return token[:150], token[:150], token[:255]
+
+
+
+
+
+def _import_attr_first(candidates: list[tuple[str, str]]) -> tuple[Any | None, str, str | None]:
+    """Import the first available Open edX symbol across release-specific paths.
+
+    Ulmo.3 uses the canonical common.djangoapps path for student models. Older
+    integrations sometimes imported through student.models, which may not exist
+    in newer Tutor/Open edX images. Connector endpoints must not silently assume
+    one path.
+    """
+    errors: list[str] = []
+    for module_path, attr_name in candidates:
+        dotted = f'{module_path}.{attr_name}'
+        try:
+            module = importlib.import_module(module_path)
+            return getattr(module, attr_name), dotted, None
+        except Exception as exc:
+            errors.append(f'{dotted}: {exc.__class__.__name__}: {exc}')
+    return None, '', ' | '.join(errors[:6])
+
+
+def _course_enrollment_model() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('common.djangoapps.student.models', 'CourseEnrollment'),
+        ('student.models', 'CourseEnrollment'),
+    ])
+
+
+def _course_staff_role_class() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('common.djangoapps.student.roles', 'CourseStaffRole'),
+        ('student.roles', 'CourseStaffRole'),
+    ])
+
+
+def _user_profile_model() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('common.djangoapps.student.models', 'UserProfile'),
+        ('student.models', 'UserProfile'),
+    ])
+
+
+def _ensure_user_profile(user: Any, *, full_name: str = '', username: str = '') -> dict[str, Any]:
+    """Ensure Open edX has the mandatory student UserProfile row.
+
+    Ulmo.3 enrollment code can fail with "User has no profile" even when
+    auth_user exists. That happens when accounts are created programmatically
+    without a matching UserProfile. The connector must create/repair this row
+    before enrollment, and it must use the release-correct import path.
+    """
+    UserProfile, source, import_error = _user_profile_model()
+    if UserProfile is None:
+        return {
+            'ok': False,
+            'source': None,
+            'created': False,
+            'message': 'Không import được UserProfile trên Open edX LMS.',
+            'import_error': import_error,
+        }
+    try:
+        clean_name = (full_name or '').strip() or (username or getattr(user, 'username', '') or '').strip() or str(getattr(user, 'id', '') or '')
+        profile, created = UserProfile.objects.get_or_create(user=user, defaults={'name': clean_name[:255]})
+        changed = False
+        if clean_name and not getattr(profile, 'name', ''):
+            profile.name = clean_name[:255]
+            changed = True
+        if changed:
+            profile.save()
+        return {
+            'ok': True,
+            'source': source,
+            'created': bool(created),
+            'message': 'UserProfile đã tồn tại hoặc đã được tạo.',
+        }
+    except Exception as exc:
+        return {
+            'ok': False,
+            'source': source,
+            'created': False,
+            'message': 'Không tạo/kiểm tra được UserProfile cho user CMS/Open edX.',
+            'error': f'{exc.__class__.__name__}: {exc}',
+        }
+
+
+def _persistent_course_grade_model() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('lms.djangoapps.grades.models', 'PersistentCourseGrade'),
+        ('lms.djangoapps.grades.models.persistent_course_grade', 'PersistentCourseGrade'),
+    ])
+
+
+def _persistent_subsection_grade_model() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('lms.djangoapps.grades.models', 'PersistentSubsectionGrade'),
+        ('lms.djangoapps.grades.models.persistent_subsection_grade', 'PersistentSubsectionGrade'),
+    ])
 
 
 def _connector_debug_errors_enabled() -> bool:
@@ -202,15 +302,18 @@ def _ensure_cms_user(item: Any, username: str, person_type: str):
             created = False
         except Exception:
             raise
-    # Keep profile best-effort; Open edX releases differ here.
-    try:
-        from student.models import UserProfile  # type: ignore
-        profile, _profile_created = UserProfile.objects.get_or_create(user=user, defaults={'name': full_name or username})
-        if full_name and not getattr(profile, 'name', ''):
-            profile.name = full_name
-            profile.save()
-    except Exception:
-        pass
+    profile_state = _ensure_user_profile(user, full_name=full_name, username=username)
+    if not profile_state.get('ok'):
+        # Do not hide this. Enrollment on Ulmo.3 fails later with "User has no
+        # profile" if this row is missing, so user creation/resolve must expose
+        # the actual problem immediately.
+        message = profile_state.get('message') or 'Không tạo/kiểm tra được UserProfile'
+        if _connector_debug_errors_enabled():
+            extra = profile_state.get('import_error') or profile_state.get('error')
+            if extra:
+                message = f'{message}: {extra}'
+        raise RuntimeError(message)
+    password_state = {**password_state, 'user_profile_ok': True, 'user_profile_created': bool(profile_state.get('created')), 'user_profile_model_source': profile_state.get('source')}
     return user, created, 'created' if created else 'exists', password_state
 
 
@@ -285,6 +388,7 @@ def student_insight_resolve_users(request):
         user = found_by_username.get(username) if username else None
         if user is not None:
             full_name = user.get_full_name() if hasattr(user, 'get_full_name') else ''
+            profile_state = _ensure_user_profile(user, full_name=full_name, username=username)
             row = {
                 'student_code': student_code or None,
                 'ap_username': username,
@@ -299,7 +403,11 @@ def student_insight_resolve_users(request):
                 'is_active': bool(getattr(user, 'is_active', True)),
                 'full_name': full_name,
                 **_existing_user_password_state(user),
-                'note': 'Khớp chính xác AP username = CMS/Open edX username',
+                'user_profile_ok': bool(profile_state.get('ok')),
+                'user_profile_created': bool(profile_state.get('created')),
+                'user_profile_model_source': profile_state.get('source'),
+                'user_profile_message': profile_state.get('message'),
+                'note': 'Khớp chính xác AP username = CMS/Open edX username' if profile_state.get('ok') else 'Khớp user nhưng chưa tạo/kiểm tra được UserProfile',
             }
             found.append(row)
         else:
@@ -528,7 +636,9 @@ def _enrollment_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[st
     if not course_key or not users:
         return result
     try:
-        from student.models import CourseEnrollment  # type: ignore
+        CourseEnrollment, _source, _import_error = _course_enrollment_model()
+        if CourseEnrollment is None:
+            return result
         user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
         enrollments = CourseEnrollment.objects.filter(course_id=course_key, user_id__in=user_ids).select_related('user')
         for enrollment in enrollments:
@@ -550,7 +660,9 @@ def _persistent_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, d
     if not course_key or not users:
         return result
     try:
-        from lms.djangoapps.grades.models import PersistentCourseGrade  # type: ignore
+        PersistentCourseGrade, _source, _import_error = _persistent_course_grade_model()
+        if PersistentCourseGrade is None:
+            return result
         user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
         rows = PersistentCourseGrade.objects.filter(course_id=course_key, user_id__in=user_ids)
         for row in rows:
@@ -583,7 +695,9 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     if not course_key or not users:
         return result
     try:
-        from lms.djangoapps.grades.models import PersistentSubsectionGrade  # type: ignore
+        PersistentSubsectionGrade, _source, _import_error = _persistent_subsection_grade_model()
+        if PersistentSubsectionGrade is None:
+            return result
         user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
         rows = PersistentSubsectionGrade.objects.filter(course_id=course_key, user_id__in=user_ids)
     except Exception:
@@ -861,6 +975,23 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -
     return results
 
 
+def _learning_connector_diagnostics() -> dict[str, Any]:
+    CourseEnrollment, ce_source, ce_error = _course_enrollment_model()
+    PersistentCourseGrade, pcg_source, pcg_error = _persistent_course_grade_model()
+    PersistentSubsectionGrade, psg_source, psg_error = _persistent_subsection_grade_model()
+    return {
+        'course_enrollment_model_available': CourseEnrollment is not None,
+        'course_enrollment_model_source': ce_source or None,
+        'course_enrollment_import_error': ce_error,
+        'persistent_course_grade_model_available': PersistentCourseGrade is not None,
+        'persistent_course_grade_model_source': pcg_source or None,
+        'persistent_course_grade_import_error': pcg_error,
+        'persistent_subsection_grade_model_available': PersistentSubsectionGrade is not None,
+        'persistent_subsection_grade_model_source': psg_source or None,
+        'persistent_subsection_grade_import_error': psg_error,
+    }
+
+
 @csrf_exempt
 def student_insight_class_analytics(request):
     """Return enrollment/progress/grade snapshots for a class in one call.
@@ -895,7 +1026,13 @@ def student_insight_class_analytics(request):
     for item in results:
         status = str(item.get('enrollment_status') or 'unknown')
         counts[status] = counts.get(status, 0) + 1
-    return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'results': results})
+    learning_counts = {
+        'enrolled': sum(1 for item in results if bool((item.get('enrollment') or {}).get('is_enrolled'))),
+        'with_progress': sum(1 for item in results if item.get('progress_percent') is not None or item.get('completed_blocks') is not None),
+        'with_total_grade': sum(1 for item in results if item.get('grade_percent') is not None),
+        'with_component_grades': sum(1 for item in results if item.get('component_scores')),
+    }
+    return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'learning_counts': learning_counts, 'diagnostics': _learning_connector_diagnostics(), 'results': results})
 
 
 def _student_insight_enroll_results(course_id: str, requested: list[dict[str, Any]], *, mode: str = 'audit', force: bool = False, create_missing: bool = False) -> list[dict[str, Any]]:
@@ -919,9 +1056,8 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
     found_by_key = _student_insight_user_map(requested)
     clean_mode = str(mode or _setting_or_env('AI_CONNECTOR_DEFAULT_ENROLLMENT_MODE', _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit')) or 'audit').strip() or 'audit'
     results: list[dict[str, Any]] = []
-    try:
-        from student.models import CourseEnrollment  # type: ignore
-    except Exception as exc:
+    CourseEnrollment, course_enrollment_source, course_enrollment_import_error = _course_enrollment_model()
+    if CourseEnrollment is None:
         return [{
             'student_code': item.get('student_code') or None,
             'ap_username': item.get('username') or '',
@@ -930,7 +1066,13 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
             'status': 'failed',
             'enrollment_status': 'failed',
             'is_enrolled': False,
-            'message': 'Không import được CourseEnrollment',
+            'verified_after_write': False,
+            'message': 'Không import được CourseEnrollment trên Open edX LMS. Đã thử common.djangoapps.student.models.CourseEnrollment và student.models.CourseEnrollment.',
+            'diagnostics': {
+                'course_enrollment_model_source': None,
+                'course_enrollment_import_error': course_enrollment_import_error,
+                'course_id': course_id,
+            },
         } for item in requested]
 
     for item in requested:
@@ -971,6 +1113,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
             'created_user': created_user,
             **password_state,
             'enrollment_mode': clean_mode,
+            'course_enrollment_model_source': course_enrollment_source,
         }
         if user is None:
             results.append({**base, 'status': 'missing_user', 'enrollment_status': 'missing_user', 'is_enrolled': False, 'message': 'Không tìm thấy user CMS/Open edX'})
@@ -978,9 +1121,46 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
         if getattr(user, 'is_active', True) is False:
             results.append({**base, 'status': 'inactive_user', 'enrollment_status': 'inactive_user', 'is_enrolled': False, 'message': 'User CMS/Open edX inactive'})
             continue
+
+        profile_full_name = user.get_full_name() if hasattr(user, 'get_full_name') else ''
+        profile_state = _ensure_user_profile(user, full_name=profile_full_name, username=username)
+        base = {
+            **base,
+            'user_profile_ok': bool(profile_state.get('ok')),
+            'user_profile_created': bool(profile_state.get('created')),
+            'user_profile_model_source': profile_state.get('source'),
+        }
+        if not profile_state.get('ok'):
+            results.append({
+                **base,
+                'status': 'user_profile_failed',
+                'enrollment_status': 'failed',
+                'is_enrolled': False,
+                'verified_after_write': False,
+                'message': 'User CMS thiếu profile và connector không tạo/kiểm tra được UserProfile. Enrollment trên Ulmo.3 sẽ fail với lỗi User has no profile.',
+                'diagnostics': {
+                    'user_profile_model_source': profile_state.get('source'),
+                    'user_profile_import_error': profile_state.get('import_error'),
+                    'user_profile_error': profile_state.get('error'),
+                },
+            })
+            continue
+
         if is_teacher:
             try:
-                from common.djangoapps.student.roles import CourseStaffRole  # type: ignore
+                CourseStaffRole, course_staff_role_source, course_staff_role_import_error = _course_staff_role_class()
+                if CourseStaffRole is None:
+                    results.append({
+                        **base,
+                        'status': 'course_staff_import_failed',
+                        'enrollment_status': 'failed',
+                        'is_enrolled': False,
+                        'course_role': 'staff',
+                        'verified_after_write': False,
+                        'message': 'Không import được CourseStaffRole trên Open edX LMS.',
+                        'diagnostics': {'course_staff_role_import_error': course_staff_role_import_error},
+                    })
+                    continue
                 role = CourseStaffRole(course_key)
                 already_staff = False
                 try:
@@ -1010,6 +1190,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
                     'enrollment_status': 'course_staff',
                     'is_enrolled': True,
                     'course_role': 'staff',
+                    'course_staff_role_model_source': course_staff_role_source,
                     'verified_after_write': True,
                     'message': 'Giảng viên đã được xác nhận Course Staff',
                 })
