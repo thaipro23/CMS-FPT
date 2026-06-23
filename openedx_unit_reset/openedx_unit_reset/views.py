@@ -504,8 +504,23 @@ def quiz_session_runtime_js(request):
     document.body.classList.add('ai-quiz-timeout-locked');
   }
 
+  function eventSaysAttemptStillActive(data){
+    if (!data) return false;
+    var status = lower(data.status || data.session_status || data.quiz_status || '');
+    var remaining = data.remaining_seconds;
+    if (remaining === undefined || remaining === null) remaining = data.remainingSeconds;
+    var remainingNumber = Number(remaining);
+    if ((status === 'active' || status === 'running') && (!isNaN(remainingNumber) ? remainingNumber > 0 : true)) return true;
+    if (!isNaN(remainingNumber) && remainingNumber > 0) return true;
+    return false;
+  }
+
   window.addEventListener('message', async function(event){
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
+    // Defensive guard: if the parent MFE sends a timeout event while it still
+    // knows the attempt is ACTIVE, never hide/disable the real Open edX Submit
+    // button. This keeps the learner able to submit during valid working time.
+    if (eventSaysAttemptStillActive(event.data)) return;
     if (autoSubmitting) return;
     autoSubmitting = true;
     var result = { clicked: 0, problem_check_started: 0, problem_check_finished: 0, problem_check_pending: pendingProblemChecks };

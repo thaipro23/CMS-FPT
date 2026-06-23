@@ -971,17 +971,64 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
     Returns (blocked, session). This intentionally errs on the side of allowing
     submissions when it cannot prove the problem belongs to an expired timed Unit.
 
-    Important reset/timer rule:
-    - old expired/reset-ready sessions must not block a newer active attempt.
-    - after quiz-session/reset, the previous session stays in history, while a
-      fresh ACTIVE session is created for the same Unit. The submit guard must
-      evaluate the latest attempt for that timer config, not merely any expired
-      session in the course.
+    v0.4.14.1 submit-unlock rule:
+    - While the latest attempt for the Unit is ACTIVE and still has time left,
+      Open edX problem_check must be allowed. Do not let an older EXPIRED /
+      RESET_WAIT / RESET_READY session hide or disable the learner's Submit
+      button during the current attempt.
+    - The older implementation only checked "same config". In production,
+      config lookup can drift when the same unit is upserted again, so the guard
+      must first look for an ACTIVE/SUBMITTING latest attempt by course + unit
+      membership before blocking based on historical expired sessions.
     """
     if not getattr(settings, 'UNIT_RESET_QUIZ_TIMER_SERVER_GUARD_ENABLED', True):
         return False, None
     if not user or not user.is_authenticated or not course_id or not problem_usage_key:
         return False, None
+
+    now = timezone.now()
+
+    try:
+        problem_key = UsageKey.from_string(str(problem_usage_key))
+    except Exception:
+        problem_key = None
+
+    course_key = None
+    try:
+        course_key = CourseKey.from_string(str(course_id))
+    except Exception:
+        course_key = None
+
+    def _problem_belongs_to_session(session):
+        unit_key = UsageKey.from_string(session.unit_usage_key)
+        reset_keys = collect_unit_usage_keys(unit_key)
+        if course_key is not None:
+            reset_keys = expand_randomized_selected_keys(user, course_key, reset_keys)
+        if problem_key is not None and problem_key in reset_keys:
+            return True
+        return str(problem_usage_key) in {str(k) for k in reset_keys}
+
+    # First, positively allow submit/check when there is a current ACTIVE or
+    # auto-submitting attempt for the same problem's Unit. This fixes the UI state
+    # where an old expired session makes Open edX hide/disable the Submit button
+    # even though the learner is inside a valid timed attempt.
+    active_sessions = UnitQuizSession.objects.filter(
+        user=user,
+        course_id=str(course_id),
+        status__in=[UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING],
+    ).select_related('config').order_by('-attempt_no', '-created_at')[:20]
+    for active_session in active_sessions:
+        try:
+            if active_session.status == UnitQuizSession.STATUS_ACTIVE and active_session.expires_at and now <= active_session.expires_at:
+                if _problem_belongs_to_session(active_session):
+                    return False, None
+            if active_session.status == UnitQuizSession.STATUS_SUBMITTING and _session_allows_auto_submit_grace(active_session, now):
+                if _problem_belongs_to_session(active_session):
+                    log.info('Allowing timed quiz submit while current attempt is auto-submitting session_id=%s user_id=%s', active_session.id, user.id)
+                    return False, None
+        except Exception:
+            log.exception('Could not evaluate active timed quiz submit guard')
+            continue
 
     guarded_sessions = UnitQuizSession.objects.filter(
         user=user,
@@ -996,22 +1043,11 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
     if not guarded_sessions:
         return False, None
 
-    try:
-        problem_key = UsageKey.from_string(str(problem_usage_key))
-    except Exception:
-        problem_key = None
-
-    course_key = None
-    try:
-        course_key = CourseKey.from_string(str(course_id))
-    except Exception:
-        course_key = None
-
     for session in guarded_sessions:
         try:
             # If a newer ACTIVE/SUBMITTING attempt exists for the same timer config,
-            # allow the submit. This is the normal state after the learner clicks
-            # "Làm lại bài" and the Unit has been randomized again.
+            # allow the submit. This remains as a fast compatibility path, while
+            # the course+unit active-session check above handles config drift.
             latest_for_config = UnitQuizSession.objects.filter(
                 user=user,
                 config=session.config,
@@ -1020,20 +1056,13 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
                 UnitQuizSession.STATUS_ACTIVE,
                 UnitQuizSession.STATUS_SUBMITTING,
             ):
-                continue
+                if latest_for_config.status == UnitQuizSession.STATUS_ACTIVE and latest_for_config.expires_at and now <= latest_for_config.expires_at:
+                    continue
+                if latest_for_config.status == UnitQuizSession.STATUS_SUBMITTING and _session_allows_auto_submit_grace(latest_for_config, now):
+                    continue
 
-            unit_key = UsageKey.from_string(session.unit_usage_key)
-            reset_keys = collect_unit_usage_keys(unit_key)
-            if course_key is not None:
-                reset_keys = expand_randomized_selected_keys(user, course_key, reset_keys)
-            reset_key_strings = {str(k) for k in reset_keys}
-            if problem_key is not None and problem_key in reset_keys:
-                if _session_allows_auto_submit_grace(session):
-                    log.info('Allowing timed quiz auto-submit during grace window session_id=%s user_id=%s', session.id, user.id)
-                    return False, None
-                return True, session
-            if str(problem_usage_key) in reset_key_strings:
-                if _session_allows_auto_submit_grace(session):
+            if _problem_belongs_to_session(session):
+                if _session_allows_auto_submit_grace(session, now):
                     log.info('Allowing timed quiz auto-submit during grace window session_id=%s user_id=%s', session.id, user.id)
                     return False, None
                 return True, session
