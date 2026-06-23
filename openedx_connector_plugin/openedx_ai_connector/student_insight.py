@@ -989,14 +989,50 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
                     already_staff = False
                 if not already_staff or force:
                     role.add_users(user)
-                results.append({**base, 'status': 'already_course_staff' if already_staff else 'course_staff_added', 'enrollment_status': 'course_staff', 'is_enrolled': True, 'course_role': 'staff', 'message': 'Giảng viên đã được gán Course Staff'})
+                try:
+                    verified_staff = bool(role.has_user(user))
+                except Exception:
+                    verified_staff = already_staff or not force
+                if not verified_staff:
+                    results.append({
+                        **base,
+                        'status': 'course_staff_not_verified',
+                        'enrollment_status': 'failed',
+                        'is_enrolled': False,
+                        'course_role': 'staff',
+                        'verified_after_write': False,
+                        'message': 'Đã gọi CourseStaffRole.add_users nhưng chưa xác nhận được giảng viên trong Course Staff',
+                    })
+                    continue
+                results.append({
+                    **base,
+                    'status': 'already_course_staff' if already_staff else 'course_staff_added',
+                    'enrollment_status': 'course_staff',
+                    'is_enrolled': True,
+                    'course_role': 'staff',
+                    'verified_after_write': True,
+                    'message': 'Giảng viên đã được xác nhận Course Staff',
+                })
             except Exception as exc:
                 results.append({**base, 'status': 'course_staff_failed', 'enrollment_status': 'failed', 'is_enrolled': False, 'message': 'Không gán được Course Staff cho giảng viên'})
             continue
         try:
             enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
             if enrollment and getattr(enrollment, 'is_active', False) and not force:
-                results.append({**base, 'status': 'already_enrolled', 'enrollment_status': 'enrolled', 'is_enrolled': True, 'enrollment': {'status': 'enrolled', 'is_enrolled': True, 'mode': getattr(enrollment, 'mode', clean_mode)}})
+                results.append({
+                    **base,
+                    'status': 'already_enrolled',
+                    'enrollment_status': 'enrolled',
+                    'is_enrolled': True,
+                    'verified_after_write': True,
+                    'enrollment_id': str(getattr(enrollment, 'id', '') or ''),
+                    'enrollment': {
+                        'status': 'enrolled',
+                        'is_enrolled': True,
+                        'mode': getattr(enrollment, 'mode', clean_mode),
+                        'id': str(getattr(enrollment, 'id', '') or ''),
+                    },
+                })
                 continue
             if enrollment:
                 try:
@@ -1022,12 +1058,57 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
                     except TypeError:
                         enroll_method(user, course_key)
                 status_value = 'created'
+
+            # Hard verification: never report success unless the enrollment row
+            # really exists and is active after the write. Earlier builds could
+            # return success when CourseEnrollment.enroll() did not create a row
+            # in this Open edX release, which made AI Server mark enrollment as
+            # successful even though LMS had no enrollment.
             enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
-            mode_value = getattr(enrollment, 'mode', clean_mode) if enrollment else clean_mode
-            active = bool(getattr(enrollment, 'is_active', True)) if enrollment else True
-            results.append({**base, 'status': status_value, 'enrollment_status': 'enrolled' if active else 'inactive', 'is_enrolled': active, 'enrollment_mode': mode_value, 'enrollment': {'status': 'enrolled' if active else 'inactive', 'is_enrolled': active, 'mode': mode_value}})
+            if not enrollment:
+                results.append({
+                    **base,
+                    'status': 'enrollment_not_created',
+                    'enrollment_status': 'failed',
+                    'is_enrolled': False,
+                    'verified_after_write': False,
+                    'message': 'CourseEnrollment không được tạo sau khi gọi Open edX enroll API',
+                })
+                continue
+            mode_value = getattr(enrollment, 'mode', clean_mode) or clean_mode
+            active = bool(getattr(enrollment, 'is_active', False))
+            if not active:
+                results.append({
+                    **base,
+                    'status': 'enrollment_inactive_after_write',
+                    'enrollment_status': 'inactive',
+                    'is_enrolled': False,
+                    'verified_after_write': False,
+                    'enrollment_id': str(getattr(enrollment, 'id', '') or ''),
+                    'enrollment_mode': mode_value,
+                    'enrollment': {'status': 'inactive', 'is_enrolled': False, 'mode': mode_value, 'id': str(getattr(enrollment, 'id', '') or '')},
+                    'message': 'Enrollment được tạo nhưng đang inactive trong Open edX',
+                })
+                continue
+            results.append({
+                **base,
+                'status': status_value,
+                'enrollment_status': 'enrolled',
+                'is_enrolled': True,
+                'verified_after_write': True,
+                'enrollment_id': str(getattr(enrollment, 'id', '') or ''),
+                'enrollment_mode': mode_value,
+                'enrollment': {'status': 'enrolled', 'is_enrolled': True, 'mode': mode_value, 'id': str(getattr(enrollment, 'id', '') or '')},
+            })
         except Exception as exc:
-            results.append({**base, 'status': 'failed', 'enrollment_status': 'failed', 'is_enrolled': False, 'message': 'Không enroll được sinh viên vào Course CMS'})
+            results.append({
+                **base,
+                'status': 'failed',
+                'enrollment_status': 'failed',
+                'is_enrolled': False,
+                'verified_after_write': False,
+                'message': 'Không enroll được sinh viên vào Course CMS' + (f': {exc}' if _connector_debug_errors_enabled() else ''),
+            })
     return results
 
 
