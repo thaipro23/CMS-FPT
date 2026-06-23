@@ -134,6 +134,7 @@ def _ensure_cms_user(item: Any, username: str, person_type: str):
     return user, created, 'created' if created else 'exists'
 
 
+@csrf_exempt
 def student_insight_resolve_users(request):
     """Resolve AP usernames against Open edX/CMS users.
 
@@ -294,6 +295,7 @@ def _course_item(course: Any) -> dict[str, Any]:
     }
 
 
+@csrf_exempt
 def student_insight_course_search(request):
     """Search courses for AI Server academic subject-course auto mapping."""
     if request.method != 'POST':
@@ -775,6 +777,7 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -
     return results
 
 
+@csrf_exempt
 def student_insight_class_analytics(request):
     """Return enrollment/progress/grade snapshots for a class in one call.
 
@@ -942,6 +945,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
     return results
 
 
+@csrf_exempt
 def student_insight_course_enrollment_enroll(request):
     """Enroll resolved CMS/Open edX users into a course.
 
@@ -989,6 +993,7 @@ def student_insight_course_enrollment_enroll(request):
     return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'results': results})
 
 
+@csrf_exempt
 def student_insight_course_enrollment_batch(request):
     if request.method != 'POST':
         return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
@@ -1008,6 +1013,7 @@ def student_insight_course_enrollment_batch(request):
     return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'enrollment': item.get('enrollment'), 'enrollment_status': item.get('enrollment_status'), 'enrollment_mode': item.get('enrollment_mode')} for item in results], 'total': len(results)})
 
 
+@csrf_exempt
 def student_insight_course_progress_batch(request):
     if request.method != 'POST':
         return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
@@ -1027,6 +1033,7 @@ def student_insight_course_progress_batch(request):
     return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'progress': item.get('progress'), 'progress_percent': item.get('progress_percent'), 'completed_blocks': item.get('completed_blocks'), 'total_blocks': item.get('total_blocks')} for item in results], 'total': len(results)})
 
 
+@csrf_exempt
 def student_insight_quiz_grades_batch(request):
     if request.method != 'POST':
         return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
