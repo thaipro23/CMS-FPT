@@ -302,6 +302,183 @@ def clear_user_grade_cache(user, course_key):
     return result
 
 
+# ---------------------------------------------------------------------------
+# Open edX submissions cleanup
+# ---------------------------------------------------------------------------
+
+def get_submissions_models():
+    """Import edx-submissions models lazily.
+
+    CAPA/problem state can survive a StudentModule delete because graded answer
+    submissions and scores are stored in the edx-submissions app.  The reset
+    operation must remove those rows for the current learner + course + problem
+    usage keys so a retake renders like a fresh attempt, without green feedback
+    or a previously revealed answer.
+    """
+    try:
+        from submissions.models import StudentItem, Submission, Score
+        return StudentItem, Submission, Score
+    except Exception as exc:  # pragma: no cover - depends on edx-platform install
+        log.warning("Could not import edx-submissions models; reset will continue without submissions cleanup", exc_info=True)
+        return None, None, None
+
+
+def _field_names(model):
+    try:
+        return {field.name for field in model._meta.get_fields()}
+    except Exception:
+        return set()
+
+
+def get_anonymous_student_ids(user, course_key):
+    """Return possible submissions.StudentItem.student_id values for this user.
+
+    Open edX submissions normally uses the course-scoped anonymous id, not
+    auth_user.id.  Different releases expose anonymous_id_for_user from slightly
+    different modules/signatures, so this is intentionally defensive.
+    """
+    values = []
+
+    for module_path in ("common.djangoapps.student.models", "student.models"):
+        try:
+            module = __import__(module_path, fromlist=["anonymous_id_for_user"])
+            fn = getattr(module, "anonymous_id_for_user", None)
+            if not fn:
+                continue
+            for args in ((user, course_key), (user, str(course_key)), (user.id, course_key), (user.id, str(course_key)), (user,)):
+                try:
+                    value = fn(*args)
+                except TypeError:
+                    continue
+                except Exception:
+                    continue
+                if value:
+                    values.append(str(value))
+        except Exception:
+            continue
+
+    # Conservative fallbacks for non-standard deployments.  They are only used
+    # together with exact course_id + item_id filters.
+    for value in (
+        getattr(user, "anonymous_id", None),
+        getattr(user, "username", None),
+        getattr(user, "email", None),
+        str(getattr(user, "id", "") or ""),
+    ):
+        if value:
+            values.append(str(value))
+
+    deduped = []
+    seen = set()
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return deduped
+
+
+def clear_user_submissions(user, course_key, reset_keys):
+    """Delete edx-submissions rows for this learner and the reset problem keys.
+
+    Returns counts and diagnostics.  If submissions models are unavailable the
+    reset continues because StudentModule is still the primary state store, but
+    the caller receives a clear diagnostic.
+    """
+    result = {
+        "student_items": 0,
+        "submissions": 0,
+        "scores": 0,
+        "student_id_candidates": [],
+        "skipped": False,
+        "message": "",
+    }
+
+    StudentItem, Submission, Score = get_submissions_models()
+    if not StudentItem or not Submission or not Score:
+        result["skipped"] = True
+        result["message"] = "Không import được submissions.models; chỉ xóa StudentModule/grade cache."
+        return result
+
+    item_ids = [str(key) for key in reset_keys]
+    if not item_ids:
+        result["skipped"] = True
+        result["message"] = "Không có problem usage key để xóa submissions."
+        return result
+
+    student_ids = get_anonymous_student_ids(user, course_key)
+    result["student_id_candidates"] = student_ids
+    if not student_ids:
+        result["skipped"] = True
+        result["message"] = "Không tìm được anonymous student_id để xóa submissions an toàn."
+        return result
+
+    try:
+        item_fields = _field_names(StudentItem)
+        filters = {}
+        if "course_id" in item_fields:
+            filters["course_id"] = str(course_key)
+        if "item_id" in item_fields:
+            filters["item_id__in"] = item_ids
+        elif "item" in item_fields:
+            filters["item__in"] = item_ids
+        else:
+            result["skipped"] = True
+            result["message"] = "StudentItem không có item_id/item field phù hợp."
+            return result
+        if "student_id" in item_fields:
+            filters["student_id__in"] = student_ids
+        elif "student" in item_fields:
+            filters["student__in"] = student_ids
+        else:
+            result["skipped"] = True
+            result["message"] = "StudentItem không có student_id/student field phù hợp."
+            return result
+
+        student_items = StudentItem.objects.filter(**filters)
+        student_item_ids = list(student_items.values_list("id", flat=True))
+        if not student_item_ids:
+            result["message"] = "Không tìm thấy StudentItem tương ứng để xóa."
+            return result
+
+        # Delete Score first, then Submission, then StudentItem.  Try the common
+        # relationship paths used by edx-submissions across releases.
+        score_deleted = 0
+        for kwargs in (
+            {"submission__student_item_id__in": student_item_ids},
+            {"student_item_id__in": student_item_ids},
+        ):
+            try:
+                count, _ = Score.objects.filter(**kwargs).delete()
+                score_deleted += count
+                break
+            except Exception:
+                continue
+        result["scores"] = score_deleted
+
+        submission_deleted = 0
+        for kwargs in (
+            {"student_item_id__in": student_item_ids},
+            {"student_item__id__in": student_item_ids},
+        ):
+            try:
+                count, _ = Submission.objects.filter(**kwargs).delete()
+                submission_deleted += count
+                break
+            except Exception:
+                continue
+        result["submissions"] = submission_deleted
+
+        item_deleted, _ = StudentItem.objects.filter(id__in=student_item_ids).delete()
+        result["student_items"] = item_deleted
+        result["message"] = "Đã xóa submissions/score của learner cho các problem trong Unit."
+        return result
+    except Exception:
+        log.exception("Could not delete edx-submissions rows during unit reset user_id=%s course_id=%s", user.id, course_key)
+        result["skipped"] = True
+        result["message"] = "Lỗi khi xóa submissions; xem LMS log để biết chi tiết."
+        return result
+
+
 def audit_reset(request, course_key, unit_key, **kwargs):
     if not getattr(settings, "UNIT_RESET_AUDIT_LOG_ENABLED", True):
         return
@@ -436,6 +613,7 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
         ).delete()
 
         grade_cache_deleted = clear_user_grade_cache(request.user, course_key)
+        submissions_deleted = clear_user_submissions(request.user, course_key, reset_keys)
 
         record.reset_count += 1
         record.last_reset_at = now
@@ -458,12 +636,13 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
     )
 
     log.warning(
-        "Unit reset OK user_id=%s course_id=%s unit=%s deleted=%s grade_cache_deleted=%s reset_keys=%s cooldown=%s reset_count=%s",
+        "Unit reset OK user_id=%s course_id=%s unit=%s deleted=%s grade_cache_deleted=%s submissions_deleted=%s reset_keys=%s cooldown=%s reset_count=%s",
         request.user.id,
         course_key,
         unit_key,
         deleted_count,
         grade_cache_deleted,
+        submissions_deleted,
         len(reset_keys),
         cooldown_seconds,
         record.reset_count,
@@ -475,7 +654,11 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
         "message": "Đã reset Unit. Hệ thống sẽ random lại bộ câu hỏi mới.",
         "deleted_count": deleted_count,
         "grade_cache_deleted": grade_cache_deleted,
+        "submissions_deleted": submissions_deleted,
         "reset_keys_count": len(reset_keys),
+        "reload_required": True,
+        "reload_unit": True,
+        "force_problem_reload": True,
         "cooldown_seconds": cooldown_seconds,
         "next_reset_allowed_at": record.next_reset_allowed_at.isoformat(),
         "reset_count": record.reset_count,
@@ -738,47 +921,6 @@ def _latest_quiz_session(user, config):
     return UnitQuizSession.objects.filter(user=user, config=config).order_by('-attempt_no', '-created_at').first()
 
 
-def _latest_quiz_session_for_unit(user, course_id, unit_usage_key):
-    """Return latest timed-quiz session by stable course/unit strings.
-
-    This intentionally does not rely only on the config FK because timer configs
-    can be upserted/recreated while old sessions remain in history. Server-side
-    submit/reset guards must allow a newer ACTIVE attempt for the same unit to
-    override older EXPIRED/RESET_READY sessions.
-    """
-    if not user or not course_id or not unit_usage_key:
-        return None
-    return (
-        UnitQuizSession.objects
-        .filter(user=user, course_id=str(course_id), unit_usage_key=str(unit_usage_key))
-        .order_by('-attempt_no', '-created_at')
-        .first()
-    )
-
-
-def get_active_quiz_session_for_unit(request, course_id, unit_usage_key):
-    """Return latest ACTIVE/SUBMITTING session for a unit, updating expiry first.
-
-    Used by the legacy reset/status path to avoid falling back to generic unit
-    reset while a timed quiz attempt is still running.
-    """
-    course_key, unit_key = parse_keys(course_id, unit_usage_key)
-    session = _latest_quiz_session_for_unit(request.user, str(course_key), str(unit_key))
-    if not session:
-        return None
-    session = _update_expired_session(session)
-    if session.status in (UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING):
-        return session
-    return None
-
-
-def raise_active_quiz_reset_blocked(session):
-    now = timezone.now()
-    next_allowed = session.reset_available_at or _reset_available_at_from_quiz_expiry(session, fallback_now=now)
-    wait = max(int((next_allowed - now).total_seconds()), 0)
-    raise ResetCooldownError(wait, next_allowed, session.attempt_no, session.cooldown_seconds)
-
-
 def _update_expired_session(session):
     now = timezone.now()
     if session.status == UnitQuizSession.STATUS_ACTIVE and now >= session.expires_at:
@@ -1005,7 +1147,8 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     data['reset_result'] = reset_result
     data['reload_required'] = True
     data['reload_unit'] = True
-    data['message'] = 'Đã làm lại bài. Hệ thống đã random lại câu hỏi và bắt đầu lượt mới.'
+    data['force_problem_reload'] = True
+    data['message'] = 'Đã làm lại bài. Hệ thống đã reset sạch trạng thái bài và bắt đầu lượt mới. Vui lòng tải lại Unit nếu giao diện chưa tự cập nhật.'
     return data
 
 def is_late_submit_blocked(user, course_id, problem_usage_key):
@@ -1052,31 +1195,18 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
 
     for session in guarded_sessions:
         try:
-            # If a newer ACTIVE/SUBMITTING attempt exists for the same timed unit,
-            # allow the submit. Do this by stable course_id + unit_usage_key first,
-            # not only by config FK, because config rows can be upserted/recreated
-            # while historical sessions remain. This prevents old EXPIRED sessions
-            # from blocking a clean retake attempt.
-            latest_for_unit = _latest_quiz_session_for_unit(user, session.course_id, session.unit_usage_key)
-            if latest_for_unit:
-                latest_for_unit = _update_expired_session(latest_for_unit)
-                if latest_for_unit.id != session.id and latest_for_unit.status in (
-                    UnitQuizSession.STATUS_ACTIVE,
-                    UnitQuizSession.STATUS_SUBMITTING,
-                ):
-                    continue
-
+            # If a newer ACTIVE/SUBMITTING attempt exists for the same timer config,
+            # allow the submit. This is the normal state after the learner clicks
+            # "Làm lại bài" and the Unit has been randomized again.
             latest_for_config = UnitQuizSession.objects.filter(
                 user=user,
                 config=session.config,
             ).order_by('-attempt_no', '-created_at').first()
-            if latest_for_config:
-                latest_for_config = _update_expired_session(latest_for_config)
-                if latest_for_config.id != session.id and latest_for_config.status in (
-                    UnitQuizSession.STATUS_ACTIVE,
-                    UnitQuizSession.STATUS_SUBMITTING,
-                ):
-                    continue
+            if latest_for_config and latest_for_config.id != session.id and latest_for_config.status in (
+                UnitQuizSession.STATUS_ACTIVE,
+                UnitQuizSession.STATUS_SUBMITTING,
+            ):
+                continue
 
             unit_key = UsageKey.from_string(session.unit_usage_key)
             reset_keys = collect_unit_usage_keys(unit_key)

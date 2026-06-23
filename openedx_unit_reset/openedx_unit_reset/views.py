@@ -19,9 +19,7 @@ from .services import (
     get_status_for_current_user,
     get_legacy_compatible_timer_status_for_current_user,
     get_timer_config_or_none,
-    get_active_quiz_session_for_unit,
     parse_keys,
-    raise_active_quiz_reset_blocked,
     reset_unit_for_current_user,
     get_quiz_session_status_for_current_user,
     lock_quiz_session_for_current_user,
@@ -137,12 +135,6 @@ def reset_unit_attempt(request):
         if get_timer_config_or_none(course_id, unit_usage_key):
             result = reset_quiz_session_for_current_user(request, course_id, unit_usage_key)
         else:
-            active_session = get_active_quiz_session_for_unit(request, course_id, unit_usage_key)
-            if active_session:
-                # Do not fall back to legacy unit reset while a timed quiz
-                # attempt is still active. The UI may leave the button visible,
-                # but the backend must only return the remaining wait time.
-                raise_active_quiz_reset_blocked(active_session)
             result = reset_unit_for_current_user(request, course_id, unit_usage_key)
         return JsonResponse(result, status=200)
 
@@ -329,7 +321,7 @@ def quiz_session_runtime_js(request):
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
 
-  // v0.4.14.4: native-submit policy; runtime only auto-submits at timeout, never Save/Lưu.
+  // v0.4.14: iframe-only runtime clicks real Submit/Check buttons only, never Save/Lưu.
   // Important: runtime.js may also be loaded in the top Learning MFE window.
   // Auto-submit must run only inside the LMS problem iframe. If the top window
   // handles AI_QUIZ_TIMEOUT_AUTO_SUBMIT it can send DONE too early, making the
