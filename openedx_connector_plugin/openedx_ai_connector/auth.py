@@ -11,6 +11,7 @@ import re
 import socket
 import time
 from datetime import datetime, timezone
+from django.core.serializers.json import DjangoJSONEncoder
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler
@@ -276,8 +277,24 @@ def _same_request_host(request, url: str) -> bool:
         return False
 
 
+class _ConnectorJSONEncoder(DjangoJSONEncoder):
+    """JSON encoder for connector responses across Open edX releases.
+
+    DjangoJSONEncoder already handles datetime/date/time/Decimal/UUID. The
+    final string fallback protects connector responses from Open edX opaque keys
+    and other model-ish values that otherwise raise "not JSON serializable"
+    after the view has already completed the real work.
+    """
+
+    def default(self, value):  # noqa: D401 - Django encoder extension
+        try:
+            return super().default(value)
+        except TypeError:
+            return str(value)
+
+
 def _json_response(data: dict, status: int = 200) -> JsonResponse:
-    return JsonResponse(data, status=status, json_dumps_params={'ensure_ascii': False})
+    return JsonResponse(data, status=status, encoder=_ConnectorJSONEncoder, json_dumps_params={'ensure_ascii': False})
 
 
 def _read_json_body(request) -> tuple[dict[str, Any] | None, JsonResponse | None]:

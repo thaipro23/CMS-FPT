@@ -8,6 +8,7 @@ user-resolution APIs.
 from __future__ import annotations
 
 from datetime import datetime
+import secrets
 from typing import Any
 
 from django.http import JsonResponse
@@ -94,6 +95,85 @@ def _split_display_name(item: Any, username: str, person_type: str) -> tuple[str
     return token[:150], token[:150], token[:255]
 
 
+def _connector_debug_errors_enabled() -> bool:
+    return str(_setting_or_env('AI_CONNECTOR_DEBUG_ERRORS', 'false') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _created_user_password_config() -> tuple[str, str, str]:
+    """Return configured password policy for auto-created Open edX users.
+
+    Default is intentionally `unusable`: the created user can be enrolled and
+    tracked by Open edX, but cannot authenticate with a local password until SSO
+    or password reset sets one. Operators may opt into a fixed temporary password
+    for UAT/import windows only by setting AI_CONNECTOR_CREATED_USER_PASSWORD_MODE=fixed
+    and AI_CONNECTOR_CREATED_USER_DEFAULT_PASSWORD. The password is never returned
+    by the API response and is masked by AI Server audit logging.
+    """
+    mode = str(_setting_or_env('AI_CONNECTOR_CREATED_USER_PASSWORD_MODE', 'unusable') or 'unusable').strip().lower()
+    default_password = str(_setting_or_env('AI_CONNECTOR_CREATED_USER_DEFAULT_PASSWORD', '') or '')
+    if mode not in {'unusable', 'fixed', 'random'}:
+        mode = 'unusable'
+    if mode == 'fixed' and len(default_password) < 8:
+        # Do not silently create weak-password accounts. Fall back to unusable.
+        return 'unusable', '', 'fixed_password_missing_or_too_short'
+    return mode, default_password, 'configured'
+
+
+def _apply_created_user_password(user: Any) -> dict[str, Any]:
+    mode, default_password, config_status = _created_user_password_config()
+    if mode == 'fixed' and default_password:
+        user.set_password(default_password)
+        return {
+            'password_policy': 'fixed_env_password',
+            'password_login_enabled': True,
+            'password_config_status': config_status,
+            'password_note': 'User được tạo với mật khẩu tạm lấy từ AI_CONNECTOR_CREATED_USER_DEFAULT_PASSWORD; API không trả mật khẩu ra response.',
+        }
+    if mode == 'random':
+        # Random local password prevents login by guessing/default password. Since it
+        # is not returned or logged, real access still uses SSO/password reset.
+        user.set_password(secrets.token_urlsafe(32))
+        return {
+            'password_policy': 'random_not_returned',
+            'password_login_enabled': False,
+            'password_config_status': config_status,
+            'password_note': 'User có mật khẩu ngẫu nhiên không trả ra response; đăng nhập bằng SSO hoặc reset password.',
+        }
+    if hasattr(user, 'set_unusable_password'):
+        user.set_unusable_password()
+    return {
+        'password_policy': 'unusable_password',
+        'password_login_enabled': False,
+        'password_config_status': config_status,
+        'password_note': 'User không có mật khẩu đăng nhập local; dùng SSO hoặc reset password để đặt mật khẩu.',
+    }
+
+
+def _existing_user_password_state(user: Any) -> dict[str, Any]:
+    has_usable = None
+    try:
+        has_usable = bool(user.has_usable_password()) if hasattr(user, 'has_usable_password') else None
+    except Exception:
+        has_usable = None
+    if has_usable is True:
+        return {
+            'password_policy': 'existing_user_password',
+            'password_login_enabled': True,
+            'password_note': 'User đã tồn tại và có mật khẩu khả dụng hoặc phương thức xác thực hiện có.',
+        }
+    if has_usable is False:
+        return {
+            'password_policy': 'existing_unusable_password',
+            'password_login_enabled': False,
+            'password_note': 'User đã tồn tại nhưng không có mật khẩu local khả dụng; dùng SSO hoặc reset password.',
+        }
+    return {
+        'password_policy': 'existing_unknown',
+        'password_login_enabled': None,
+        'password_note': 'Không xác định được trạng thái mật khẩu của user đã tồn tại.',
+    }
+
+
 def _ensure_cms_user(item: Any, username: str, person_type: str):
     """Create a CMS/Open edX auth user when the AP record is authoritative.
 
@@ -106,19 +186,19 @@ def _ensure_cms_user(item: Any, username: str, person_type: str):
     User = get_user_model()
     username = _clean_user_token(username)
     if not username:
-        return None, False, 'missing_username'
+        return None, False, 'missing_username', {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': 'Thiếu username nên không tạo user.'}
     first_name, last_name, full_name = _split_display_name(item, username, person_type)
     email = _payload_email(item, username, person_type)
     try:
         with transaction.atomic():
             user = User(username=username, email=email, first_name=first_name, last_name=last_name, is_active=True)
-            if hasattr(user, 'set_unusable_password'):
-                user.set_unusable_password()
+            password_state = _apply_created_user_password(user)
             user.save()
             created = True
     except IntegrityError:
         try:
             user = User.objects.get(username__iexact=username)
+            password_state = _existing_user_password_state(user)
             created = False
         except Exception:
             raise
@@ -131,7 +211,7 @@ def _ensure_cms_user(item: Any, username: str, person_type: str):
             profile.save()
     except Exception:
         pass
-    return user, created, 'created' if created else 'exists'
+    return user, created, 'created' if created else 'exists', password_state
 
 
 @csrf_exempt
@@ -163,7 +243,7 @@ def student_insight_resolve_users(request):
         raw_students = data.get('usernames') or data.get('users') or []
     if not isinstance(raw_students, list):
         return _json_response({'ok': False, 'message': 'students/usernames phải là danh sách'}, status=400)
-    max_batch = int(_setting_or_env('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', '5000') or '5000')
+    max_batch = int(_setting_or_env('AI_CONNECTOR_MAX_BATCH_SIZE', _setting_or_env('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', '5000')) or '5000')
     max_batch = max(1, min(max_batch, 10000))
     raw_students = raw_students[:max_batch]
 
@@ -218,19 +298,21 @@ def student_insight_resolve_users(request):
                 'openedx_is_active': bool(getattr(user, 'is_active', True)),
                 'is_active': bool(getattr(user, 'is_active', True)),
                 'full_name': full_name,
+                **_existing_user_password_state(user),
                 'note': 'Khớp chính xác AP username = CMS/Open edX username',
             }
             found.append(row)
         else:
             created_user = None
             created = False
+            password_state = {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': ''}
             create_message = 'Không tìm thấy user CMS/Open edX theo AP username'
             if create_missing and username:
                 try:
-                    created_user, created, _create_status = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
+                    created_user, created, _create_status, password_state = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
                 except Exception as exc:
                     created_user = None
-                    create_message = 'Không tạo được user CMS/Open edX'
+                    create_message = 'Không tạo được user CMS/Open edX' + (f': {exc}' if _connector_debug_errors_enabled() else '')
             if created_user is not None:
                 full_name = created_user.get_full_name() if hasattr(created_user, 'get_full_name') else ''
                 row = {
@@ -248,6 +330,7 @@ def student_insight_resolve_users(request):
                     'openedx_is_active': bool(getattr(created_user, 'is_active', True)),
                     'is_active': bool(getattr(created_user, 'is_active', True)),
                     'full_name': full_name,
+                    **password_state,
                     'note': 'Đã tạo mới user CMS/Open edX từ dữ liệu AP' if created else 'Khớp chính xác AP username = CMS/Open edX username',
                 }
                 found.append(row)
@@ -266,6 +349,7 @@ def student_insight_resolve_users(request):
                     'openedx_email': None,
                     'openedx_is_active': None,
                     'is_active': None,
+                    **password_state,
                     'note': create_message,
                 }
                 if username:
@@ -370,7 +454,7 @@ def _student_insight_requested_students(data: dict[str, Any]) -> list[dict[str, 
         raw_students = data.get('usernames') or data.get('users') or []
     if not isinstance(raw_students, list):
         return []
-    max_batch = int(_setting_or_env('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', '5000') or '5000')
+    max_batch = int(_setting_or_env('AI_CONNECTOR_MAX_BATCH_SIZE', _setting_or_env('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', '5000')) or '5000')
     max_batch = max(1, min(max_batch, 10000))
     requested: list[dict[str, Any]] = []
     for item in raw_students[:max_batch]:
@@ -833,7 +917,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
             'message': 'Course ID không hợp lệ',
         } for item in requested]
     found_by_key = _student_insight_user_map(requested)
-    clean_mode = str(mode or _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit') or 'audit').strip() or 'audit'
+    clean_mode = str(mode or _setting_or_env('AI_CONNECTOR_DEFAULT_ENROLLMENT_MODE', _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit')) or 'audit').strip() or 'audit'
     results: list[dict[str, Any]] = []
     try:
         from student.models import CourseEnrollment  # type: ignore
@@ -857,9 +941,10 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
         if user is None and item.get('openedx_user_id'):
             user = found_by_key.get(f"id:{item['openedx_user_id']}")
         created_user = False
+        password_state = _existing_user_password_state(user) if user is not None else {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': ''}
         if user is None and (create_missing or item.get('create_missing')) and username:
             try:
-                user, created_user, _create_status = _ensure_cms_user(item.get('raw') if item.get('raw') else item, username, 'teacher' if is_teacher else 'student')
+                user, created_user, _create_status, password_state = _ensure_cms_user(item.get('raw') if item.get('raw') else item, username, 'teacher' if is_teacher else 'student')
             except Exception as exc:
                 results.append({
                     'student_code': item.get('student_code') or None,
@@ -871,7 +956,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
                     'status': 'create_user_failed',
                     'enrollment_status': 'failed',
                     'is_enrolled': False,
-                    'message': 'Không tạo được user CMS/Open edX',
+                    'message': 'Không tạo được user CMS/Open edX' + (f": {exc}" if _connector_debug_errors_enabled() else ''),
                 })
                 continue
         base = {
@@ -884,6 +969,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
             'openedx_email': getattr(user, 'email', None) if user is not None else None,
             'exists': user is not None,
             'created_user': created_user,
+            **password_state,
             'enrollment_mode': clean_mode,
         }
         if user is None:
@@ -982,7 +1068,7 @@ def student_insight_course_enrollment_enroll(request):
         return batch_error
     if not requested:
         return _json_response({'ok': True, 'course_id': course_id, 'results': [], 'total': 0, 'counts': {}})
-    mode = str(data.get('mode') or _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit') or 'audit')
+    mode = str(data.get('mode') or _setting_or_env('AI_CONNECTOR_DEFAULT_ENROLLMENT_MODE', _setting_or_env('AI_STUDENT_INSIGHT_DEFAULT_ENROLLMENT_MODE', 'audit')) or 'audit')
     force = bool(data.get('force') is True)
     create_missing = bool(data.get('create_missing') is True or data.get('create_missing_users') is True)
     results = _student_insight_enroll_results(course_id, requested, mode=mode, force=force, create_missing=create_missing)
