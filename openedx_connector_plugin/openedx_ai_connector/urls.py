@@ -28,10 +28,9 @@ from .student_insight import (
 )
 
 # NOTE:
-# OpenEdxAIConnectorConfig mounts this module under both:
-#   /api/ai-connector/v1/
-#   /api/ai-student-insight/v1/
-# Therefore paths here must be RELATIVE. Do not repeat either prefix.
+# Canonical runtime prefix is /api/ai-connector/v1/.
+# OpenEdxAIConnectorConfig also mounts the old /api/ai-student-insight/v1/
+# alias for rolling upgrades only. Therefore paths here must be RELATIVE.
 urlpatterns = [
     path("users/resolve", student_insight_resolve_users, name="student_insight_resolve_users"),
     path("users/resolve/", student_insight_resolve_users, name="student_insight_resolve_users_slash"),

@@ -20,7 +20,7 @@ from django.core.cache import cache
 from django.http import JsonResponse
 
 MAX_AI_CONNECTOR_BODY_BYTES = int(os.environ.get('AI_CONNECTOR_MAX_BODY_BYTES') or 2 * 1024 * 1024)
-MAX_STUDENT_INSIGHT_BATCH_SIZE = int(os.environ.get('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE') or 500)
+MAX_STUDENT_INSIGHT_BATCH_SIZE = int(os.environ.get('AI_CONNECTOR_MAX_BATCH_SIZE') or os.environ.get('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE') or 500)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -77,6 +77,7 @@ def _valid_connector_hmac(request) -> bool:
         return False
     timestamp = request.META.get('HTTP_X_AI_CONNECTOR_TIMESTAMP') or ''
     supplied = request.META.get('HTTP_X_AI_CONNECTOR_SIGNATURE') or ''
+    nonce = request.META.get('HTTP_X_AI_CONNECTOR_NONCE') or ''
     try:
         ts = int(timestamp)
     except Exception:
@@ -86,11 +87,24 @@ def _valid_connector_hmac(request) -> bool:
         return False
     body = request.body or b''
     body_hash = hashlib.sha256(body).hexdigest()
-    message = f'{timestamp}.{request.method.upper()}.{_request_path_with_query(request)}.{body_hash}'
-    expected = hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, supplied):
-        return False
-    return _check_and_store_hmac_nonce('connector', 'ai-connector', timestamp, supplied, skew)
+    path = _request_path_with_query(request)
+    if nonce:
+        message = f'{timestamp}.{request.method.upper()}.{path}.{body_hash}.{nonce}'
+        replay_nonce = nonce
+        expected = hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, supplied):
+            return False
+    else:
+        # Backward compatibility for older AI Server builds that did not send a
+        # connector nonce. Replay protection uses the signature in that case, so
+        # identical requests inside the same second may be rejected; new clients
+        # should always send X-AI-Connector-Nonce.
+        message = f'{timestamp}.{request.method.upper()}.{path}.{body_hash}'
+        replay_nonce = supplied
+        expected = hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected, supplied):
+            return False
+    return _check_and_store_hmac_nonce('connector', 'ai-connector', timestamp, replay_nonce, skew)
 
 
 def _staff_or_superuser(request) -> bool:
@@ -116,7 +130,7 @@ def _student_insight_hmac_secret() -> str:
 
 
 def _valid_student_insight_hmac(request) -> bool:
-    """Validate AI Server -> LMS/CMS Student Insight HMAC with replay protection."""
+    """Validate deprecated AI Server -> LMS/CMS X-AI-* HMAC with replay protection."""
     secret = _student_insight_hmac_secret()
     if not secret:
         return False
@@ -146,14 +160,50 @@ def _valid_student_insight_hmac(request) -> bool:
     return _check_and_store_hmac_nonce('student-insight', client, timestamp, nonce, skew)
 
 
-def _require_student_insight_hmac(request):
-    if _valid_student_insight_hmac(request):
-        return None
-    # Compatibility for operators that point these endpoints at the older
-    # `/api/ai-connector/v1/*` prefix while rolling the Student Insight config.
+def _require_openedx_connector_hmac(request):
+    # Canonical v25.9.16.5.8 auth path: all runtime academic APIs are part of
+    # openedx_connector_plugin and should use the existing connector HMAC secret.
     if _valid_connector_hmac(request):
         return None
-    return _auth_failed_response('Student Insight endpoint yêu cầu HMAC server-to-server từ AI Server.')
+    # Backward-compatible fallback for old AI Server builds that still send the
+    # previous X-AI-* HMAC header family.
+    if _valid_student_insight_hmac(request):
+        return None
+    student_headers_present = bool(
+        request.META.get('HTTP_X_AI_CLIENT')
+        and request.META.get('HTTP_X_AI_TIMESTAMP')
+        and request.META.get('HTTP_X_AI_NONCE')
+        and request.META.get('HTTP_X_AI_SIGNATURE')
+    )
+    connector_headers_present = bool(
+        request.META.get('HTTP_X_AI_CONNECTOR_TIMESTAMP')
+        and request.META.get('HTTP_X_AI_CONNECTOR_SIGNATURE')
+    )
+    connector_secret_configured = bool(_connector_hmac_secret())
+    legacy_secret_configured = bool(_student_insight_hmac_secret())
+    return _json_response(
+        {
+            'ok': False,
+            'status': 'forbidden',
+            'code': 'openedx_connector_hmac_required',
+            'message': 'Open edX Connector endpoint yêu cầu HMAC server-to-server từ AI Server.',
+            'diagnostics': {
+                'connector_secret_configured': connector_secret_configured,
+                'legacy_student_insight_secret_configured': legacy_secret_configured,
+                'connector_headers_present': connector_headers_present,
+                'connector_nonce_present': bool(request.META.get('HTTP_X_AI_CONNECTOR_NONCE')),
+                'legacy_student_insight_headers_present': student_headers_present,
+                'path': request.path,
+            },
+        },
+        status=403,
+    )
+
+
+def _require_student_insight_hmac(request):
+    # Backward-compatible function name kept for existing endpoint modules. The
+    # implementation is now the unified Open edX Connector HMAC validator.
+    return _require_openedx_connector_hmac(request)
 
 
 def _require_connector_hmac(request, reason: str = 'Endpoint này chỉ nhận request server-to-server đã ký HMAC.'):

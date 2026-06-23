@@ -629,7 +629,7 @@ def _as_draft_key(key: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# v25.9.16.3.0 Student Insight MVP: enrollment/progress/grade batch APIs
+# v25.9.16.3.0 Academic runtime APIs: enrollment/progress/grade batch APIs
 # ---------------------------------------------------------------------------
 
 

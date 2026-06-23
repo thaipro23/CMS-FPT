@@ -1,4 +1,4 @@
-"""Student Insight endpoints for AI Server <-> Open edX academic analytics.
+"""Academic runtime endpoints for AI Server <-> openedx_connector_plugin.
 
 This module is intentionally separate from `views.py` so course content/publish
 logic does not share a 5k-line view file with class progress, enrollment and
@@ -138,7 +138,7 @@ def student_insight_resolve_users(request):
     """Resolve AP usernames against Open edX/CMS users.
 
     URL contract:
-      POST /api/ai-student-insight/v1/users/resolve
+      POST /api/ai-connector/v1/users/resolve
 
     Input supports both compact and rich payloads:
       {"usernames": ["he173548"]}
@@ -779,7 +779,7 @@ def student_insight_class_analytics(request):
     """Return enrollment/progress/grade snapshots for a class in one call.
 
     URL contract:
-      POST /api/ai-student-insight/v1/class-analytics
+      POST /api/ai-connector/v1/class-analytics
       {course_id, students:[{username, student_code, openedx_user_id?}]}
     """
     if request.method != 'POST':
@@ -946,7 +946,7 @@ def student_insight_course_enrollment_enroll(request):
     """Enroll resolved CMS/Open edX users into a course.
 
     URL contract:
-      POST /api/ai-student-insight/v1/course-enrollment/enroll
+      POST /api/ai-connector/v1/course-enrollment/enroll
       {course_id, mode:'audit', force:false, students:[{username, openedx_user_id?}]}
     """
     if request.method != 'POST':

@@ -103,36 +103,35 @@ docs/TUTOR_PLUGIN_AI_CONNECTOR_ENV.md
 ```
 
 
-## v25.9.16.2.23 - Student Insight endpoints
+## v25.9.16.5.8 - Unified Open edX Connector academic endpoints
 
-The connector also exposes API-first Student Management endpoints for AI Server:
+The connector also exposes API-first Student Management endpoints under the canonical connector namespace for AI Server:
 
 ```http
-POST /api/ai-student-insight/v1/users/resolve
-POST /api/ai-student-insight/v1/courses/search
+POST /api/ai-connector/v1/users/resolve
+POST /api/ai-connector/v1/courses/search
 ```
 
 Security uses HMAC headers from AI Server:
 
 ```text
-X-AI-Client
-X-AI-Timestamp
-X-AI-Nonce
-X-AI-Signature
+X-AI-Connector-Timestamp
+X-AI-Connector-Nonce
+X-AI-Connector-Signature
 ```
 
-Use the same shared secret as `OPENEDX_CONNECTOR_HMAC_SECRET` unless you want to separate it:
+Use the same connector secret as AI Server `OPENEDX_CONNECTOR_HMAC_SECRET`:
 
 ```env
-AI_STUDENT_INSIGHT_SHARED_SECRET=<optional, otherwise AI_CONNECTOR_HMAC_SECRET is used>
-AI_STUDENT_INSIGHT_MAX_BATCH_SIZE=5000
+AI_CONNECTOR_HMAC_SECRET=<same-secret-as-AI-server>
+AI_CONNECTOR_MAX_BATCH_SIZE=5000
 ```
 
 `users/resolve` intentionally matches only by exact username (`AP username = CMS/Open edX username`). It does not fuzzy-match by name or email.
 
 ## v25.9.16.4.0 - Student Progress Dashboard component grades
 
-`POST /api/ai-student-insight/v1/class-analytics` now returns best-effort component/subsection grade breakdown when the Open edX deployment has `PersistentSubsectionGrade` rows for the requested users and course.
+`POST /api/ai-connector/v1/class-analytics` now returns best-effort component/subsection grade breakdown when the Open edX deployment has `PersistentSubsectionGrade` rows for the requested users and course.
 
 Response fields per student may include:
 
