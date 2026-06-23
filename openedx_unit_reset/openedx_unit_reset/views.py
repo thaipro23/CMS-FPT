@@ -433,7 +433,52 @@ def quiz_session_runtime_js(request):
       || text.indexOf('kiểm tra') >= 0
       || text.indexOf('kiem tra') >= 0;
   }
+
+  function hasRemainingAttempts(problem){
+    // Native Open edX disables Submit after the maximum graded attempts are used.
+    // Do not override that legitimate lock. The bug we are fixing is the opposite
+    // case: during an ACTIVE custom-timer attempt, Open edX may render a selected
+    // answer with "You have used 0 of 1 attempt" while Submit remains disabled
+    // because the old Save-only flow was suppressed.
+    try {
+      var text = lower((problem && problem.innerText) || '');
+      var m = text.match(/used\s+(\d+)\s+of\s+(\d+)\s+attempt/);
+      if (m) return parseInt(m[1], 10) < parseInt(m[2], 10);
+      m = text.match(/(\d+)\s*\/\s*(\d+)\s*(lần|lan|attempt)/);
+      if (m) return parseInt(m[1], 10) < parseInt(m[2], 10);
+    } catch (error) { /* allow best effort */ }
+    return true;
+  }
+
+  function unlockSelectedSubmitButtons(){
+    // v0.4.14.2: ACTIVE-attempt submit unlock.
+    // This script must not lock/unlock after timeout. Once the iframe is locally
+    // locked by auto-submit, leave all controls disabled.
+    if (document.body.classList.contains('ai-quiz-timeout-locked')) return 0;
+    var unlocked = 0;
+    var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
+    all.forEach(function(btn){
+      if (!btn || !isVisible(btn) || !isActualSubmitButton(btn)) return;
+      var root = problemRoot(btn);
+      if (!selected(root)) return;
+      if (!hasRemainingAttempts(root)) return;
+      try {
+        if (btn.disabled) {
+          btn.disabled = false;
+          unlocked += 1;
+        }
+        btn.removeAttribute('disabled');
+        btn.removeAttribute('aria-disabled');
+        if (btn.classList) {
+          btn.classList.remove('disabled');
+          btn.classList.remove('is-disabled');
+        }
+      } catch (error) { /* best effort */ }
+    });
+    return unlocked;
+  }
   function submitButtons(){
+    unlockSelectedSubmitButtons();
     var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
     var byProblem = new Map();
     all.forEach(function(btn){
@@ -504,23 +549,20 @@ def quiz_session_runtime_js(request):
     document.body.classList.add('ai-quiz-timeout-locked');
   }
 
-  function eventSaysAttemptStillActive(data){
-    if (!data) return false;
-    var status = lower(data.status || data.session_status || data.quiz_status || '');
-    var remaining = data.remaining_seconds;
-    if (remaining === undefined || remaining === null) remaining = data.remainingSeconds;
-    var remainingNumber = Number(remaining);
-    if ((status === 'active' || status === 'running') && (!isNaN(remainingNumber) ? remainingNumber > 0 : true)) return true;
-    if (!isNaN(remainingNumber) && remainingNumber > 0) return true;
-    return false;
-  }
+  // Keep Submit/Check usable while the timed attempt is still active.
+  // Open edX can re-disable the button after radio/checkbox changes or partial
+  // problem rendering, so run on user interaction and short polling.
+  try {
+    document.addEventListener('change', function(){ setTimeout(unlockSelectedSubmitButtons, 0); setTimeout(unlockSelectedSubmitButtons, 250); }, true);
+    document.addEventListener('click', function(){ setTimeout(unlockSelectedSubmitButtons, 0); setTimeout(unlockSelectedSubmitButtons, 250); }, true);
+    setTimeout(unlockSelectedSubmitButtons, 0);
+    setTimeout(unlockSelectedSubmitButtons, 500);
+    setTimeout(unlockSelectedSubmitButtons, 1500);
+    setInterval(unlockSelectedSubmitButtons, 1000);
+  } catch (error) { /* best effort */ }
 
   window.addEventListener('message', async function(event){
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
-    // Defensive guard: if the parent MFE sends a timeout event while it still
-    // knows the attempt is ACTIVE, never hide/disable the real Open edX Submit
-    // button. This keeps the learner able to submit during valid working time.
-    if (eventSaysAttemptStillActive(event.data)) return;
     if (autoSubmitting) return;
     autoSubmitting = true;
     var result = { clicked: 0, problem_check_started: 0, problem_check_finished: 0, problem_check_pending: pendingProblemChecks };
