@@ -331,6 +331,27 @@ def quiz_session_runtime_js(request):
     return;
   }
 
+  function reloadIframeDocument(reason, token){
+    try {
+      var storageKey = 'openedx-unit-reset:iframe-self-reload:' + (reason || 'active') + ':' + (token || 'active');
+      try {
+        if (window.sessionStorage && window.sessionStorage.getItem(storageKey) === '1') return;
+        if (window.sessionStorage) window.sessionStorage.setItem(storageKey, '1');
+      } catch (storageError) { /* ignore */ }
+      var url = new URL(window.location.href);
+      url.searchParams.set('unit_reset_nonce', String(token || Date.now()));
+      url.searchParams.set('unit_reset_reason', reason || 'active-session-ready');
+      window.location.replace(url.toString());
+    } catch (error) {
+      try { window.location.reload(); } catch (reloadError) { /* ignore */ }
+    }
+  }
+
+  window.addEventListener('message', function(event){
+    if (!event.data || event.data.type !== 'AI_QUIZ_ACTIVE_SESSION_READY_RELOAD') return;
+    reloadIframeDocument(event.data.reason || 'active-session-ready', event.data.token || Date.now());
+  });
+
   var pendingProblemChecks = 0;
   var startedProblemChecks = 0;
   var finishedProblemChecks = 0;
