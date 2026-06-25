@@ -763,10 +763,8 @@ def _serialize_timer_config(config):
         'enabled': config.enabled,
         'duration_seconds': config.duration_seconds,
         'cooldown_seconds': config.cooldown_seconds,
-        'auto_submit_on_timeout': config.auto_submit_on_timeout,
-        # v0.4.13 policy: keep auto-submit, but do not let the Learning MFE call /lock.
-        # The server-side grace/expiry guard will close the window after auto-submit.
-        'lock_after_timeout': False,
+        'auto_submit_on_timeout': True,
+        'lock_after_timeout': bool(config.lock_after_timeout),
         'stored_lock_after_timeout': config.lock_after_timeout,
         'native_timed_exam': config.native_timed_exam,
         'metadata_json': config.metadata_json or {},
@@ -807,9 +805,8 @@ def _serialize_quiz_session(session, config=None):
         'can_reset': status == UnitQuizSession.STATUS_RESET_READY or (session.reset_available_at and now >= session.reset_available_at),
         'auto_submit_grace_seconds': _auto_submit_grace_seconds(),
         'auto_submit_grace_active': _session_allows_auto_submit_grace(session, now),
-        'auto_submit_on_timeout': config.auto_submit_on_timeout,
-        # v0.4.13 policy: expose False so existing MFE skips POST /quiz-session/lock.
-        'lock_after_timeout': False,
+        'auto_submit_on_timeout': True,
+        'lock_after_timeout': bool(config.lock_after_timeout),
         'stored_lock_after_timeout': config.lock_after_timeout,
         'message': _quiz_session_message(status, remaining_seconds, reset_wait_seconds),
     }
@@ -865,8 +862,8 @@ def upsert_unit_quiz_timer_config(
             'enabled': bool(enabled),
             'duration_seconds': duration_seconds,
             'cooldown_seconds': cooldown_seconds,
-            'auto_submit_on_timeout': bool(auto_submit_on_timeout),
-            'lock_after_timeout': bool(lock_after_timeout),
+            'auto_submit_on_timeout': True if enabled else bool(auto_submit_on_timeout),
+            'lock_after_timeout': True if enabled else bool(lock_after_timeout),
             'native_timed_exam': bool(native_timed_exam),
             'updated_by': str(actor or '')[:255],
             'metadata_json': metadata_json or {},

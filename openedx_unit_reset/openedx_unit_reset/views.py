@@ -367,12 +367,12 @@ def quiz_session_runtime_js(request):
 
   function rootUsageId(root){
     if (!root) return '';
-    var attrs = ['data-usage-id', 'data-locator', 'data-block-id', 'data-problem-id'];
+    var attrs = ['data-usage-id', 'data-locator', 'data-block-id', 'data-problem-id', 'data-location', 'data-usage-key', 'data-block-usage-key'];
     for (var i=0; i<attrs.length; i++) {
       var v = root.getAttribute && root.getAttribute(attrs[i]);
       if (v && (v.indexOf('block-v1:') >= 0 || v.indexOf('+type@') >= 0)) return v;
     }
-    var candidate = root.querySelector && root.querySelector('[data-usage-id],[data-locator],[data-block-id],[data-problem-id]');
+    var candidate = root.querySelector && root.querySelector('[data-usage-id],[data-locator],[data-block-id],[data-problem-id],[data-location],[data-usage-key],[data-block-usage-key]');
     if (candidate) return rootUsageId(candidate);
     var html = '';
     try { html = root.outerHTML || ''; } catch (error) { html = ''; }
@@ -409,9 +409,10 @@ def quiz_session_runtime_js(request):
   }
 
   function problemRoots(){
-    var roots = Array.prototype.slice.call(document.querySelectorAll('.problem'));
+    var roots = Array.prototype.slice.call(document.querySelectorAll('.problem, .xmodule_display.xmodule_CapaModule, .xblock-student_view-problem, [data-block-type="problem"], div[id^="problem_"]'));
+    roots = roots.filter(function(root){ return root && root.querySelector('input,textarea,select'); });
     if (roots.length) return roots;
-    roots = Array.prototype.slice.call(document.querySelectorAll('[data-usage-id], [data-locator], .xblock-student_view'));
+    roots = Array.prototype.slice.call(document.querySelectorAll('[data-usage-id], [data-locator], [data-location], .xblock-student_view, .xblock'));
     var filtered = [];
     roots.forEach(function(root){
       if (!root || filtered.some(function(existing){ return existing.contains(root); })) return;
@@ -462,7 +463,7 @@ def quiz_session_runtime_js(request):
     var response = await fetch(url, {
       method: 'POST',
       credentials: 'include',
-      headers: csrf ? { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' } : { 'X-Requested-With': 'XMLHttpRequest' },
+      headers: csrf ? { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } : { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
       body: collectAnswerFormData(root),
     });
     return { skipped: false, ok: response.ok, status: response.status, url: url };
