@@ -59,10 +59,11 @@ class UnitQuizSessionSubmitGuardMiddleware:
         """Inject runtime.js into LMS iframe HTML pages.
 
         The Learning MFE can only post a timeout message to the LMS iframe.
-        It cannot click the problem submit buttons inside that iframe because the
-        iframe is cross-origin. Therefore the LMS HTML document must also load
-        runtime.js so it can receive AI_QUIZ_TIMEOUT_AUTO_SUBMIT and click the
-        checked problem buttons from inside the iframe.
+        It cannot safely drive native Open edX controls from the top window
+        because the iframe is cross-origin. Therefore the LMS HTML document
+        must also load runtime.js so it can receive AI_QUIZ_TIMEOUT_API_SUBMIT
+        and submit selected answers through Open edX problem_check APIs from
+        inside the iframe.
 
         This is intentionally generic for authenticated LMS HTML responses. It
         is harmless outside timed quizzes because the script only acts when it

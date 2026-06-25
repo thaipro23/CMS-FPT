@@ -707,7 +707,7 @@ def _set_reset_available_at_from_expiry(session, fallback_now=None):
 def _auto_submit_grace_seconds():
     """Server-side grace window for the automatic timeout submit.
 
-    The browser can only start clicking Open edX problem submit buttons when the
+    The browser can only start Open edX problem_check API requests when the
     countdown reaches zero. Those individual problem_check requests may arrive
     a few seconds after expires_at. Without a grace window the submit guard
     blocks the system's own auto-submit.
@@ -735,7 +735,7 @@ def _session_allows_auto_submit_grace(session, now=None):
         return False
 
     # SUBMITTING means quiz-session/timeout already ran and runtime.js is
-    # clicking the selected problem submit/check buttons. Allow it only during
+    # submitting selected answers through problem_check APIs. Allow it only during
     # the configured grace window; never allow a stuck SUBMITTING session to
     # accept problem_check forever.
     if session.status == UnitQuizSession.STATUS_SUBMITTING:
@@ -803,6 +803,7 @@ def _serialize_quiz_session(session, config=None):
         'locked_at': _iso(session.locked_at),
         'reset_available_at': _iso(session.reset_available_at),
         'reset_wait_seconds': reset_wait_seconds,
+        'server_now': _iso(now),
         'can_reset': status == UnitQuizSession.STATUS_RESET_READY or (session.reset_available_at and now >= session.reset_available_at),
         'auto_submit_grace_seconds': _auto_submit_grace_seconds(),
         'auto_submit_grace_active': _session_allows_auto_submit_grace(session, now),
@@ -823,7 +824,7 @@ def _quiz_session_message(status, remaining_seconds, reset_wait_seconds):
         return 'Bạn có thể làm lại bài.'
     if reset_wait_seconds > 0:
         return f'Đã hết giờ. Bạn cần chờ {reset_wait_seconds} giây để làm lại bài.'
-    return 'Đã hết giờ. Hệ thống đã khóa lượt làm này.'
+    return 'Đã hết giờ. Bạn có thể làm lại bài.'
 
 
 def upsert_unit_quiz_timer_config(
@@ -959,6 +960,7 @@ def get_quiz_session_status_for_current_user(request, course_id, unit_usage_key)
             'config': _serialize_timer_config(config),
             'status': 'NOT_STARTED',
             'message': 'Chưa bắt đầu lượt làm quiz.',
+            'server_now': _iso(timezone.now()),
         }
     session = _update_expired_session(session)
     data = _serialize_quiz_session(session, config)
@@ -1067,6 +1069,14 @@ def lock_quiz_session_for_current_user(request, course_id, unit_usage_key, paylo
         merged['lock_call_skipped_at'] = _iso(now)
         merged['cooldown_base'] = 'expires_at'
         session.timeout_payload = merged
+        # After v0.4.15 API auto-submit finishes, it is safe to close the
+        # SUBMITTING grace window. We still do not depend on DOM button state or
+        # native Timed Exam; this only marks the server attempt as expired so late
+        # manual submits are rejected and cooldown UI is stable.
+        finalize_after_api_submit = bool((payload or {}).get('auto_submit_done'))
+        if finalize_after_api_submit and session.status == UnitQuizSession.STATUS_SUBMITTING:
+            session.status = UnitQuizSession.STATUS_EXPIRED
+            session.locked_at = session.locked_at or now
         # Lock is skipped in v0.4.12+/v0.4.13 policy, but if an old MFE still
         # calls this endpoint before timeout/status has set reset_available_at,
         # set it from quiz expiry. Never overwrite an existing value.
@@ -1074,6 +1084,8 @@ def lock_quiz_session_for_current_user(request, course_id, unit_usage_key, paylo
         session.last_ip = get_client_ip(request)
         session.last_user_agent = (request.META.get('HTTP_USER_AGENT', '') or '')[:2000]
         update_fields = ['timeout_payload', 'last_ip', 'last_user_agent', 'updated_at']
+        if finalize_after_api_submit and session.status == UnitQuizSession.STATUS_EXPIRED:
+            update_fields.extend(['status', 'locked_at'])
         if reset_changed:
             update_fields.append('reset_available_at')
         session.save(update_fields=update_fields)
@@ -1099,9 +1111,16 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
         if latest.status in (UnitQuizSession.STATUS_ACTIVE, UnitQuizSession.STATUS_SUBMITTING):
             next_allowed = latest.reset_available_at or _reset_available_at_from_quiz_expiry(latest, fallback_now=now)
             wait = max(int((next_allowed - now).total_seconds()), 0)
-            raise ResetCooldownError(wait, next_allowed, latest.attempt_no, latest.cooldown_seconds)
+            if wait > 0:
+                raise ResetCooldownError(wait, next_allowed, latest.attempt_no, latest.cooldown_seconds)
+            # Race-safe cleanup: if the browser/user asks to reset exactly at the
+            # cooldown boundary, do not return the confusing "chờ 0 giây" error.
+            # Mark the old attempt reset-ready and continue with the reset below.
+            latest.status = UnitQuizSession.STATUS_RESET_READY
+            latest.reset_available_at = latest.reset_available_at or now
+            latest.save(update_fields=['status', 'reset_available_at', 'updated_at'])
         if latest.reset_available_at and now < latest.reset_available_at:
-            wait = int((latest.reset_available_at - now).total_seconds())
+            wait = max(int((latest.reset_available_at - now).total_seconds()), 1)
             raise ResetCooldownError(wait, latest.reset_available_at, latest.attempt_no, latest.cooldown_seconds)
 
     reset_result = reset_unit_for_current_user(

@@ -316,20 +316,20 @@ def quiz_timer_config_upsert(request):
 @require_GET
 def quiz_session_runtime_js(request):
     from django.http import HttpResponse
-    js = """
+    js = r"""
 (function(){
   if (window.__OPENEDX_UNIT_RESET_TIMER_JS__) return;
   window.__OPENEDX_UNIT_RESET_TIMER_JS__ = true;
 
-  // v0.4.14: iframe-only runtime clicks real Submit/Check buttons only, never Save/Lưu.
-  // Important: runtime.js may also be loaded in the top Learning MFE window.
-  // Auto-submit must run only inside the LMS problem iframe. If the top window
-  // handles AI_QUIZ_TIMEOUT_AUTO_SUBMIT it can send DONE too early, making the
-  // MFE call /lock after the first problem_check while the remaining checks are
-  // still in flight.
-  if (!window.parent || window.parent === window) {
-    return;
-  }
+  // v0.4.15: iframe runtime submits selected answers by calling Open edX
+  // problem_check APIs directly. It never clicks Submit/Check buttons. This is
+  // more stable when the native button is disabled or the learner switches tabs.
+  if (!window.parent || window.parent === window) return;
+
+  var autoSubmitting = false;
+
+  function lower(value){ return ((value || '') + '').toLowerCase(); }
+  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
 
   function reloadIframeDocument(reason, token){
     try {
@@ -352,170 +352,142 @@ def quiz_session_runtime_js(request):
     reloadIframeDocument(event.data.reason || 'active-session-ready', event.data.token || Date.now());
   });
 
-  var pendingProblemChecks = 0;
-  var startedProblemChecks = 0;
-  var finishedProblemChecks = 0;
-  var autoSubmitting = false;
-
-  function lower(value){ return ((value || '') + '').toLowerCase(); }
-  function isProblemCheckUrl(url){
-    url = lower(url);
-    return url.indexOf('problem_check') >= 0 || url.indexOf('xmodule_handler/problem_check') >= 0;
-  }
-  function markProblemCheckStart(url){
-    if (!isProblemCheckUrl(url)) return false;
-    startedProblemChecks += 1;
-    pendingProblemChecks += 1;
-    return true;
-  }
-  function markProblemCheckDone(wasTracked){
-    if (!wasTracked) return;
-    pendingProblemChecks = Math.max(0, pendingProblemChecks - 1);
-    finishedProblemChecks += 1;
+  function getCookie(name){
+    var value = '; ' + (document.cookie || '');
+    var parts = value.split('; ' + name + '=');
+    if (parts.length === 2) return decodeURIComponent(parts.pop().split(';').shift());
+    return '';
   }
 
-  // Track native Open edX problem_check requests. The Learning MFE must not lock
-  // the timed attempt until these requests finish; otherwise only the first
-  // problem_check succeeds and the rest are blocked as QUIZ_TIME_EXPIRED.
-  try {
-    if (window.fetch && !window.fetch.__openedxUnitResetTracked) {
-      var originalFetch = window.fetch;
-      var trackedFetch = function(input, init){
-        var url = '';
-        try { url = typeof input === 'string' ? input : (input && input.url) || ''; } catch (error) { url = ''; }
-        var tracked = markProblemCheckStart(url);
-        return originalFetch.apply(this, arguments).finally(function(){ markProblemCheckDone(tracked); });
-      };
-      trackedFetch.__openedxUnitResetTracked = true;
-      window.fetch = trackedFetch;
-    }
-  } catch (error) { /* best effort */ }
-
-  try {
-    if (window.XMLHttpRequest && !window.XMLHttpRequest.__openedxUnitResetTracked) {
-      var OriginalXHR = window.XMLHttpRequest;
-      var originalOpen = OriginalXHR.prototype.open;
-      var originalSend = OriginalXHR.prototype.send;
-      OriginalXHR.prototype.open = function(method, url){
-        try { this.__openedxUnitResetUrl = url || ''; } catch (error) { /* ignore */ }
-        return originalOpen.apply(this, arguments);
-      };
-      OriginalXHR.prototype.send = function(){
-        var tracked = false;
-        try { tracked = markProblemCheckStart(this.__openedxUnitResetUrl || ''); } catch (error) { tracked = false; }
-        if (tracked) {
-          try { this.addEventListener('loadend', function(){ markProblemCheckDone(true); }, { once: true }); } catch (error) { /* ignore */ }
-        }
-        return originalSend.apply(this, arguments);
-      };
-      window.XMLHttpRequest.__openedxUnitResetTracked = true;
-    }
-  } catch (error) { /* best effort */ }
-
-  function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
   function isVisible(el){
     if (!el) return false;
-    if (el.offsetParent === null && getComputedStyle(el).position !== 'fixed') return false;
-    var style = getComputedStyle(el);
+    var style = window.getComputedStyle(el);
     return style.visibility !== 'hidden' && style.display !== 'none';
   }
-  function problemRoot(el){
-    return el && (el.closest('.problem') || el.closest('.xblock-student_view') || el.closest('[data-usage-id]') || document);
+
+  function rootUsageId(root){
+    if (!root) return '';
+    var attrs = ['data-usage-id', 'data-locator', 'data-block-id', 'data-problem-id'];
+    for (var i=0; i<attrs.length; i++) {
+      var v = root.getAttribute && root.getAttribute(attrs[i]);
+      if (v && (v.indexOf('block-v1:') >= 0 || v.indexOf('+type@') >= 0)) return v;
+    }
+    var candidate = root.querySelector && root.querySelector('[data-usage-id],[data-locator],[data-block-id],[data-problem-id]');
+    if (candidate) return rootUsageId(candidate);
+    var html = '';
+    try { html = root.outerHTML || ''; } catch (error) { html = ''; }
+    var match = html.match(/block-v1:[^"'<>\\s]+/);
+    return match ? match[0] : '';
   }
-  function selected(problem){
-    var checked = problem.querySelector('input[type="radio"]:checked,input[type="checkbox"]:checked');
-    if (checked) return true;
-    var textInputs = Array.prototype.slice.call(problem.querySelectorAll('input[type="text"],input[type="number"],textarea'));
-    if (textInputs.some(function(el){ return el.value && el.value.trim().length > 0; })) return true;
-    var selects = Array.prototype.slice.call(problem.querySelectorAll('select'));
-    return selects.some(function(el){ return el.value && el.value.trim().length > 0; });
+
+  function courseFromLocation(){
+    var match = (window.location.pathname || '').match(/\/courses\/([^\/]+)/);
+    return match ? decodeURIComponent(match[1]) : '';
   }
-  function buttonText(btn){
-    return lower(((btn && (btn.innerText || btn.value || btn.getAttribute('aria-label') || btn.getAttribute('title'))) || '') + '').trim();
-  }
-  function isNoiseButtonText(text){
-    return text.indexOf('hint') >= 0
-      || text.indexOf('show answer') >= 0
-      || text.indexOf('xem đáp án') >= 0
-      || text.indexOf('submission history') >= 0;
-  }
-  function isSaveOnlyButtonText(text){
-    // v0.4.14: do not click Save/Lưu. Save only sends problem_save and does
-    // not grade the answer. Auto-submit must click Submit/Check/Nộp bài only.
-    return text.indexOf('save') >= 0 || text.indexOf('lưu') >= 0 || text.indexOf('luu') >= 0;
-  }
-  function isActualSubmitButton(btn){
-    var text = buttonText(btn);
-    if (!text || isNoiseButtonText(text) || isSaveOnlyButtonText(text)) return false;
-    return text.indexOf('submit') >= 0
-      || text.indexOf('check') >= 0
-      || text.indexOf('nộp bài') >= 0
-      || text.indexOf('nop bai') >= 0
-      || text.indexOf('kiểm tra') >= 0
-      || text.indexOf('kiem tra') >= 0;
-  }
-  function submitButtons(){
-    var all = Array.prototype.slice.call(document.querySelectorAll('button,input[type="button"],input[type="submit"]'));
-    var byProblem = new Map();
-    all.forEach(function(btn){
-      if (!btn || btn.disabled || !isVisible(btn) || !isActualSubmitButton(btn)) return;
-      var root = problemRoot(btn);
-      if (!selected(root)) return;
-      if (!byProblem.has(root)) byProblem.set(root, btn);
-    });
-    return Array.from(byProblem.values());
-  }
-  async function waitForProblemCheckBurstToStart(beforeStarted){
-    // Submit all selected problems in one burst, then wait briefly for Open edX
-    // to enqueue the native problem_check requests. We do not wait after each
-    // click because there is no server /lock policy in this version.
-    var startDeadline = Date.now() + 2500;
-    while (Date.now() < startDeadline && startedProblemChecks <= beforeStarted) await sleep(50);
-  }
-  async function waitForAllPendingProblemChecks(){
-    // After all clicks, wait only for already-started problem_check requests.
-    // This keeps the browser from reporting DONE while problem_check requests
-    // are still in flight, but avoids slow per-problem sequential submit.
-    var deadline = Date.now() + 15000;
-    var stableSince = null;
-    while (Date.now() < deadline) {
-      if (pendingProblemChecks <= 0) {
-        if (stableSince === null) stableSince = Date.now();
-        if (Date.now() - stableSince >= 800) break;
-      } else {
-        stableSince = null;
+
+  function findProblemCheckUrl(root, courseId){
+    var nodes = [root].concat(Array.prototype.slice.call(root.querySelectorAll('form,button,input,a,[data-url],[data-check-url],[data-submit-url],[data-problem-check-url]')));
+    var attrs = ['action', 'href', 'data-check-url', 'data-url', 'data-submit-url', 'data-problem-check-url'];
+    for (var i=0; i<nodes.length; i++) {
+      for (var j=0; j<attrs.length; j++) {
+        var value = '';
+        try { value = nodes[i].getAttribute && nodes[i].getAttribute(attrs[j]); } catch (error) { value = ''; }
+        if (value && value.indexOf('problem_check') >= 0) return new URL(value, window.location.href).toString();
       }
-      await sleep(100);
     }
+    var html = '';
+    try { html = root.outerHTML || ''; } catch (error) { html = ''; }
+    var match = html.match(/([^"']*problem_check[^"']*)/);
+    if (match && match[1]) return new URL(match[1], window.location.href).toString();
+
+    var usage = rootUsageId(root);
+    var course = courseId || courseFromLocation();
+    if (usage && course) {
+      return window.location.origin + '/courses/' + course + '/xblock/' + encodeURIComponent(usage) + '/handler/xmodule_handler/problem_check';
+    }
+    return '';
   }
 
-  async function autoSubmit(){
-    var buttons = submitButtons();
-    var clicked = 0;
-    var networkStartedBefore = startedProblemChecks;
-
-    // Click every selected problem's Submit/Check button in one pass. This is
-    // intentionally concurrent/batched: Open edX will issue problem_save and
-    // problem_check requests for multiple problems without waiting for each
-    // previous problem_check to finish.
-    for (var i=0; i<buttons.length; i++){
-      var btn = buttons[i];
-      if (!btn || btn.disabled || !isVisible(btn)) continue;
-      if (!selected(problemRoot(btn))) continue;
-      try { btn.click(); clicked += 1; } catch (error) { /* keep submitting the rest */ }
-    }
-
-    await waitForProblemCheckBurstToStart(networkStartedBefore);
-    await waitForAllPendingProblemChecks();
-    return {
-      clicked: clicked,
-      problem_check_started: Math.max(0, startedProblemChecks - networkStartedBefore),
-      problem_check_finished: finishedProblemChecks,
-      problem_check_pending: pendingProblemChecks
-    };
+  function problemRoots(){
+    var roots = Array.prototype.slice.call(document.querySelectorAll('.problem'));
+    if (roots.length) return roots;
+    roots = Array.prototype.slice.call(document.querySelectorAll('[data-usage-id], [data-locator], .xblock-student_view'));
+    var filtered = [];
+    roots.forEach(function(root){
+      if (!root || filtered.some(function(existing){ return existing.contains(root); })) return;
+      if (root.querySelector('input,textarea,select')) filtered.push(root);
+    });
+    return filtered;
   }
 
-  function lock(){
+  function selected(root){
+    if (!root) return false;
+    if (root.querySelector('input[type="radio"]:checked,input[type="checkbox"]:checked')) return true;
+    var fields = Array.prototype.slice.call(root.querySelectorAll('input[type="text"],input[type="number"],input:not([type]),textarea,select'));
+    return fields.some(function(el){ return el.name && el.value && String(el.value).trim().length > 0; });
+  }
+
+  function appendField(formData, name, value){
+    if (!name) return;
+    formData.append(name, value == null ? '' : value);
+  }
+
+  function collectAnswerFormData(root){
+    var formData = new FormData();
+    var fields = Array.prototype.slice.call(root.querySelectorAll('input,textarea,select'));
+    fields.forEach(function(el){
+      if (!el.name) return;
+      var tag = lower(el.tagName);
+      var type = lower(el.type);
+      if (type === 'button' || type === 'submit' || type === 'reset' || type === 'file') return;
+      if ((type === 'checkbox' || type === 'radio') && !el.checked) return;
+      if (tag === 'select' && el.multiple) {
+        Array.prototype.slice.call(el.selectedOptions || []).forEach(function(opt){ appendField(formData, el.name, opt.value); });
+        return;
+      }
+      appendField(formData, el.name, el.value);
+    });
+    if (!formData.has('csrfmiddlewaretoken')) {
+      var csrfInput = document.querySelector('input[name="csrfmiddlewaretoken"]');
+      if (csrfInput && csrfInput.value) appendField(formData, 'csrfmiddlewaretoken', csrfInput.value);
+    }
+    return formData;
+  }
+
+  async function submitProblemByApi(root, courseId){
+    if (!root || !selected(root)) return { skipped: true, reason: 'no_answer' };
+    var url = findProblemCheckUrl(root, courseId);
+    if (!url) return { skipped: true, reason: 'missing_problem_check_url' };
+    var csrf = getCookie('csrftoken') || getCookie('csrf_token') || '';
+    var response = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: csrf ? { 'X-CSRFToken': csrf, 'X-Requested-With': 'XMLHttpRequest' } : { 'X-Requested-With': 'XMLHttpRequest' },
+      body: collectAnswerFormData(root),
+    });
+    return { skipped: false, ok: response.ok, status: response.status, url: url };
+  }
+
+  async function autoSubmitByApi(courseId){
+    var roots = problemRoots().filter(function(root){ return isVisible(root) && selected(root); });
+    var submitted = 0;
+    var failed = 0;
+    var skipped = 0;
+    for (var i=0; i<roots.length; i++) {
+      try {
+        var result = await submitProblemByApi(roots[i], courseId);
+        if (result.skipped) skipped += 1;
+        else if (result.ok) submitted += 1;
+        else failed += 1;
+      } catch (error) {
+        failed += 1;
+      }
+      await sleep(120);
+    }
+    return { submitted: submitted, failed: failed, skipped: skipped, discovered: roots.length };
+  }
+
+  function lockLocally(){
     Array.prototype.slice.call(document.querySelectorAll('input,textarea,select,button')).forEach(function(el){
       var text = lower((el.innerText || el.value || '') + '');
       if (text.indexOf('hint') >= 0 || text.indexOf('show answer') >= 0 || text.indexOf('xem đáp án') >= 0 || text.indexOf('submission history') >= 0) return;
@@ -526,22 +498,19 @@ def quiz_session_runtime_js(request):
   }
 
   window.addEventListener('message', async function(event){
-    if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT') return;
+    if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_API_SUBMIT') return;
     if (autoSubmitting) return;
     autoSubmitting = true;
-    var result = { clicked: 0, problem_check_started: 0, problem_check_finished: 0, problem_check_pending: pendingProblemChecks };
-    try { result = await autoSubmit(); } catch (error) { /* still lock locally and report best effort */ }
-    // v0.4.12: do not rely on the server /lock flow. Local disabling is kept
-    // only inside this iframe after auto-submit finishes; the server-side guard
-    // will expire the SUBMITTING session after the grace window.
-    lock();
+    var result = { submitted: 0, failed: 0, skipped: 0, discovered: 0 };
+    try { result = await autoSubmitByApi(event.data.course_id || ''); } catch (error) { /* best effort */ }
+    lockLocally();
     if (window.parent) {
       window.parent.postMessage({
-        type: 'AI_QUIZ_TIMEOUT_AUTO_SUBMIT_DONE',
-        submitted_problem_count: result.clicked || 0,
-        problem_check_started_count: result.problem_check_started || 0,
-        problem_check_finished_count: result.problem_check_finished || 0,
-        pending_problem_check_count: result.problem_check_pending || 0
+        type: 'AI_QUIZ_TIMEOUT_API_SUBMIT_DONE',
+        submitted_problem_count: result.submitted || 0,
+        failed_problem_count: result.failed || 0,
+        skipped_problem_count: result.skipped || 0,
+        discovered_problem_count: result.discovered || 0
       }, '*');
     }
     autoSubmitting = false;
