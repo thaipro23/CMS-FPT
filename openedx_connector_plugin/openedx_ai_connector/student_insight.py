@@ -877,10 +877,10 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
     total_blocks: int | None = None
     if not course_key or not users:
         return result, total_blocks
+    user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
     try:
         from completion.models import BlockCompletion  # type: ignore
         from django.db.models import Count, Max  # type: ignore
-        user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
         rows = BlockCompletion.objects.filter(context_key=course_key, user_id__in=user_ids).values('user_id').annotate(completed=Count('id'), last_activity=Max('modified'))
         for row in rows:
             uid = int(row.get('user_id') or 0)
@@ -889,9 +889,12 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
             result[uid] = {
                 'completed_blocks': completed,
                 'last_activity_at': last_activity.isoformat() if last_activity else None,
+                'source': 'BlockCompletion',
             }
     except Exception:
-        return result, total_blocks
+        # Ulmo/Indigo deployments may not have the completion app populated.
+        # Do not give up: fall back to StudentModule interaction counts below.
+        result = {}
     try:
         CourseKey, modulestore = _load_openedx_modules()
         store = modulestore()
@@ -899,11 +902,13 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         visited: set[str] = set()
         stack = list(getattr(course, 'children', []) or [])
         count = 0
+        problem_count = 0
         while stack:
             key = stack.pop()
-            if str(key) in visited:
+            raw_key = str(key)
+            if raw_key in visited:
                 continue
-            visited.add(str(key))
+            visited.add(raw_key)
             block = _get_item_best_effort(store, key)
             if block is None:
                 continue
@@ -913,9 +918,27 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
                 stack.extend(children)
             if block_type not in {'course', 'chapter', 'sequential', 'vertical'}:
                 count += 1
-        total_blocks = count or None
+            if block_type == 'problem':
+                problem_count += 1
+        total_blocks = count or problem_count or None
     except Exception:
         total_blocks = None
+    if not result:
+        try:
+            from courseware.models import StudentModule  # type: ignore
+            from django.db.models import Count, Max  # type: ignore
+            rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids).values('student_id').annotate(completed=Count('id'), last_activity=Max('modified'))
+            for row in rows:
+                uid = int(row.get('student_id') or 0)
+                completed = int(row.get('completed') or 0)
+                last_activity = row.get('last_activity')
+                result[uid] = {
+                    'completed_blocks': completed,
+                    'last_activity_at': last_activity.isoformat() if last_activity else None,
+                    'source': 'StudentModule',
+                }
+        except Exception:
+            pass
     if total_blocks:
         for item in result.values():
             completed = item.get('completed_blocks') or 0
