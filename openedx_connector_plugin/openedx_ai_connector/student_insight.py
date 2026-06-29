@@ -24,6 +24,46 @@ from .auth import (
 )
 from .runtime import _load_openedx_modules
 
+try:
+    # Reuse the robust OLX helpers from the Studio connector module.  Earlier
+    # student-insight builds referenced these names without importing them; the
+    # broad exception guards then silently disabled Course completion / Detailed
+    # grades fallback on UAT.
+    from .studio import _safe_str, _block_type, _display_name, _get_item_best_effort, _children_locations  # type: ignore
+except Exception:  # pragma: no cover - defensive fallback for stripped plugin installs
+    def _safe_str(value: Any) -> str:
+        if value is None or callable(value):
+            return ''
+        if isinstance(value, bytes):
+            try:
+                return value.decode('utf-8')
+            except Exception:
+                return value.decode('latin-1', errors='ignore')
+        return str(value)
+
+    def _block_type(block: Any) -> str:
+        location = getattr(block, 'location', None)
+        return _safe_str(getattr(location, 'block_type', None) or getattr(location, 'category', None) or getattr(block, 'category', None) or getattr(block, 'block_type', None) or 'unknown').lower()
+
+    def _display_name(block: Any) -> str:
+        return _safe_str(getattr(block, 'display_name', '') or getattr(block, 'name', '') or _block_type(block))
+
+    def _get_item_best_effort(store: Any, usage_key: Any) -> Any | None:
+        try:
+            return store.get_item(usage_key)
+        except Exception:
+            try:
+                from opaque_keys.edx.keys import UsageKey  # type: ignore
+                return store.get_item(UsageKey.from_string(_safe_str(usage_key)))
+            except Exception:
+                return None
+
+    def _children_locations(block: Any) -> list[Any]:
+        try:
+            return list(getattr(block, 'children', None) or [])
+        except Exception:
+            return []
+
 
 def _normalize_username_input(value: Any) -> str:
     return str(value or '').strip().lower()
@@ -192,6 +232,13 @@ def _persistent_subsection_grade_model() -> tuple[Any | None, str, str | None]:
     return _import_attr_first([
         ('lms.djangoapps.grades.models', 'PersistentSubsectionGrade'),
         ('lms.djangoapps.grades.models.persistent_subsection_grade', 'PersistentSubsectionGrade'),
+    ])
+
+
+def _student_module_model() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('courseware.models', 'StudentModule'),
+        ('lms.djangoapps.courseware.models', 'StudentModule'),
     ])
 
 
@@ -683,6 +730,83 @@ def _persistent_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, d
     return result
 
 
+
+def _looks_like_quiz_component(name: Any, block: Any | None = None) -> bool:
+    text = _safe_str(name).strip().lower()
+    if any(token in text for token in ('quiz', 'learning check', 'lc ')):
+        return True
+    if block is not None:
+        for attr in ('graded', 'has_score', 'weight'):
+            try:
+                value = getattr(block, attr, None)
+                if value is True:
+                    return True
+            except Exception:
+                pass
+        try:
+            fmt = _safe_str(getattr(block, 'format', '') or getattr(block, 'due', '')).lower()
+            if 'quiz' in fmt:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _course_outline_quiz_components(course_key: Any) -> list[dict[str, Any]]:
+    """Return planned quiz/graded components from course outline even if no grades exist yet.
+
+    This is intentionally best-effort. It exists so AI Server can render the
+    dynamic Quiz columns from the course itself instead of waiting for
+    PersistentSubsectionGrade to be populated.
+    """
+    if not course_key:
+        return []
+    try:
+        CourseKey, modulestore = _load_openedx_modules()
+        store = modulestore()
+        course = store.get_course(course_key)
+    except Exception:
+        return []
+    components: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    stack: list[Any] = list(getattr(course, 'children', []) or [])
+    order = 0
+    while stack:
+        key = stack.pop(0)
+        raw_key = _safe_str(key)
+        if not raw_key or raw_key in seen:
+            continue
+        seen.add(raw_key)
+        block = _get_item_best_effort(store, key)
+        if block is None:
+            continue
+        block_type = _block_type(block)
+        children = _children_locations(block)
+        if children:
+            stack[0:0] = list(children)
+        display = _display_name(block) or raw_key
+        if block_type in {'sequential', 'vertical', 'problem'} and _looks_like_quiz_component(display, block):
+            order += 1
+            name = display.strip() or f'Quiz {order}'
+            if name.lower() in {'quiz', 'learning check', 'lc'}:
+                name = f'{name} {order}'
+            components.append({
+                'key': raw_key,
+                'usage_key': raw_key,
+                'name': name[:255],
+                'category': 'quiz' if 'quiz' in name.lower() else block_type,
+                'earned': None,
+                'possible': None,
+                'percent': None,
+                'planned': True,
+                'source': 'course_outline',
+                'order': order,
+            })
+    higher = [item for item in components if item.get('category') != 'problem']
+    usable = higher or components
+    usable.sort(key=lambda item: (_safe_str(item.get('name')), _safe_str(item.get('key'))))
+    return usable[:80]
+
 def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, list[dict[str, Any]]]:
     """Best-effort subsection/component grade breakdown.
 
@@ -694,6 +818,7 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     result: dict[int, list[dict[str, Any]]] = {}
     if not course_key or not users:
         return result
+    planned_components = _course_outline_quiz_components(course_key)
     try:
         PersistentSubsectionGrade, _source, _import_error = _persistent_subsection_grade_model()
         if PersistentSubsectionGrade is None:
@@ -766,6 +891,18 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
                 result[uid] = items
     except Exception:
         pass
+    if planned_components:
+        user_ids = [int(getattr(user, 'id', 0) or 0) for user in users if getattr(user, 'id', None) is not None]
+        for uid in user_ids:
+            existing = result.get(uid) or []
+            existing_keys = {_safe_str(item.get('key') or item.get('usage_key') or item.get('name')).lower() for item in existing}
+            merged = list(existing)
+            for planned in planned_components:
+                key = _safe_str(planned.get('key') or planned.get('usage_key') or planned.get('name')).lower()
+                if key and key not in existing_keys:
+                    merged.append(dict(planned))
+            merged.sort(key=lambda item: _safe_str(item.get('name') or item.get('key')))
+            result[uid] = merged[:80]
     return result
 
 
@@ -816,7 +953,9 @@ def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) ->
     if not course_key or not users:
         return result
     try:
-        from courseware.models import StudentModule  # type: ignore
+        StudentModule, _source, _import_error = _student_module_model()
+        if StudentModule is None:
+            return result
         user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
         rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids, module_type='problem')
     except Exception:
@@ -925,9 +1064,12 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         total_blocks = None
     if not result:
         try:
-            from courseware.models import StudentModule  # type: ignore
-            from django.db.models import Count, Max  # type: ignore
-            rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids).values('student_id').annotate(completed=Count('id'), last_activity=Max('modified'))
+            StudentModule, _source, _import_error = _student_module_model()
+            if StudentModule is None:
+                rows = []
+            else:
+                from django.db.models import Count, Max  # type: ignore
+                rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids).values('student_id').annotate(completed=Count('id'), last_activity=Max('modified'))
             for row in rows:
                 uid = int(row.get('student_id') or 0)
                 completed = int(row.get('completed') or 0)
