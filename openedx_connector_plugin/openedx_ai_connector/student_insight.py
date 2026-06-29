@@ -895,14 +895,14 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
         user_ids = [int(getattr(user, 'id', 0) or 0) for user in users if getattr(user, 'id', None) is not None]
         for uid in user_ids:
             existing = result.get(uid) or []
-            existing_keys = {_safe_str(item.get('key') or item.get('usage_key') or item.get('name')).lower() for item in existing}
-            merged = list(existing)
-            for planned in planned_components:
-                key = _safe_str(planned.get('key') or planned.get('usage_key') or planned.get('name')).lower()
-                if key and key not in existing_keys:
-                    merged.append(dict(planned))
-            merged.sort(key=lambda item: _safe_str(item.get('name') or item.get('key')))
-            result[uid] = merged[:80]
+            if existing:
+                # If CMS/Open edX already returned actual Detailed grades for the
+                # learner, do not supplement with planned outline shells because
+                # that can create phantom columns (for example Quiz 14 when the
+                # gradebook currently exposes only Quiz 1 and Quiz 2).
+                result[uid] = existing[:80]
+                continue
+            result[uid] = [dict(item) for item in planned_components[:80]]
     return result
 
 
@@ -1011,12 +1011,138 @@ def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) ->
     return result
 
 
+
+
+def _extract_completion_percent_from_payload(value: Any) -> float | None:
+    """Extract official Course Home completion percent from nested API payloads.
+
+    Avoid generic grade percent fields; this is only for the learner dashboard
+    Course completion card.
+    """
+    seen: set[int] = set()
+    preferred_keys = {
+        'course_completion_percent', 'courseCompletionPercent', 'completion_percent',
+        'completionPercent', 'percent_complete', 'percentComplete', 'completion_rate',
+        'completionRate', 'course_completion', 'courseCompletion', 'completed_percent',
+        'completedPercent', 'progress_percent', 'progressPercent',
+    }
+
+    def as_percent(raw: Any) -> float | None:
+        try:
+            number = float(raw)
+        except Exception:
+            return None
+        if 0 <= number <= 1:
+            number *= 100.0
+        if 0 <= number <= 100:
+            return round(number, 2)
+        return None
+
+    def walk(node: Any, depth: int = 0) -> float | None:
+        if depth > 5:
+            return None
+        if isinstance(node, dict):
+            marker = id(node)
+            if marker in seen:
+                return None
+            seen.add(marker)
+            for key in preferred_keys:
+                if key in node:
+                    if isinstance(node.get(key), dict):
+                        nested = walk(node.get(key), depth + 1)
+                        if nested is not None:
+                            return nested
+                    percent = as_percent(node.get(key))
+                    if percent is not None:
+                        return percent
+            completed = node.get('completed_blocks') or node.get('completed_count') or node.get('completed') or node.get('done')
+            total = node.get('total_blocks') or node.get('total_count') or node.get('total') or node.get('required')
+            try:
+                if completed is not None and total is not None and float(total) > 0:
+                    return round(float(completed) / float(total) * 100.0, 2)
+            except Exception:
+                pass
+            for child_key in ('completion', 'course_completion', 'courseCompletion', 'progress', 'course_progress', 'courseProgress', 'summary', 'data', 'result'):
+                if child_key in node:
+                    nested = walk(node.get(child_key), depth + 1)
+                    if nested is not None:
+                        return nested
+        elif isinstance(node, list):
+            for item in node:
+                nested = walk(item, depth + 1)
+                if nested is not None:
+                    return nested
+        return None
+
+    return walk(value)
+
+
+def _course_home_progress_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[str, Any]]:
+    """Best-effort read of the same Course completion used by learner Course Home.
+
+    The exact Course Home API internals vary by Open edX release. This function
+    tries the public view class with a per-user request and only returns a percent
+    when an official progress/completion payload can be parsed. If it cannot read
+    the Course Home API, callers should show N/A rather than infer completion from
+    quiz grades.
+    """
+    result: dict[int, dict[str, Any]] = {}
+    if not course_key or not users:
+        return result
+    view_candidates = [
+        ('lms.djangoapps.course_home_api.progress.views', 'CourseProgressView'),
+        ('lms.djangoapps.course_home_api.progress.views', 'ProgressTabView'),
+        ('openedx.features.course_experience.views.course_home', 'CourseHomeProgressView'),
+    ]
+    view_cls = None
+    for module_name, attr in view_candidates:
+        try:
+            module = importlib.import_module(module_name)
+            view_cls = getattr(module, attr)
+            break
+        except Exception:
+            view_cls = None
+    if view_cls is None:
+        return result
+    try:
+        from django.test import RequestFactory  # type: ignore
+        import json
+    except Exception:
+        return result
+    factory = RequestFactory()
+    course_id_text = _safe_str(course_key)
+    for user in users:
+        uid = int(getattr(user, 'id', 0) or 0)
+        if uid <= 0:
+            continue
+        try:
+            request = factory.get(f'/api/course_home/v1/progress/{course_id_text}')
+            request.user = user
+            response = view_cls.as_view()(request, course_id=course_id_text)
+            content = getattr(response, 'data', None)
+            if content is None:
+                raw = getattr(response, 'content', b'') or b''
+                content = json.loads(raw.decode('utf-8')) if raw else {}
+            percent = _extract_completion_percent_from_payload(content)
+            if percent is not None:
+                result[uid] = {
+                    'percent': percent,
+                    'source': 'CourseHomeAPI',
+                    'payload': content if isinstance(content, dict) else None,
+                }
+        except Exception:
+            continue
+    return result
+
 def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, dict[str, Any]], int | None]:
     result: dict[int, dict[str, Any]] = {}
     total_blocks: int | None = None
     if not course_key or not users:
         return result, total_blocks
     user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
+    official_progress = _course_home_progress_snapshot(course_key, users)
+    if official_progress:
+        result.update(official_progress)
     try:
         from completion.models import BlockCompletion  # type: ignore
         from django.db.models import Count, Max  # type: ignore
@@ -1025,15 +1151,14 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
             uid = int(row.get('user_id') or 0)
             completed = int(row.get('completed') or 0)
             last_activity = row.get('last_activity')
-            result[uid] = {
-                'completed_blocks': completed,
-                'last_activity_at': last_activity.isoformat() if last_activity else None,
-                'source': 'BlockCompletion',
-            }
+            bucket = result.setdefault(uid, {'source': 'BlockCompletion'})
+            bucket.setdefault('source', 'BlockCompletion')
+            bucket['completed_blocks'] = completed
+            bucket['last_activity_at'] = last_activity.isoformat() if last_activity else bucket.get('last_activity_at')
     except Exception:
         # Ulmo/Indigo deployments may not have the completion app populated.
         # Do not give up: fall back to StudentModule interaction counts below.
-        result = {}
+        pass
     try:
         CourseKey, modulestore = _load_openedx_modules()
         store = modulestore()
@@ -1085,7 +1210,11 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         for item in result.values():
             completed = item.get('completed_blocks') or 0
             item['total_blocks'] = total_blocks
-            item['percent'] = float(completed) / float(total_blocks) if total_blocks else None
+            # Do not synthesize Course completion percent from BlockCompletion or
+            # StudentModule counts. The learner dashboard completion card is the
+            # source of truth; fallback counts are kept only for diagnostics/activity.
+            if _safe_str(item.get('source')).lower() == 'coursehomeapi' and item.get('percent') is None:
+                item['percent'] = float(completed) / float(total_blocks) if total_blocks else None
     return result, total_blocks
 
 
