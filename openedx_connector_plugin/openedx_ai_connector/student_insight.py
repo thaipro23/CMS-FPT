@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import importlib
+import re
 import secrets
 from typing import Any
 
@@ -731,6 +732,45 @@ def _persistent_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, d
 
 
 
+
+def _datetime_iso(value: Any) -> str | None:
+    if value is None or value == '':
+        return None
+    try:
+        if hasattr(value, 'isoformat'):
+            return value.isoformat()
+    except Exception:
+        pass
+    raw = _safe_str(value)
+    return raw or None
+
+
+def _latest_datetime_iso(left: Any, right: Any) -> Any:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    try:
+        return right if right > left else left
+    except Exception:
+        return right or left
+
+
+def _quiz_numbers_from_label(value: Any) -> list[int]:
+    raw = _safe_str(value).lower()
+    if not raw:
+        return []
+    numbers: set[int] = set()
+    for token in re.findall(r'(?:quiz|learning\s*check|lc)\s*#?\s*(\d{1,3})', raw, flags=re.I):
+        try:
+            n = int(token)
+            if 1 <= n <= 200:
+                numbers.add(n)
+        except Exception:
+            pass
+    return sorted(numbers)
+
+
 def _looks_like_quiz_component(name: Any, block: Any | None = None) -> bool:
     text = _safe_str(name).strip().lower()
     if any(token in text for token in ('quiz', 'learning check', 'lc ')):
@@ -770,7 +810,6 @@ def _course_outline_quiz_components(course_key: Any) -> list[dict[str, Any]]:
     components: list[dict[str, Any]] = []
     seen: set[str] = set()
     stack: list[Any] = list(getattr(course, 'children', []) or [])
-    order = 0
     while stack:
         key = stack.pop(0)
         raw_key = _safe_str(key)
@@ -786,26 +825,39 @@ def _course_outline_quiz_components(course_key: Any) -> list[dict[str, Any]]:
             stack[0:0] = list(children)
         display = _display_name(block) or raw_key
         if block_type in {'sequential', 'vertical', 'problem'} and _looks_like_quiz_component(display, block):
-            order += 1
-            name = display.strip() or f'Quiz {order}'
-            if name.lower() in {'quiz', 'learning check', 'lc'}:
-                name = f'{name} {order}'
+            name = (display or '').strip()
+            category = 'quiz' if 'quiz' in name.lower() or block_type == 'sequential' else block_type
             components.append({
                 'key': raw_key,
                 'usage_key': raw_key,
-                'name': name[:255],
-                'category': 'quiz' if 'quiz' in name.lower() else block_type,
+                'name': name[:255] if name else '',
+                'category': category,
                 'earned': None,
                 'possible': None,
                 'percent': None,
                 'planned': True,
                 'source': 'course_outline',
-                'order': order,
+                'block_type': block_type,
             })
-    higher = [item for item in components if item.get('category') != 'problem']
+    # Prefer real quiz containers (sequential/vertical) over individual problem-bank
+    # children. Problem-bank/randomized items can have keys like `quiz-14` and would
+    # otherwise create phantom Quiz columns.
+    higher = [item for item in components if item.get('block_type') in {'sequential', 'vertical'}]
     usable = higher or components
     usable.sort(key=lambda item: (_safe_str(item.get('name')), _safe_str(item.get('key'))))
-    return usable[:80]
+    fixed: list[dict[str, Any]] = []
+    for index, item in enumerate(usable[:80], start=1):
+        row = dict(item)
+        numbers = _quiz_numbers_from_label(row.get('name'))
+        quiz_number = numbers[0] if numbers else index
+        row['quiz_number'] = quiz_number
+        row['order'] = quiz_number
+        name = _safe_str(row.get('name')).strip()
+        if name.lower() in {'quiz', 'learning check', 'lc', ''}:
+            name = f'Quiz {quiz_number}'
+        row['name'] = name[:255]
+        fixed.append(row)
+    return fixed
 
 def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, list[dict[str, Any]]]:
     """Best-effort subsection/component grade breakdown.
@@ -873,6 +925,7 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
                 'earned': float(earned) if earned is not None else None,
                 'possible': float(possible) if possible is not None else None,
                 'percent': round(percent, 2) if percent is not None else None,
+                'submitted_at': _datetime_iso(getattr(row, 'modified', None) or getattr(row, 'updated_at', None) or getattr(row, 'created', None)),
                 'source': 'PersistentSubsectionGrade',
             })
         except Exception:
@@ -984,11 +1037,13 @@ def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) ->
                 'earned': 0.0,
                 'possible': 0.0,
                 'problem_count': 0,
+                'submitted_at_raw': None,
                 'source': 'StudentModule.problem_grade',
             })
             bucket['earned'] += earned
             bucket['possible'] += possible
             bucket['problem_count'] += 1
+            bucket['submitted_at_raw'] = _latest_datetime_iso(bucket.get('submitted_at_raw'), getattr(row, 'modified', None) or getattr(row, 'updated_at', None) or getattr(row, 'created', None))
         except Exception:
             continue
     for (uid, _key), bucket in buckets.items():
@@ -1003,6 +1058,7 @@ def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) ->
             'earned': round(earned, 2),
             'possible': round(possible, 2),
             'percent': percent,
+            'submitted_at': _datetime_iso(bucket.get('submitted_at_raw')),
             'problem_count': int(bucket.get('problem_count') or 0),
             'source': bucket['source'],
         })
