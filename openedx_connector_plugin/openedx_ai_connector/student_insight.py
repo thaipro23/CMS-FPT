@@ -1255,6 +1255,60 @@ def _course_home_view_response(view_cls: Any, request: Any, course_key: Any, cou
     return None
 
 
+def _authenticate_synthetic_request(request: Any, user: Any) -> None:
+    """Attach learner identity to RequestFactory requests for DRF/Django views.
+
+    Course Home progress is exposed by the exact LMS URL
+    ``/api/course_home/progress/<course_id>`` and resolves the learner from
+    ``request.user``.  DRF views may ignore a bare ``request.user`` unless the
+    request is force-authenticated, so set both forms when available.
+    """
+    try:
+        request.user = user
+    except Exception:
+        pass
+    try:
+        from rest_framework.test import force_authenticate  # type: ignore
+        force_authenticate(request, user=user)
+    except Exception:
+        pass
+
+
+def _course_home_resolved_response(request: Any, course_id_text: str) -> tuple[Any | None, str | None]:
+    """Call the actual Course Home progress route registered in this LMS.
+
+    Ulmo deployments can name the backing class differently from upstream
+    examples.  The browser-proven source on this system is
+    ``/api/course_home/progress/<course_id>``.  Resolving and invoking the
+    registered callback avoids guessing class names such as ProgressTabView.
+    """
+    try:
+        from django.urls import resolve  # type: ignore
+    except Exception:
+        return None, None
+    paths = [
+        f'/api/course_home/progress/{course_id_text}',
+        f'/api/course_home/progress/{course_id_text}/',
+        f'/api/course_home/v1/progress/{course_id_text}',
+        f'/api/course_home/v1/progress/{course_id_text}/',
+    ]
+    for path in paths:
+        try:
+            match = resolve(path)
+        except Exception:
+            continue
+        try:
+            return match.func(request, *match.args, **match.kwargs), path
+        except TypeError:
+            try:
+                return match.func(request, **match.kwargs), path
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return None, None
+
+
 def _completion_api_progress_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[str, Any]]:
     """Try Open edX completion APIs before falling back to diagnostic counts.
 
@@ -1350,17 +1404,41 @@ def _course_home_progress_snapshot(course_key: Any, users: list[Any]) -> dict[in
         view_classes = []
         RequestFactory = None  # type: ignore
 
-    if view_classes and RequestFactory is not None:
+    if RequestFactory is not None:
         factory = RequestFactory()
         course_id_text = _safe_str(course_key)
         for user in users:
             uid = int(getattr(user, 'id', 0) or 0)
             if uid <= 0:
                 continue
+
+            # First use the exact route that the browser calls on Ulmo:
+            # /api/course_home/progress/<course_id>.  This is more reliable
+            # than guessing the view class name because deployments can patch or
+            # wrap course_home_api views.
+            try:
+                request = factory.get(f'/api/course_home/progress/{course_id_text}')
+                _authenticate_synthetic_request(request, user)
+                response, resolved_path = _course_home_resolved_response(request, course_id_text)
+                if response is not None:
+                    content = _serialize_response_payload(response)
+                    percent = _extract_completion_percent_from_payload(content)
+                    if percent is not None:
+                        source = 'CourseHomeProgressRoute:completion_summary' if _payload_has_completion_summary(content) else 'CourseHomeProgressRoute'
+                        result[uid] = {
+                            'percent': percent,
+                            'source': source,
+                            'payload': content if isinstance(content, dict) else {'value': _safe_str(content)},
+                            'resolved_path': resolved_path,
+                        }
+                        continue
+            except Exception:
+                pass
+
             for view_cls in view_classes:
                 try:
                     request = factory.get(f'/api/course_home/progress/{course_id_text}')
-                    request.user = user
+                    _authenticate_synthetic_request(request, user)
                     response = _course_home_view_response(view_cls, request, course_key, course_id_text)
                     if response is None:
                         continue
