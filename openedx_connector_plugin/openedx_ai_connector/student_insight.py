@@ -20,7 +20,15 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.90'
+CONNECTOR_VERSION = '25.9.16.5.98'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.98'
+PROGRESS_CONTRACT = {
+    'completion_source': 'StudentModuleSequentialFallback',
+    'denominator': 'reachable_sequential_subsections',
+    'numerator': 'studentmodule_sequential_position_rows',
+    'ignored_studentmodule_types': ['itembank', 'problem', 'video', 'vertical', 'chapter', 'course'],
+    'zero_progress_rule': 'students_with_only_itembank_rows_return_0_over_total_sequential',
+}
 
 from .auth import (
     _batch_too_large_response,
@@ -784,7 +792,7 @@ def _safe_json_loads(value: Any) -> Any:
 
 _CONTAINER_STUDENT_MODULE_TYPES = {'course', 'chapter', 'sequential', 'vertical', 'library_content'}
 
-# v25.9.16.5.90: StudentModule fallback denominator must match the
+# v25.9.16.5.98: StudentModule fallback denominator must match the
 # raw course tree total. Studio Course Content Summary can include sections,
 # subsections, units, hidden/orphan/draft remnants, and other non-learning
 # containers. For StudentModule fallback we only divide by currently reachable
@@ -1727,16 +1735,17 @@ def _course_home_progress_snapshot(course_key: Any, users: list[Any]) -> dict[in
             result.setdefault(uid, item)
     return result
 
-def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, dict[str, Any]], int | None]:
+def _completion_snapshot(course_key: Any, users: list[Any], *, skip_course_home_progress: bool = False) -> tuple[dict[int, dict[str, Any]], int | None]:
     result: dict[int, dict[str, Any]] = {}
     total_blocks: int | None = None
     if not course_key or not users:
         return result, total_blocks
     user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
-    official_progress = _course_home_progress_snapshot(course_key, users)
-    if official_progress:
-        result.update(official_progress)
-    # v25.9.16.5.90 deliberately skips BlockCompletion row counts for Course
+    if not skip_course_home_progress:
+        official_progress = _course_home_progress_snapshot(course_key, users)
+        if official_progress:
+            result.update(official_progress)
+    # v25.9.16.5.93 deliberately skips BlockCompletion row counts for Course
     # completion fallback. In large courses this table can be heavy to aggregate,
     # and its rows are not the same denominator that CMS displays for the class
     # view. Official Course Home progress is still attempted above; if it is not
@@ -1746,7 +1755,7 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         total_blocks = denominator_snapshot.get('eligible_total')
     except Exception:
         total_blocks = None
-    # v25.9.16.5.90: do not scan all StudentModule rows for progress.
+    # v25.9.16.5.98: do not scan all StudentModule rows for progress.
     # On UAT, learners who had not studied still had 15 `itembank` rows because
     # Problem Bank random selection created state such as {"selected": ...}.
     # Those rows caused false completion.  The CMS card for this course is
@@ -1914,7 +1923,36 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
     return result, total_blocks
 
 
-def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+def _compact_progress_payload(progress: dict[str, Any]) -> dict[str, Any]:
+    """Return only fields AI Server needs for class detail persistence.
+
+    Heavy denominator samples/breakdowns were useful while debugging v86-v90,
+    but sending them for every class sync wastes JSON size and LMS/AI parsing
+    time. Keep canonical counts/source and drop tree diagnostics.
+    """
+    if not isinstance(progress, dict):
+        return {}
+    keys = [
+        'percent',
+        'source',
+        'completed_blocks',
+        'total_blocks',
+        'last_activity_at',
+        'has_student_module_fallback',
+        'student_module_completed_blocks',
+        'student_module_activity_blocks',
+        'student_module_raw_rows',
+        'student_module_ignored_rows',
+        'student_module_subsection_total',
+        'student_module_fallback_mode',
+        'student_module_fallback_rule',
+        'student_module_denominator_rule',
+        'fallback_reason',
+    ]
+    return {key: progress.get(key) for key in keys if key in progress and progress.get(key) is not None}
+
+def _student_learning_results(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
     course_key = _course_key_from_string(course_id)
     found_by_key = _student_insight_user_map(requested)
     users = []
@@ -1929,7 +1967,7 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -
     enrollment = _enrollment_snapshot(course_key, users)
     grades = _persistent_grade_snapshot(course_key, users)
     component_grades = _component_grade_snapshot(course_key, users)
-    completion, total_blocks = _completion_snapshot(course_key, users)
+    completion, total_blocks = _completion_snapshot(course_key, users, skip_course_home_progress=skip_course_home_progress)
     results: list[dict[str, Any]] = []
     for item in requested:
         username = item.get('username') or ''
@@ -1941,6 +1979,7 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -
         grade = grades.get(uid) or {}
         progress = completion.get(uid) or {}
         components = component_grades.get(uid) or []
+        progress_payload = _compact_progress_payload(progress) if compact else progress
         results.append({
             'student_code': item.get('student_code') or None,
             'ap_username': username,
@@ -1958,7 +1997,7 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]]) -
             'total_blocks': progress.get('total_blocks') or total_blocks,
             'last_activity_at': progress.get('last_activity_at') or grade.get('modified'),
             'enrollment': enroll,
-            'progress': progress,
+            'progress': progress_payload,
             'grade': {**grade, 'components': components},
             'component_scores': components,
             'component_grades': components,
@@ -2002,6 +2041,8 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
         pass
     return {
         'connector_version': CONNECTOR_VERSION,
+        'connector_contract_version': CONNECTOR_CONTRACT_VERSION,
+        'progress_contract': PROGRESS_CONTRACT,
         'active_http_namespace': '/api/ai-connector/v1',
         'student_module_model_available': StudentModule is not None,
         'student_module_model_source': sm_source or None,
@@ -2051,7 +2092,10 @@ def student_insight_class_analytics(request):
     if not requested:
         return _json_response({'ok': True, 'course_id': course_id, 'results': [], 'total': 0})
     try:
-        results = _student_learning_results(course_id, requested)
+        compact = bool(data.get('compact') or data.get('lite') or data.get('minimal'))
+        include_diagnostics = bool(data.get('include_diagnostics'))
+        skip_course_home_progress = bool(data.get('skip_course_home_progress') or data.get('fast_student_module'))
+        results = _student_learning_results(course_id, requested, compact=compact, skip_course_home_progress=skip_course_home_progress)
     except Exception:
         return _json_response({'ok': False, 'code': 'class_analytics_failed', 'message': 'Không lấy được dữ liệu học tập CMS/Open edX', 'results': []}, status=500)
     counts: dict[str, int] = {}
@@ -2069,13 +2113,24 @@ def student_insight_class_analytics(request):
         'with_student_module_blocks': sum(1 for item in results if bool((item.get('progress') or {}).get('has_student_module_fallback')) or item.get('progress_source') == 'StudentModule'),
         'student_module_raw_rows': sum(int((item.get('progress') or {}).get('student_module_raw_rows') or 0) for item in results),
         'student_module_ignored_rows': sum(int((item.get('progress') or {}).get('student_module_ignored_rows') or 0) for item in results),
-        'student_module_denominator_breakdown': next(((item.get('progress') or {}).get('student_module_denominator_breakdown') for item in results if (item.get('progress') or {}).get('student_module_denominator_breakdown')), None),
-        'student_module_content_tree_breakdown': next(((item.get('progress') or {}).get('student_module_content_tree_breakdown') for item in results if (item.get('progress') or {}).get('student_module_content_tree_breakdown')), None),
         'with_total_grade': sum(1 for item in results if item.get('grade_percent') is not None),
         'with_component_grades': sum(1 for item in results if item.get('component_scores')),
         'completion_sources': source_counts,
     }
-    return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'learning_counts': learning_counts, 'diagnostics': _learning_connector_diagnostics(), 'results': results})
+    envelope = {
+        'ok': True,
+        'course_id': course_id,
+        'connector_version': CONNECTOR_VERSION,
+        'connector_contract_version': CONNECTOR_CONTRACT_VERSION,
+        'progress_contract': PROGRESS_CONTRACT,
+        'total': len(results),
+        'counts': counts,
+        'learning_counts': learning_counts,
+        'results': results,
+    }
+    if include_diagnostics:
+        envelope['diagnostics'] = _learning_connector_diagnostics()
+    return _json_response(envelope)
 
 
 def _student_insight_enroll_results(course_id: str, requested: list[dict[str, Any]], *, mode: str = 'audit', force: bool = False, create_missing: bool = False) -> list[dict[str, Any]]:
