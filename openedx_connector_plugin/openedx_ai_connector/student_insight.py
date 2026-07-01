@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import importlib
+import json
 import re
 import secrets
 from typing import Any
@@ -19,7 +20,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.86'
+CONNECTOR_VERSION = '25.9.16.5.89'
 
 from .auth import (
     _batch_too_large_response,
@@ -763,6 +764,241 @@ def _datetime_iso(value: Any) -> str | None:
         return raw
 
 
+
+
+def _safe_json_loads(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list, tuple)):
+        return value
+    raw = _safe_str(value).strip()
+    if not raw or raw in {'{}', '[]', 'null', 'None', '""'}:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return raw
+
+
+_CONTAINER_STUDENT_MODULE_TYPES = {'course', 'chapter', 'sequential', 'vertical', 'library_content'}
+
+# v25.9.16.5.89: StudentModule fallback denominator must match the
+# raw course tree total. Studio Course Content Summary can include sections,
+# subsections, units, hidden/orphan/draft remnants, and other non-learning
+# containers. For StudentModule fallback we only divide by currently reachable
+# learner-completable leaf components. This prevents false ratios such as
+# 15/70 = 21.4% when 70 came from course tree/container counts rather than
+# real completion-eligible learning items.
+_STUDENTMODULE_FALLBACK_DENOMINATOR_TYPES = {
+    'problem', 'video', 'html', 'discussion', 'openassessment', 'openassessmentblock',
+    'lti', 'lti_consumer', 'drag-and-drop-v2', 'drag-and-drop', 'poll', 'survey',
+    'word_cloud', 'wordcloud', 'xblock',
+}
+# Conservative activity types. These are safe to count as learner activity when
+# a StudentModule row has non-empty state/grade. Do not include vertical,
+# sequential, chapter, or course.
+_STUDENTMODULE_ACTIVITY_DENOMINATOR_TYPES = _STUDENTMODULE_FALLBACK_DENOMINATOR_TYPES
+
+# Course Home/CMS completion in this deployment counts learner-visible units
+# (subsections/vertical learning activities), not every low-level XBlock row.
+# Example from Studio/CMS: duongddph69321 = 5/8 = 62.5% -> 63%.
+# Therefore StudentModule fallback must aggregate activity rows to the nearest
+# reachable subsection instead of counting raw video/problem/html rows.
+_STUDENTMODULE_FALLBACK_UNIT_TYPES = {'sequential'}
+
+
+_ANSWER_ACTIVITY_KEYS = {'student_answers', 'saved_answers', 'submissions', 'submission', 'correct_map', 'input_state'}
+_TRUE_ACTIVITY_KEYS = {'attempted', 'done', 'completed', 'completion', 'watched'}
+_NUMERIC_ACTIVITY_KEYS = {'attempts', 'position', 'last_video_position', 'video_position', 'current_time'}
+_TIMESTAMP_ACTIVITY_KEYS = {'last_submission_time'}
+
+
+def _value_has_content(value: Any) -> bool:
+    if value in (None, '', {}, [], 'null', 'None'):
+        return False
+    if isinstance(value, dict):
+        return any(_value_has_content(child) for child in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_value_has_content(child) for child in value)
+    return True
+
+
+def _student_module_state_has_learning_activity(value: Any) -> bool:
+    data = _safe_json_loads(value)
+    if data is None:
+        return False
+    if isinstance(data, str):
+        # Plain non-JSON state is rare; count it only when it is not an empty/default marker.
+        text = data.strip()
+        return bool(text and text not in {'{}', '[]', 'null', 'None', '""'})
+    if isinstance(data, dict):
+        if not data:
+            return False
+        for key in _ANSWER_ACTIVITY_KEYS:
+            if _value_has_content(data.get(key)):
+                return True
+        for key in _TRUE_ACTIVITY_KEYS:
+            raw = data.get(key)
+            if raw is True:
+                return True
+            if isinstance(raw, str) and raw.strip().lower() in {'true', 'yes', 'done', 'completed'}:
+                return True
+        for key in _NUMERIC_ACTIVITY_KEYS:
+            try:
+                if float(data.get(key) or 0) > 0:
+                    return True
+            except Exception:
+                continue
+        for key in _TIMESTAMP_ACTIVITY_KEYS:
+            if _value_has_content(data.get(key)):
+                return True
+        # Ignore default problem render state such as seed-only, empty input_state,
+        # empty correct_map, and empty student_answers. These rows caused the
+        # false 15/70 = 21.4% completion in v86.
+        return False
+    if isinstance(data, (list, tuple)):
+        return any(_student_module_state_has_learning_activity(item) for item in data)
+    return bool(data)
+
+
+def _student_module_row_has_learning_activity(row: dict[str, Any]) -> bool:
+    module_type = _safe_str(row.get('module_type')).lower()
+    if module_type in _CONTAINER_STUDENT_MODULE_TYPES:
+        return False
+    grade = row.get('grade')
+    max_grade = row.get('max_grade')
+    try:
+        if grade is not None and float(grade) >= 0:
+            return True
+    except Exception:
+        pass
+    try:
+        if max_grade is not None and float(max_grade) > 0 and grade is not None:
+            return True
+    except Exception:
+        pass
+    return _student_module_state_has_learning_activity(row.get('state'))
+
+
+
+def _completion_denominator_block_snapshot(course_key: Any) -> dict[str, Any]:
+    """Return the Course Home-compatible denominator for StudentModule fallback.
+
+    The LMS/CMS Course Home card in this deployment reports completion as
+    learner-visible learning units.  Example observed in production:
+    ``duongddph69321 = 5/8 = 62.5% -> 63%``.  Counting every raw XBlock under
+    the course tree produced the earlier false denominator 70.  This helper now
+    prefers reachable ``sequential`` blocks (subsections: Phần 1, Quiz 1, ...),
+    and maps every descendant video/problem/html StudentModule row back to its
+    parent subsection.  Only if a course has no sequentials do we fall back to
+    leaf learning components.
+    """
+    summary: dict[str, Any] = {
+        'denominator_source': 'lms_modulestore_reachable_subsections',
+        'denominator_rule': 'count_reachable_sequential_subsections_first_then_leaf_components',
+        'eligible_total': None,
+        'subsection_total': 0,
+        'leaf_eligible_total': 0,
+        'problem_total': 0,
+        'raw_reachable_blocks': 0,
+        'non_container_blocks': 0,
+        'container_blocks': 0,
+        'leaf_blocks': 0,
+        'breakdown_by_type': {},
+        'eligible_breakdown_by_type': {},
+        'excluded_breakdown_by_type': {},
+        'completion_unit_keys_sample': [],
+        'visited_keys_sample': [],
+        # Internal map used by StudentModule fallback numerator. It is deliberately
+        # kept in the connector payload diagnostics only as counts/samples below.
+        'component_to_completion_unit': {},
+        'error': None,
+    }
+    if not course_key:
+        summary['error'] = 'missing_course_key'
+        return summary
+    try:
+        CourseKey, modulestore = _load_openedx_modules()
+        store = modulestore()
+        course = store.get_course(course_key)
+        if course is None:
+            summary['error'] = 'course_not_found'
+            return summary
+
+        visited: set[str] = set()
+        completion_units: set[str] = set()
+        leaf_eligible_units: set[str] = set()
+        component_to_unit: dict[str, str] = {}
+        stack: list[tuple[Any, str | None]] = [(child, None) for child in (getattr(course, 'children', []) or [])]
+        problem_total = 0
+
+        while stack:
+            key, current_unit = stack.pop()
+            raw_key = str(key)
+            if raw_key in visited:
+                continue
+            visited.add(raw_key)
+            if len(summary['visited_keys_sample']) < 20:
+                summary['visited_keys_sample'].append(raw_key)
+            block = _get_item_best_effort(store, key)
+            if block is None:
+                continue
+            block_type = _block_type(block) or 'unknown'
+            children = _children_locations(block)
+            has_children = bool(children)
+
+            summary['raw_reachable_blocks'] = int(summary.get('raw_reachable_blocks') or 0) + 1
+            breakdown = summary['breakdown_by_type']
+            breakdown[block_type] = int(breakdown.get(block_type) or 0) + 1
+
+            next_unit = current_unit
+            if block_type in _STUDENTMODULE_FALLBACK_UNIT_TYPES:
+                next_unit = raw_key
+                completion_units.add(raw_key)
+                component_to_unit[raw_key] = raw_key
+                if len(summary['completion_unit_keys_sample']) < 20:
+                    summary['completion_unit_keys_sample'].append(raw_key)
+
+            if children:
+                for child in children:
+                    stack.append((child, next_unit))
+
+            if block_type in _CONTAINER_STUDENT_MODULE_TYPES or has_children:
+                summary['container_blocks'] = int(summary.get('container_blocks') or 0) + 1
+            else:
+                summary['leaf_blocks'] = int(summary.get('leaf_blocks') or 0) + 1
+            if block_type not in _CONTAINER_STUDENT_MODULE_TYPES:
+                summary['non_container_blocks'] = int(summary.get('non_container_blocks') or 0) + 1
+
+            is_leaf_eligible = (not has_children) and block_type in _STUDENTMODULE_FALLBACK_DENOMINATOR_TYPES
+            if block_type == 'problem':
+                problem_total += 1
+            if is_leaf_eligible:
+                unit_key = next_unit or raw_key
+                component_to_unit[raw_key] = unit_key
+                leaf_eligible_units.add(unit_key if completion_units else raw_key)
+                eligible = summary['eligible_breakdown_by_type']
+                eligible[block_type] = int(eligible.get(block_type) or 0) + 1
+            else:
+                excluded = summary['excluded_breakdown_by_type']
+                excluded[block_type] = int(excluded.get(block_type) or 0) + 1
+            if next_unit:
+                component_to_unit.setdefault(raw_key, next_unit)
+
+        subsection_total = len(completion_units)
+        leaf_eligible_total = len(leaf_eligible_units)
+        summary['subsection_total'] = subsection_total
+        summary['leaf_eligible_total'] = leaf_eligible_total
+        summary['problem_total'] = problem_total
+        summary['eligible_total'] = subsection_total or leaf_eligible_total or problem_total or None
+        summary['component_to_completion_unit'] = component_to_unit
+        summary['component_to_completion_unit_count'] = len(component_to_unit)
+        summary['denominator_source'] = 'lms_modulestore_reachable_subsections' if subsection_total else 'lms_modulestore_reachable_leaf_learning_components'
+        return summary
+    except Exception as exc:
+        summary['error'] = f'{exc.__class__.__name__}: {_safe_str(exc)[:220]}'
+        return summary
+
 def _latest_datetime_iso(left: Any, right: Any) -> Any:
     if left is None:
         return right
@@ -1491,32 +1727,9 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         # Ulmo/Indigo deployments may not have the completion app populated.
         # Do not give up: fall back to StudentModule interaction counts below.
         pass
+    denominator_snapshot = _completion_denominator_block_snapshot(course_key)
     try:
-        CourseKey, modulestore = _load_openedx_modules()
-        store = modulestore()
-        course = store.get_course(course_key)
-        visited: set[str] = set()
-        stack = list(getattr(course, 'children', []) or [])
-        count = 0
-        problem_count = 0
-        while stack:
-            key = stack.pop()
-            raw_key = str(key)
-            if raw_key in visited:
-                continue
-            visited.add(raw_key)
-            block = _get_item_best_effort(store, key)
-            if block is None:
-                continue
-            block_type = _block_type(block)
-            children = _children_locations(block)
-            if children:
-                stack.extend(children)
-            if block_type not in {'course', 'chapter', 'sequential', 'vertical'}:
-                count += 1
-            if block_type == 'problem':
-                problem_count += 1
-        total_blocks = count or problem_count or None
+        total_blocks = denominator_snapshot.get('eligible_total')
     except Exception:
         total_blocks = None
     # v25.9.16.5.86: always merge StudentModule counts, not only when the
@@ -1529,23 +1742,83 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         if StudentModule is None:
             student_module_rows = []
         else:
-            from django.db.models import Count, Max  # type: ignore
-            student_module_rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids).values('student_id').annotate(completed=Count('id'), last_activity=Max('modified'))
+            raw_student_module_rows = (
+                StudentModule.objects
+                .filter(course_id=course_key, student_id__in=user_ids)
+                .values('student_id', 'module_state_key', 'module_type', 'state', 'grade', 'max_grade', 'modified')
+                .iterator(chunk_size=2000)
+            )
+            raw_counts: dict[int, int] = {}
+            activity_units_by_uid: dict[int, set[str]] = {}
+            raw_activity_rows_by_uid: dict[int, int] = {}
+            last_activity_by_uid: dict[int, Any] = {}
+            ignored_counts: dict[int, int] = {}
+            component_to_unit = (denominator_snapshot or {}).get('component_to_completion_unit') or {}
+            for sm_row in raw_student_module_rows:
+                uid = int(sm_row.get('student_id') or 0)
+                if uid <= 0:
+                    continue
+                raw_counts[uid] = raw_counts.get(uid, 0) + 1
+                last_activity_by_uid[uid] = _latest_datetime_iso(last_activity_by_uid.get(uid), _datetime_iso(sm_row.get('modified')))
+                if _student_module_row_has_learning_activity(sm_row):
+                    raw_activity_rows_by_uid[uid] = raw_activity_rows_by_uid.get(uid, 0) + 1
+                    module_key = _safe_str(sm_row.get('module_state_key'))
+                    unit_key = component_to_unit.get(module_key) or module_key
+                    if unit_key:
+                        activity_units_by_uid.setdefault(uid, set()).add(unit_key)
+                else:
+                    ignored_counts[uid] = ignored_counts.get(uid, 0) + 1
+            student_module_rows = [
+                {
+                    'student_id': uid,
+                    # Match CMS Course Home style: completed learning units, not
+                    # raw StudentModule activity rows.  For the observed course,
+                    # this gives duongddph69321 = 5 units / 8 units = 62.5%.
+                    'completed': len(activity_units_by_uid.get(uid, set())),
+                    'raw_activity_rows': raw_activity_rows_by_uid.get(uid, 0),
+                    'activity_unit_keys_sample': sorted(list(activity_units_by_uid.get(uid, set())))[:20],
+                    'raw_rows': raw_counts.get(uid, 0),
+                    'ignored_rows': ignored_counts.get(uid, 0),
+                    'last_activity': last_activity_by_uid.get(uid),
+                }
+                for uid in raw_counts.keys()
+            ]
         for row in student_module_rows:
             uid = int(row.get('student_id') or 0)
             completed = int(row.get('completed') or 0)
+            raw_rows = int(row.get('raw_rows') or completed or 0)
+            raw_activity_rows = int(row.get('raw_activity_rows') or 0)
+            ignored_rows = int(row.get('ignored_rows') or 0)
             last_activity = row.get('last_activity')
             bucket = result.setdefault(uid, {'source': 'StudentModule'})
             if not bucket.get('source'):
                 bucket['source'] = 'StudentModule'
+            bucket['student_module_raw_rows'] = raw_rows
+            bucket['student_module_ignored_rows'] = ignored_rows
+            bucket['student_module_raw_activity_rows'] = raw_activity_rows
+            bucket['student_module_activity_unit_keys_sample'] = row.get('activity_unit_keys_sample') or []
+            bucket['student_module_activity_blocks'] = completed
             bucket['student_module_completed_blocks'] = completed
-            bucket['student_module_last_activity_at'] = _datetime_iso(last_activity)
+            bucket['student_module_last_activity_at'] = _datetime_iso(last_activity) or last_activity
             bucket['student_module_source'] = _source or 'StudentModule'
             if bucket.get('completed_blocks') is None:
                 bucket['completed_blocks'] = completed
             if bucket.get('last_activity_at') is None:
-                bucket['last_activity_at'] = _datetime_iso(last_activity)
-            bucket['has_student_module_fallback'] = True
+                bucket['last_activity_at'] = _datetime_iso(last_activity) or last_activity
+            bucket['has_student_module_fallback'] = completed > 0
+            bucket['student_module_fallback_rule'] = 'activity_rows_grouped_by_reachable_subsections'
+            bucket['student_module_denominator_rule'] = 'reachable_sequential_subsections_first_then_leaf_components'
+            bucket['student_module_denominator_source'] = (denominator_snapshot or {}).get('denominator_source')
+            bucket['student_module_denominator_breakdown'] = (denominator_snapshot or {}).get('eligible_breakdown_by_type')
+            bucket['student_module_subsection_total'] = (denominator_snapshot or {}).get('subsection_total')
+            bucket['student_module_leaf_eligible_total'] = (denominator_snapshot or {}).get('leaf_eligible_total')
+            bucket['student_module_completion_unit_keys_sample'] = (denominator_snapshot or {}).get('completion_unit_keys_sample')
+            bucket['student_module_component_to_completion_unit_count'] = (denominator_snapshot or {}).get('component_to_completion_unit_count')
+            bucket['student_module_content_tree_breakdown'] = (denominator_snapshot or {}).get('breakdown_by_type')
+            bucket['student_module_content_tree_raw_reachable_blocks'] = (denominator_snapshot or {}).get('raw_reachable_blocks')
+            bucket['student_module_content_tree_non_container_blocks'] = (denominator_snapshot or {}).get('non_container_blocks')
+            bucket['student_module_content_tree_leaf_blocks'] = (denominator_snapshot or {}).get('leaf_blocks')
+            bucket['student_module_denominator_error'] = (denominator_snapshot or {}).get('error')
     except Exception as exc:
         for uid in user_ids:
             try:
@@ -1670,6 +1943,8 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
         'student_module_import_error': sm_error,
         'student_module_fallback_enabled': True,
         'student_module_progress_ratio_enabled': True,
+        'student_module_progress_rule': 'activity_rows_only_excluding_empty_container_rows',
+        'student_module_denominator_rule': 'reachable_leaf_learning_components_only',
         'course_enrollment_model_available': CourseEnrollment is not None,
         'course_enrollment_model_source': ce_source or None,
         'course_enrollment_import_error': ce_error,
@@ -1727,6 +2002,10 @@ def student_insight_class_analytics(request):
         'with_progress': sum(1 for item in results if item.get('progress_percent') is not None or item.get('completed_blocks') is not None),
         'with_progress_percent': sum(1 for item in results if item.get('progress_percent') is not None),
         'with_student_module_blocks': sum(1 for item in results if bool((item.get('progress') or {}).get('has_student_module_fallback')) or item.get('progress_source') == 'StudentModule'),
+        'student_module_raw_rows': sum(int((item.get('progress') or {}).get('student_module_raw_rows') or 0) for item in results),
+        'student_module_ignored_rows': sum(int((item.get('progress') or {}).get('student_module_ignored_rows') or 0) for item in results),
+        'student_module_denominator_breakdown': next(((item.get('progress') or {}).get('student_module_denominator_breakdown') for item in results if (item.get('progress') or {}).get('student_module_denominator_breakdown')), None),
+        'student_module_content_tree_breakdown': next(((item.get('progress') or {}).get('student_module_content_tree_breakdown') for item in results if (item.get('progress') or {}).get('student_module_content_tree_breakdown')), None),
         'with_total_grade': sum(1 for item in results if item.get('grade_percent') is not None),
         'with_component_grades': sum(1 for item in results if item.get('component_scores')),
         'completion_sources': source_counts,
