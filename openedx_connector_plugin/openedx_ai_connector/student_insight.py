@@ -19,6 +19,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
+CONNECTOR_VERSION = '25.9.16.5.86'
+
 from .auth import (
     _batch_too_large_response,
     _json_response,
@@ -1517,34 +1519,60 @@ def _completion_snapshot(course_key: Any, users: list[Any]) -> tuple[dict[int, d
         total_blocks = count or problem_count or None
     except Exception:
         total_blocks = None
-    if not result:
-        try:
-            StudentModule, _source, _import_error = _student_module_model()
-            if StudentModule is None:
-                rows = []
-            else:
-                from django.db.models import Count, Max  # type: ignore
-                rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids).values('student_id').annotate(completed=Count('id'), last_activity=Max('modified'))
-            for row in rows:
-                uid = int(row.get('student_id') or 0)
-                completed = int(row.get('completed') or 0)
-                last_activity = row.get('last_activity')
-                result[uid] = {
-                    'completed_blocks': completed,
-                    'last_activity_at': _datetime_iso(last_activity),
-                    'source': 'StudentModule',
-                }
-        except Exception:
-            pass
+    # v25.9.16.5.86: always merge StudentModule counts, not only when the
+    # official Course Home route failed completely. UAT proved that Django shell
+    # can see StudentModule activity while the active HTTP connector may return
+    # an empty progress object. Keeping these counts in every response makes the
+    # HTTP path auditable and lets AI Server persist completed/total blocks.
+    try:
+        StudentModule, _source, _import_error = _student_module_model()
+        if StudentModule is None:
+            student_module_rows = []
+        else:
+            from django.db.models import Count, Max  # type: ignore
+            student_module_rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids).values('student_id').annotate(completed=Count('id'), last_activity=Max('modified'))
+        for row in student_module_rows:
+            uid = int(row.get('student_id') or 0)
+            completed = int(row.get('completed') or 0)
+            last_activity = row.get('last_activity')
+            bucket = result.setdefault(uid, {'source': 'StudentModule'})
+            if not bucket.get('source'):
+                bucket['source'] = 'StudentModule'
+            bucket['student_module_completed_blocks'] = completed
+            bucket['student_module_last_activity_at'] = _datetime_iso(last_activity)
+            bucket['student_module_source'] = _source or 'StudentModule'
+            if bucket.get('completed_blocks') is None:
+                bucket['completed_blocks'] = completed
+            if bucket.get('last_activity_at') is None:
+                bucket['last_activity_at'] = _datetime_iso(last_activity)
+            bucket['has_student_module_fallback'] = True
+    except Exception as exc:
+        for uid in user_ids:
+            try:
+                key = int(uid or 0)
+            except Exception:
+                continue
+            if key > 0:
+                result.setdefault(key, {})['student_module_error'] = _safe_str(exc)[:300]
+
     if total_blocks:
         for item in result.values():
-            completed = item.get('completed_blocks') or 0
+            completed = item.get('completed_blocks')
+            if completed is None:
+                completed = item.get('student_module_completed_blocks') or 0
             item['total_blocks'] = total_blocks
-            # Do not synthesize Course completion percent from BlockCompletion or
-            # StudentModule counts. The learner dashboard completion card is the
-            # source of truth; fallback counts are kept only for diagnostics/activity.
-            if _safe_str(item.get('source')).lower() == 'coursehomeapi' and item.get('percent') is None:
-                item['percent'] = float(completed) / float(total_blocks) if total_blocks else None
+            source_text = _safe_str(item.get('source')).lower()
+            # Official Course Home/Completion API remains preferred. When it is
+            # unavailable but StudentModule counts exist, expose a deliberate
+            # fallback completion ratio. This is the production recovery path for
+            # Ulmo deployments where /api/course_home/progress is not active in
+            # the connector process but StudentModule rows are populated.
+            if item.get('percent') is None and item.get('has_student_module_fallback'):
+                item['percent'] = round(max(0.0, min(100.0, float(completed or 0) / float(total_blocks) * 100.0)), 2)
+                item['source'] = 'StudentModule'
+                item['fallback_reason'] = 'course_home_progress_unavailable_student_module_counts'
+            elif item.get('percent') is None and source_text.startswith('coursehomeapi'):
+                item['percent'] = round(max(0.0, min(100.0, float(completed or 0) / float(total_blocks) * 100.0)), 2)
     return result, total_blocks
 
 
@@ -1604,6 +1632,7 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
     CourseEnrollment, ce_source, ce_error = _course_enrollment_model()
     PersistentCourseGrade, pcg_source, pcg_error = _persistent_course_grade_model()
     PersistentSubsectionGrade, psg_source, psg_error = _persistent_subsection_grade_model()
+    StudentModule, sm_source, sm_error = _student_module_model()
     course_home_views: list[str] = []
     for module_name, attr in [
         ('lms.djangoapps.course_home_api.progress.views', 'CourseProgressView'),
@@ -1634,6 +1663,13 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
     except Exception:
         pass
     return {
+        'connector_version': CONNECTOR_VERSION,
+        'active_http_namespace': '/api/ai-connector/v1',
+        'student_module_model_available': StudentModule is not None,
+        'student_module_model_source': sm_source or None,
+        'student_module_import_error': sm_error,
+        'student_module_fallback_enabled': True,
+        'student_module_progress_ratio_enabled': True,
         'course_enrollment_model_available': CourseEnrollment is not None,
         'course_enrollment_model_source': ce_source or None,
         'course_enrollment_import_error': ce_error,
@@ -1682,11 +1718,18 @@ def student_insight_class_analytics(request):
     for item in results:
         status = str(item.get('enrollment_status') or 'unknown')
         counts[status] = counts.get(status, 0) + 1
+    source_counts: dict[str, int] = {}
+    for item in results:
+        source = _safe_str(item.get('progress_source') or (item.get('progress') or {}).get('source') or 'none') or 'none'
+        source_counts[source] = source_counts.get(source, 0) + 1
     learning_counts = {
         'enrolled': sum(1 for item in results if bool((item.get('enrollment') or {}).get('is_enrolled'))),
         'with_progress': sum(1 for item in results if item.get('progress_percent') is not None or item.get('completed_blocks') is not None),
+        'with_progress_percent': sum(1 for item in results if item.get('progress_percent') is not None),
+        'with_student_module_blocks': sum(1 for item in results if bool((item.get('progress') or {}).get('has_student_module_fallback')) or item.get('progress_source') == 'StudentModule'),
         'with_total_grade': sum(1 for item in results if item.get('grade_percent') is not None),
         'with_component_grades': sum(1 for item in results if item.get('component_scores')),
+        'completion_sources': source_counts,
     }
     return _json_response({'ok': True, 'course_id': course_id, 'total': len(results), 'counts': counts, 'learning_counts': learning_counts, 'diagnostics': _learning_connector_diagnostics(), 'results': results})
 
