@@ -4,8 +4,10 @@ import json
 import logging
 import os
 import time
+import re
 
 from django.conf import settings
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_GET, require_POST
@@ -55,12 +57,23 @@ def _connector_hmac_secret():
     )
 
 
+def _check_and_store_hmac_nonce(client: str, timestamp: str, nonce: str, ttl: int) -> bool:
+    clean_client = re.sub(r'[^a-zA-Z0-9_.:-]+', '_', str(client or 'unit-reset'))[:80]
+    clean_nonce = hashlib.sha256(str(nonce or '').encode('utf-8')).hexdigest()
+    key = f'ai_unit_reset_hmac_nonce:{clean_client}:{timestamp}:{clean_nonce}'
+    try:
+        return bool(cache.add(key, '1', timeout=max(60, min(int(ttl or 300), 3600))))
+    except Exception:
+        return False
+
+
 def _valid_connector_hmac(request):
     secret = str(_connector_hmac_secret() or '')
     if not secret:
         return False
     timestamp = request.META.get('HTTP_X_AI_CONNECTOR_TIMESTAMP') or ''
     supplied = request.META.get('HTTP_X_AI_CONNECTOR_SIGNATURE') or ''
+    nonce = request.META.get('HTTP_X_AI_CONNECTOR_NONCE') or ''
     try:
         ts = int(timestamp)
     except Exception:
@@ -69,16 +82,25 @@ def _valid_connector_hmac(request):
     if abs(int(time.time()) - ts) > skew:
         return False
     body_hash = hashlib.sha256(request.body or b'').hexdigest()
-    message = f'{timestamp}.{request.method.upper()}.{_request_path_with_query(request)}.{body_hash}'
+    if nonce:
+        message = f'{timestamp}.{request.method.upper()}.{_request_path_with_query(request)}.{body_hash}.{nonce}'
+        replay_nonce = nonce
+    else:
+        # Backward-compatible verification for older AI Server builds that did
+        # not send a nonce. Replay protection stores the signature as a one-time
+        # token within the timestamp skew window.
+        message = f'{timestamp}.{request.method.upper()}.{_request_path_with_query(request)}.{body_hash}'
+        replay_nonce = supplied
     expected = hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, supplied)
+    if not hmac.compare_digest(expected, supplied):
+        return False
+    return _check_and_store_hmac_nonce('ai-server', timestamp, replay_nonce, skew)
 
 
-def _staff_or_hmac(request):
-    user = getattr(request, 'user', None)
-    if _valid_connector_hmac(request):
-        return True
-    return bool(getattr(user, 'is_authenticated', False) and (getattr(user, 'is_staff', False) or getattr(user, 'is_superuser', False)))
+def _connector_hmac_only(request):
+    # v25.9.16.7.2.64.12: csrf_exempt server-to-server write endpoints are HMAC-only.
+    # Browser staff/admin sessions must use csrf_protect endpoints instead of this connector path.
+    return _valid_connector_hmac(request)
 
 
 @login_required
@@ -290,8 +312,8 @@ def quiz_session_reset(request):
 @csrf_exempt
 @require_POST
 def quiz_timer_config_upsert(request):
-    if not _staff_or_hmac(request):
-        return JsonResponse({'success': False, 'code': 'CONNECTOR_AUTH_REQUIRED', 'message': 'HMAC hoặc staff required'}, status=403)
+    if not _connector_hmac_only(request):
+        return JsonResponse({'success': False, 'code': 'CONNECTOR_HMAC_REQUIRED', 'message': 'Endpoint cấu hình timer chỉ nhận HMAC server-to-server; staff cookie không được chấp nhận ở csrf_exempt endpoint.'}, status=403)
     payload = _json_body(request)
     try:
         result = upsert_unit_quiz_timer_config(
@@ -498,7 +520,21 @@ def quiz_session_runtime_js(request):
     document.body.classList.add('ai-quiz-timeout-locked');
   }
 
+  function aiAllowedOrigin(origin){
+    if (!origin) return false;
+    if (origin === window.location.origin) return true;
+    try {
+      var url = new URL(origin);
+      var host = (url.hostname || '').toLowerCase();
+      var selfHost = (window.location.hostname || '').toLowerCase();
+      if (host === selfHost) return true;
+      if (host.endsWith('.poly.edu.vn') || host.endsWith('.cms-test.poly.edu.vn') || host.endsWith('.local.openedx.io')) return true;
+    } catch (error) { return false; }
+    return false;
+  }
+
   window.addEventListener('message', async function(event){
+    if (!aiAllowedOrigin(event.origin)) return;
     if (!event.data || event.data.type !== 'AI_QUIZ_TIMEOUT_API_SUBMIT') return;
     if (autoSubmitting) return;
     autoSubmitting = true;
@@ -512,7 +548,7 @@ def quiz_session_runtime_js(request):
         failed_problem_count: result.failed || 0,
         skipped_problem_count: result.skipped || 0,
         discovered_problem_count: result.discovered || 0
-      }, '*');
+      }, event.origin || window.location.origin);
     }
     autoSubmitting = false;
   });

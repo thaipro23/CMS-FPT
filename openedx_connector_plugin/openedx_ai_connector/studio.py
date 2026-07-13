@@ -211,9 +211,11 @@ def _course_author_access(user, course_id: str | None) -> bool:
 
 
 def _user_in_ai_admin_group(user) -> bool:
+    if str(_setting_or_env('AI_CONNECTOR_ALLOW_ADMIN_GROUP') or '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        return False
     group_names = [
         item.strip()
-        for item in str(_setting_or_env('AI_CONNECTOR_ADMIN_GROUPS') or 'AI_ADMIN,AI Admin').split(',')
+        for item in str(_setting_or_env('AI_CONNECTOR_ADMIN_GROUPS') or '').split(',')
         if item.strip()
     ]
     if not group_names:
@@ -230,7 +232,7 @@ def _cms_user_payload(request, course_id: str | None = None) -> dict[str, Any]:
     is_staff = bool(getattr(user, 'is_staff', False))
     is_superuser = bool(getattr(user, 'is_superuser', False))
     can_author_course = _course_author_access(user, course_id)
-    if is_superuser or _user_in_ai_admin_group(user):
+    if is_superuser:
         role = 'admin'
         course_ids = ['*']
     elif can_author_course and course_id:
@@ -247,6 +249,7 @@ def _cms_user_payload(request, course_id: str | None = None) -> dict[str, Any]:
         'name': user.get_full_name() if hasattr(user, 'get_full_name') else '',
         'is_staff': is_staff,
         'is_superuser': is_superuser,
+        'is_super_admin': is_superuser,
         'role': role,
         'course_ids': course_ids,
         'requested_course_id': course_id,

@@ -98,6 +98,17 @@ def _student_payload_username(item: Any) -> str:
     return _normalize_username_input(item)
 
 
+def _student_payload_ap_username(item: Any) -> str:
+    if isinstance(item, dict):
+        return _normalize_username_input(
+            item.get('ap_username')
+            or item.get('apUsername')
+            or item.get('student_username')
+            or item.get('source_username')
+        )
+    return ''
+
+
 def _student_payload_code(item: Any) -> str:
     if not isinstance(item, dict):
         return ''
@@ -383,16 +394,16 @@ def _ensure_cms_user(item: Any, username: str, person_type: str):
 
 @csrf_exempt
 def student_insight_resolve_users(request):
-    """Resolve AP usernames against Open edX/CMS users.
+    """Resolve AP student payloads against Open edX/CMS users.
 
     URL contract:
       POST /api/ai-connector/v1/users/resolve
 
     Input supports both compact and rich payloads:
       {"usernames": ["he173548"]}
-      {"students": [{"username": "he173548", "student_code": "HE173548"}]}
+      {"students": [{"username": "he173548", "student_code": "HE173548", "ap_username": "email_or_ap_username"}]}
 
-    Matching is intentionally exact by username only.  Name/email fuzzy matching is
+    Matching is intentionally exact by CMS username only.  Name/email fuzzy matching is
     avoided because student identity errors are more harmful than a visible
     "Chưa có trên CMS" state.
     """
@@ -423,7 +434,7 @@ def student_insight_resolve_users(request):
         person_type = _payload_person_type(item)
         if not username and not student_code:
             continue
-        requested.append({'raw': item, 'username': username, 'student_code': student_code, 'person_type': person_type})
+        requested.append({'raw': item, 'username': username, 'ap_username': _student_payload_ap_username(item), 'student_code': student_code, 'person_type': person_type})
         if username:
             usernames.append(username)
     unique_usernames = sorted(set(usernames))
@@ -448,18 +459,22 @@ def student_insight_resolve_users(request):
     missing: list[str] = []
     for item in requested:
         username = item['username']
+        ap_username = item.get('ap_username') or username
         student_code = item['student_code']
+        is_student_rollnumber = (item.get('person_type') or 'student') == 'student' and bool(student_code) and username == _normalize_username_input(student_code)
+        match_method = 'exact_rollnumber_username' if is_student_rollnumber else 'exact_username'
         user = found_by_username.get(username) if username else None
         if user is not None:
             full_name = user.get_full_name() if hasattr(user, 'get_full_name') else ''
             profile_state = _ensure_user_profile(user, full_name=full_name, username=username)
             row = {
                 'student_code': student_code or None,
-                'ap_username': username,
+                'ap_username': ap_username,
                 'username': username,
+                'roll_number': student_code or None,
                 'exists': True,
                 'match_status': 'matched' if getattr(user, 'is_active', True) else 'inactive',
-                'match_method': 'exact_ap_username',
+                'match_method': match_method,
                 'openedx_user_id': str(getattr(user, 'id', '') or getattr(user, 'pk', '')),
                 'openedx_username': getattr(user, 'username', None),
                 'openedx_email': getattr(user, 'email', None),
@@ -471,14 +486,14 @@ def student_insight_resolve_users(request):
                 'user_profile_created': bool(profile_state.get('created')),
                 'user_profile_model_source': profile_state.get('source'),
                 'user_profile_message': profile_state.get('message'),
-                'note': 'Khớp chính xác AP username = CMS/Open edX username' if profile_state.get('ok') else 'Khớp user nhưng chưa tạo/kiểm tra được UserProfile',
+                'note': ('Khớp chính xác RollNumber/student_code = CMS/Open edX username' if is_student_rollnumber else 'Khớp chính xác username = CMS/Open edX username') if profile_state.get('ok') else 'Khớp user nhưng chưa tạo/kiểm tra được UserProfile',
             }
             found.append(row)
         else:
             created_user = None
             created = False
             password_state = {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': ''}
-            create_message = 'Không tìm thấy user CMS/Open edX theo AP username'
+            create_message = 'Không tìm thấy user CMS/Open edX theo RollNumber/student_code' if is_student_rollnumber else 'Không tìm thấy user CMS/Open edX theo username'
             if create_missing and username:
                 try:
                     created_user, created, _create_status, password_state = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
@@ -489,13 +504,14 @@ def student_insight_resolve_users(request):
                 full_name = created_user.get_full_name() if hasattr(created_user, 'get_full_name') else ''
                 row = {
                     'student_code': student_code or None,
-                    'ap_username': username,
+                    'ap_username': ap_username,
                     'username': username,
+                    'roll_number': student_code or None,
                     'person_type': item.get('person_type') or 'student',
                     'exists': True,
                     'created': created,
                     'match_status': 'matched',
-                    'match_method': 'created_from_ap' if created else 'exact_ap_username',
+                    'match_method': 'created_from_rollnumber' if created and is_student_rollnumber else ('created_from_ap' if created else match_method),
                     'openedx_user_id': str(getattr(created_user, 'id', '') or getattr(created_user, 'pk', '')),
                     'openedx_username': getattr(created_user, 'username', None),
                     'openedx_email': getattr(created_user, 'email', None),
@@ -503,14 +519,15 @@ def student_insight_resolve_users(request):
                     'is_active': bool(getattr(created_user, 'is_active', True)),
                     'full_name': full_name,
                     **password_state,
-                    'note': 'Đã tạo mới user CMS/Open edX từ dữ liệu AP' if created else 'Khớp chính xác AP username = CMS/Open edX username',
+                    'note': ('Đã tạo mới user CMS/Open edX từ RollNumber/student_code' if is_student_rollnumber else 'Đã tạo mới user CMS/Open edX từ dữ liệu AP') if created else ('Khớp chính xác RollNumber/student_code = CMS/Open edX username' if is_student_rollnumber else 'Khớp chính xác username = CMS/Open edX username'),
                 }
                 found.append(row)
             else:
                 row = {
                     'student_code': student_code or None,
-                    'ap_username': username,
+                    'ap_username': ap_username,
                     'username': username,
+                    'roll_number': student_code or None,
                     'person_type': item.get('person_type') or 'student',
                     'exists': False,
                     'created': False,
@@ -641,7 +658,9 @@ def _student_insight_requested_students(data: dict[str, Any]) -> list[dict[str, 
             requested.append({
                 'raw': item,
                 'username': username,
+                'ap_username': _student_payload_ap_username(item),
                 'student_code': student_code,
+                'roll_number': student_code,
                 'openedx_user_id': openedx_user_id,
                 'person_type': person_type,
                 'role': raw.get('role') or ('teacher' if person_type == 'teacher' else 'student'),
@@ -1982,7 +2001,7 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]], *
         progress_payload = _compact_progress_payload(progress) if compact else progress
         results.append({
             'student_code': item.get('student_code') or None,
-            'ap_username': username,
+            'ap_username': item.get('ap_username') or username,
             'username': _normalize_username_input(getattr(user, 'username', username)) if user is not None else username,
             'openedx_username': getattr(user, 'username', None) if user is not None else None,
             'openedx_user_id': str(getattr(user, 'id', '') or '') if user is not None else None,
@@ -2137,13 +2156,13 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
     """Enroll AP students and add AP teachers to the mapped Open edX course.
 
     Students are enrolled as learners. Teachers are created if needed and granted
-    Course Staff role. User creation is exact by AP username only.
+    Course Staff role. Student user creation is exact by RollNumber/student_code when AI Server sends it as username; AP username is preserved as an alias only.
     """
     course_key = _course_key_from_string(course_id)
     if course_key is None:
         return [{
             'student_code': item.get('student_code') or None,
-            'ap_username': item.get('username') or '',
+            'ap_username': item.get('ap_username') or item.get('username') or '',
             'username': item.get('username') or '',
             'exists': False,
             'status': 'failed',
@@ -2158,7 +2177,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
     if CourseEnrollment is None:
         return [{
             'student_code': item.get('student_code') or None,
-            'ap_username': item.get('username') or '',
+            'ap_username': item.get('ap_username') or item.get('username') or '',
             'username': item.get('username') or '',
             'exists': False,
             'status': 'failed',
@@ -2188,7 +2207,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
             except Exception as exc:
                 results.append({
                     'student_code': item.get('student_code') or None,
-                    'ap_username': username,
+                    'ap_username': item.get('ap_username') or username,
                     'username': username,
                     'person_type': 'teacher' if is_teacher else 'student',
                     'exists': False,
@@ -2201,7 +2220,7 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
                 continue
         base = {
             'student_code': item.get('student_code') or None,
-            'ap_username': username,
+            'ap_username': item.get('ap_username') or username,
             'username': username,
             'person_type': 'teacher' if is_teacher else 'student',
             'openedx_username': getattr(user, 'username', None) if user is not None else None,
