@@ -20,6 +20,7 @@ import os
 import re
 import socket
 import time
+import uuid
 import traceback
 from datetime import datetime, timezone
 from html import unescape
@@ -287,11 +288,13 @@ def session_bridge(request):
     course_id = request.GET.get('course_id') or None
     user_payload = _cms_user_payload(request, course_id)
     now = int(time.time())
+    ttl = max(30, min(int(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_TTL_SECONDS', '60') or '60'), 60))
     ticket_payload = {
         'iss': str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_ISSUER') or 'openedx-ai-connector'),
         'aud': str(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_AUDIENCE') or 'ai-learning-server'),
         'iat': now,
-        'exp': now + int(_setting_or_env('AI_CONNECTOR_SESSION_BRIDGE_TTL_SECONDS', '60') or '60'),
+        'exp': now + ttl,
+        'jti': str(uuid.uuid4()),
         'sub': user_payload.get('user_id'),
         **user_payload,
     }

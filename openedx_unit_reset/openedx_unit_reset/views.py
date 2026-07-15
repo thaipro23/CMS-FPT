@@ -98,7 +98,7 @@ def _valid_connector_hmac(request):
 
 
 def _connector_hmac_only(request):
-    # v25.9.16.7.2.64.12: csrf_exempt server-to-server write endpoints are HMAC-only.
+    # v25.9.16.7.2.64.13: csrf_exempt server-to-server write endpoints are HMAC-only.
     # Browser staff/admin sessions must use csrf_protect endpoints instead of this connector path.
     return _valid_connector_hmac(request)
 
