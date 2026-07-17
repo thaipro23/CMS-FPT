@@ -56,6 +56,17 @@ from .runtime import _load_openedx_modules
 
 _CONTAINER_TYPES = {'course', 'chapter', 'sequential', 'vertical'}
 _LEARNING_TYPES = {'html', 'problem', 'video', 'pdf', 'file', 'asset', 'document', 'library_content', 'itembank'}
+
+_COURSE_KEY_RE = re.compile(r"course-v1:([^+/\s?#]+)\+([^+/\s?#]+)\+([^+/\s?#]+)", re.IGNORECASE)
+
+
+def _normalize_course_id(value: object) -> str:
+    raw = unquote(str(value or '')).strip()
+    match = _COURSE_KEY_RE.search(raw)
+    if not match:
+        raise ValueError('course_id must use course-v1:ORG+COURSE+RUN')
+    return f'course-v1:{match.group(1)}+{match.group(2)}+{match.group(3)}'
+
 _TEXT_FIELD_NAMES = (
     'data', 'content', 'html', 'text', 'body', 'source_code', 'xml_data',
     'markdown', 'description', 'transcript', 'display_name'
@@ -203,7 +214,7 @@ def _course_author_access(user, course_id: str | None) -> bool:
     try:
         from opaque_keys.edx.keys import CourseKey  # type: ignore
         from common.djangoapps.student.auth import has_course_author_access  # type: ignore
-        course_key = CourseKey.from_string(unquote(course_id))
+        course_key = CourseKey.from_string(_normalize_course_id(course_id))
         return bool(has_course_author_access(user, course_key))
     except Exception:
         # Fail closed if Open edX internal imports change. Staff must not become
@@ -863,7 +874,7 @@ def _collect_static_assets_best_effort(request, course_key: Any) -> list[dict]:
 
 def _read_studio_blocks(request, course_id: str) -> tuple[list[dict], dict]:
     CourseKey, modulestore = _load_openedx_modules()
-    course_key = CourseKey.from_string(course_id)
+    course_key = CourseKey.from_string(_normalize_course_id(course_id))
     store = modulestore()
 
     # Try draft first so Studio-only changes and unpublished components are visible.
@@ -972,7 +983,7 @@ def _draft_course_block(store: Any, course_key: Any) -> Any:
 
 def _resolve_modulestore_parent(store: Any, course_id: str, parent_node_id: str) -> Any:
     CourseKey, _ = _load_openedx_modules()
-    course_key = CourseKey.from_string(course_id)
+    course_key = CourseKey.from_string(_normalize_course_id(course_id))
     parent = _clean_usage_key(parent_node_id)
     if not parent or parent in {'course', course_id, str(course_key)}:
         return _draft_course_block(store, course_key)

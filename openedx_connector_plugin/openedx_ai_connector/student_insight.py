@@ -14,6 +14,7 @@ import json
 import re
 import secrets
 from typing import Any
+from urllib.parse import unquote
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -80,20 +81,44 @@ except Exception:  # pragma: no cover - defensive fallback for stripped plugin i
             return []
 
 
+_COURSE_KEY_RE = re.compile(r"course-v1:([^+/\s?#]+)\+([^+/\s?#]+)\+([^+/\s?#]+)", re.IGNORECASE)
+
+
+def _normalize_course_id(value: Any) -> str:
+    raw = unquote(str(value or '')).strip()
+    match = _COURSE_KEY_RE.search(raw)
+    if not match:
+        return ''
+    return f'course-v1:{match.group(1)}+{match.group(2)}+{match.group(3)}'
+
+
 def _normalize_username_input(value: Any) -> str:
+    """Case-insensitive lookup key; never use as the created student username."""
     return str(value or '').strip().lower()
 
 
+def _preserve_username_input(value: Any) -> str:
+    return str(value or '').strip()
+
+
 def _student_payload_username(item: Any) -> str:
+    """Return the canonical username carried by a connector payload.
+
+    Rich student payloads must contain RollNumber/student_code and preserve its
+    original case.  AP username is not a student fallback.  Teacher and legacy
+    compact-string payloads keep the existing lowercase convention.
+    """
     if isinstance(item, dict):
+        person_type = _payload_person_type(item)
+        if person_type == 'student':
+            return _preserve_username_input(_student_payload_code(item))
         return _normalize_username_input(
             item.get('username')
-            or item.get('ap_username')
-            or item.get('apUsername')
             or item.get('openedx_username')
-            or item.get('student_username')
             or item.get('teacher')
             or item.get('teacher_username')
+            or item.get('ap_username')
+            or item.get('apUsername')
         )
     return _normalize_username_input(item)
 
@@ -112,11 +137,11 @@ def _student_payload_ap_username(item: Any) -> str:
 def _student_payload_code(item: Any) -> str:
     if not isinstance(item, dict):
         return ''
-    return str(item.get('student_code') or item.get('studentCode') or item.get('ap_student_code') or '').strip()
+    return str(item.get('student_code') or item.get('studentCode') or item.get('roll_number') or item.get('rollNumber') or item.get('ap_student_code') or '').strip()
 
 
-def _clean_user_token(value: Any) -> str:
-    return _normalize_username_input(value)
+def _clean_user_token(value: Any, *, preserve_case: bool = False) -> str:
+    return _preserve_username_input(value) if preserve_case else _normalize_username_input(value)
 
 
 def _payload_person_type(item: Any) -> str:
@@ -359,17 +384,28 @@ def _ensure_cms_user(item: Any, username: str, person_type: str):
     from django.db import IntegrityError, transaction  # type: ignore
 
     User = get_user_model()
-    username = _clean_user_token(username)
+    is_student = str(person_type or 'student').strip().lower() == 'student'
+    username = _clean_user_token(username, preserve_case=is_student)
     if not username:
         return None, False, 'missing_username', {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': 'Thiếu username nên không tạo user.'}
+    if is_student and not _student_payload_code(item):
+        return None, False, 'missing_student_code', {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': 'Thiếu RollNumber/student_code nên không tạo user sinh viên.'}
     first_name, last_name, full_name = _split_display_name(item, username, person_type)
     email = _payload_email(item, username, person_type)
     try:
         with transaction.atomic():
-            user = User(username=username, email=email, first_name=first_name, last_name=last_name, is_active=True)
-            password_state = _apply_created_user_password(user)
-            user.save()
-            created = True
+            # PostgreSQL auth_user.username uniqueness is normally case-sensitive.
+            # Explicit iexact lookup prevents PH12345/ph12345 duplicate identities.
+            existing = User.objects.filter(username__iexact=username).first()
+            if existing is not None:
+                user = existing
+                password_state = _existing_user_password_state(user)
+                created = False
+            else:
+                user = User(username=username, email=email, first_name=first_name, last_name=last_name, is_active=True)
+                password_state = _apply_created_user_password(user)
+                user.save()
+                created = True
     except IntegrityError:
         try:
             user = User.objects.get(username__iexact=username)
@@ -427,16 +463,31 @@ def student_insight_resolve_users(request):
 
     create_missing = bool(data.get('create_missing') is True or data.get('create_missing_users') is True)
     requested: list[dict[str, Any]] = []
+    invalid_students: list[dict[str, Any]] = []
     usernames: list[str] = []
     for item in raw_students:
         username = _student_payload_username(item)
         student_code = _student_payload_code(item)
         person_type = _payload_person_type(item)
-        if not username and not student_code:
+        if person_type == 'student' and not student_code:
+            invalid_students.append({
+                'student_code': None,
+                'roll_number': None,
+                'ap_username': _student_payload_ap_username(item),
+                'username': None,
+                'openedx_username': None,
+                'person_type': 'student',
+                'exists': False,
+                'created': False,
+                'match_status': 'missing_student_code',
+                'match_method': 'validation_failed',
+                'note': 'Thiếu RollNumber/student_code nên không tạo user CMS/Open edX và không enroll',
+            })
+            continue
+        if not username:
             continue
         requested.append({'raw': item, 'username': username, 'ap_username': _student_payload_ap_username(item), 'student_code': student_code, 'person_type': person_type})
-        if username:
-            usernames.append(username)
+        usernames.append(_normalize_username_input(username))
     unique_usernames = sorted(set(usernames))
 
     found_by_username: dict[str, Any] = {}
@@ -454,16 +505,16 @@ def student_insight_resolve_users(request):
         except Exception as exc:
             return _json_response({'ok': False, 'message': f'Không truy vấn được auth_user CMS/Open edX: {exc}'}, status=500)
 
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = list(invalid_students)
     found: list[dict[str, Any]] = []
     missing: list[str] = []
     for item in requested:
         username = item['username']
         ap_username = item.get('ap_username') or username
         student_code = item['student_code']
-        is_student_rollnumber = (item.get('person_type') or 'student') == 'student' and bool(student_code) and username == _normalize_username_input(student_code)
+        is_student_rollnumber = (item.get('person_type') or 'student') == 'student' and bool(student_code) and _normalize_username_input(username) == _normalize_username_input(student_code)
         match_method = 'exact_rollnumber_username' if is_student_rollnumber else 'exact_username'
-        user = found_by_username.get(username) if username else None
+        user = found_by_username.get(_normalize_username_input(username)) if username else None
         if user is not None:
             full_name = user.get_full_name() if hasattr(user, 'get_full_name') else ''
             profile_state = _ensure_user_profile(user, full_name=full_name, username=username)
@@ -551,7 +602,7 @@ def student_insight_resolve_users(request):
         'missing': missing,
         'total': len(results),
         'found_count': len(found),
-        'missing_count': len(missing),
+        'missing_count': len(missing) + len(invalid_students),
     })
 
 
@@ -605,7 +656,7 @@ def student_insight_course_search(request):
             exact_qs = []
             try:
                 from opaque_keys.edx.keys import CourseKey  # type: ignore
-                exact_key = CourseKey.from_string(exact_course_id)
+                exact_key = CourseKey.from_string(_normalize_course_id(exact_course_id))
                 exact_qs = list(CourseOverview.objects.filter(id=exact_key).order_by('id')[:limit])
             except Exception:
                 exact_qs = []
@@ -652,9 +703,9 @@ def _student_insight_requested_students(data: dict[str, Any]) -> list[dict[str, 
         openedx_user_id = ''
         if isinstance(item, dict):
             openedx_user_id = str(item.get('openedx_user_id') or item.get('user_id') or '').strip()
-        if username or student_code or openedx_user_id:
-            raw = item if isinstance(item, dict) else {}
-            person_type = _payload_person_type(item)
+        raw = item if isinstance(item, dict) else {}
+        person_type = _payload_person_type(item)
+        if username or student_code or openedx_user_id or (person_type == 'student' and isinstance(item, dict)):
             requested.append({
                 'raw': item,
                 'username': username,
@@ -674,7 +725,7 @@ def _student_insight_requested_students(data: dict[str, Any]) -> list[dict[str, 
 
 
 def _student_insight_user_map(requested: list[dict[str, Any]]) -> dict[str, Any]:
-    usernames = sorted({item['username'] for item in requested if item.get('username')})
+    usernames = sorted({_normalize_username_input(item['username']) for item in requested if item.get('username')})
     ids = sorted({item['openedx_user_id'] for item in requested if item.get('openedx_user_id')})
     found: dict[str, Any] = {}
     if not usernames and not ids:
@@ -709,7 +760,8 @@ def _student_insight_user_map(requested: list[dict[str, Any]]) -> dict[str, Any]
 def _course_key_from_string(course_id: str):
     try:
         from opaque_keys.edx.keys import CourseKey  # type: ignore
-        return CourseKey.from_string(str(course_id or '').strip())
+        normalized = _normalize_course_id(course_id)
+        return CourseKey.from_string(normalized) if normalized else None
     except Exception:
         return None
 
@@ -2196,7 +2248,23 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
         username = item.get('username') or ''
         person_type = str(item.get('person_type') or item.get('role') or 'student').strip().lower()
         is_teacher = person_type in {'teacher', 'staff', 'instructor'}
-        user = found_by_key.get(username) if username else None
+        student_code = str(item.get('student_code') or item.get('roll_number') or '').strip()
+        if not is_teacher and not student_code:
+            results.append({
+                'student_code': None,
+                'ap_username': item.get('ap_username') or '',
+                'username': None,
+                'person_type': 'student',
+                'exists': False,
+                'created_user': False,
+                'status': 'skipped_missing_rollnumber',
+                'enrollment_status': 'skipped_missing_rollnumber',
+                'is_enrolled': False,
+                'verified_after_write': False,
+                'message': 'Thiếu RollNumber/student_code nên không tạo user CMS/Open edX và không enroll',
+            })
+            continue
+        user = found_by_key.get(_normalize_username_input(username)) if username else None
         if user is None and item.get('openedx_user_id'):
             user = found_by_key.get(f"id:{item['openedx_user_id']}")
         created_user = False
