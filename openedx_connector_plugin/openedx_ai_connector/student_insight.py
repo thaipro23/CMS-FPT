@@ -375,57 +375,104 @@ def _existing_user_password_state(user: Any) -> dict[str, Any]:
 
 
 def _ensure_cms_user(item: Any, username: str, person_type: str):
-    """Create a CMS/Open edX auth user when the AP record is authoritative.
+    """Create or safely migrate a CMS/Open edX auth user.
 
-    The user is created inactive-password-wise (unusable password) but active in
-    Django, so SSO/password-reset can manage the real authentication lifecycle.
+    Student identity is canonical by RollNumber. If an older account already
+    owns the exact AP email under an AP-style username, reuse that same user ID
+    and migrate only its username instead of creating a duplicate email account.
     """
     from django.contrib.auth import get_user_model  # type: ignore
     from django.db import IntegrityError, transaction  # type: ignore
 
     User = get_user_model()
-    is_student = str(person_type or 'student').strip().lower() == 'student'
+    is_student = person_type == 'student'
     username = _clean_user_token(username, preserve_case=is_student)
     if not username:
         return None, False, 'missing_username', {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': 'Thiếu username nên không tạo user.'}
     if is_student and not _student_payload_code(item):
         return None, False, 'missing_student_code', {'password_policy': 'not_created', 'password_login_enabled': None, 'password_note': 'Thiếu RollNumber/student_code nên không tạo user sinh viên.'}
+
     first_name, last_name, full_name = _split_display_name(item, username, person_type)
     email = _payload_email(item, username, person_type)
+    status = 'exists'
+    legacy_username = None
+
     try:
         with transaction.atomic():
-            # PostgreSQL auth_user.username uniqueness is normally case-sensitive.
-            # Explicit iexact lookup prevents PH12345/ph12345 duplicate identities.
-            existing = User.objects.filter(username__iexact=username).first()
+            existing = User.objects.select_for_update().filter(username__iexact=username).first()
             if existing is not None:
                 user = existing
                 password_state = _existing_user_password_state(user)
                 created = False
             else:
-                user = User(username=username, email=email, first_name=first_name, last_name=last_name, is_active=True)
-                password_state = _apply_created_user_password(user)
-                user.save()
-                created = True
+                legacy_candidates = []
+                if is_student and email:
+                    legacy_candidates = list(
+                        User.objects.select_for_update()
+                        .filter(email__iexact=email)
+                        .order_by('id')[:2]
+                    )
+
+                if len(legacy_candidates) > 1:
+                    raise RuntimeError(f'Có nhiều user CMS/Open edX cùng email {email}; không thể tự động chuẩn hóa RollNumber')
+
+                if len(legacy_candidates) == 1:
+                    user = legacy_candidates[0]
+                    collision = (
+                        User.objects.filter(username__iexact=username)
+                        .exclude(pk=user.pk)
+                        .exists()
+                    )
+                    if collision:
+                        raise RuntimeError(f'RollNumber {username} đã thuộc một user CMS/Open edX khác')
+                    legacy_username = str(getattr(user, 'username', '') or '')
+                    user.username = username
+                    # Keep AP-sourced email and existing identity/history. Refresh
+                    # names only when the old record is blank.
+                    update_fields = ['username']
+                    if not getattr(user, 'first_name', '') and first_name:
+                        user.first_name = first_name
+                        update_fields.append('first_name')
+                    if not getattr(user, 'last_name', '') and last_name:
+                        user.last_name = last_name
+                        update_fields.append('last_name')
+                    user.save(update_fields=update_fields)
+                    password_state = {
+                        **_existing_user_password_state(user),
+                        'legacy_username_before': legacy_username,
+                    }
+                    created = False
+                    status = 'migrated_legacy_email_to_rollnumber'
+                else:
+                    user = User(username=username, email=email, first_name=first_name, last_name=last_name, is_active=True)
+                    password_state = _apply_created_user_password(user)
+                    user.save()
+                    created = True
+                    status = 'created'
     except IntegrityError:
-        try:
-            user = User.objects.get(username__iexact=username)
-            password_state = _existing_user_password_state(user)
-            created = False
-        except Exception:
+        # A concurrent request may have created/migrated the same identity.
+        user = User.objects.filter(username__iexact=username).first()
+        if user is None:
             raise
+        password_state = _existing_user_password_state(user)
+        created = False
+        status = 'exists'
+
     profile_state = _ensure_user_profile(user, full_name=full_name, username=username)
     if not profile_state.get('ok'):
-        # Do not hide this. Enrollment on Ulmo.3 fails later with "User has no
-        # profile" if this row is missing, so user creation/resolve must expose
-        # the actual problem immediately.
         message = profile_state.get('message') or 'Không tạo/kiểm tra được UserProfile'
         if _connector_debug_errors_enabled():
             extra = profile_state.get('import_error') or profile_state.get('error')
             if extra:
                 message = f'{message}: {extra}'
         raise RuntimeError(message)
-    password_state = {**password_state, 'user_profile_ok': True, 'user_profile_created': bool(profile_state.get('created')), 'user_profile_model_source': profile_state.get('source')}
-    return user, created, 'created' if created else 'exists', password_state
+    password_state = {
+        **password_state,
+        'user_profile_ok': True,
+        'user_profile_created': bool(profile_state.get('created')),
+        'user_profile_model_source': profile_state.get('source'),
+    }
+    return user, created, status, password_state
 
 
 @csrf_exempt
@@ -547,7 +594,7 @@ def student_insight_resolve_users(request):
             create_message = 'Không tìm thấy user CMS/Open edX theo RollNumber/student_code' if is_student_rollnumber else 'Không tìm thấy user CMS/Open edX theo username'
             if create_missing and username:
                 try:
-                    created_user, created, _create_status, password_state = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
+                    created_user, created, create_status, password_state = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
                 except Exception as exc:
                     created_user = None
                     create_message = 'Không tạo được user CMS/Open edX' + (f': {exc}' if _connector_debug_errors_enabled() else '')
@@ -562,7 +609,7 @@ def student_insight_resolve_users(request):
                     'exists': True,
                     'created': created,
                     'match_status': 'matched',
-                    'match_method': 'created_from_rollnumber' if created and is_student_rollnumber else ('created_from_ap' if created else match_method),
+                    'match_method': ('created_from_rollnumber' if created and is_student_rollnumber else ('created_from_ap' if created else ('migrated_legacy_email_to_rollnumber' if create_status == 'migrated_legacy_email_to_rollnumber' else match_method))),
                     'openedx_user_id': str(getattr(created_user, 'id', '') or getattr(created_user, 'pk', '')),
                     'openedx_username': getattr(created_user, 'username', None),
                     'openedx_email': getattr(created_user, 'email', None),
@@ -570,7 +617,7 @@ def student_insight_resolve_users(request):
                     'is_active': bool(getattr(created_user, 'is_active', True)),
                     'full_name': full_name,
                     **password_state,
-                    'note': ('Đã tạo mới user CMS/Open edX từ RollNumber/student_code' if is_student_rollnumber else 'Đã tạo mới user CMS/Open edX từ dữ liệu AP') if created else ('Khớp chính xác RollNumber/student_code = CMS/Open edX username' if is_student_rollnumber else 'Khớp chính xác username = CMS/Open edX username'),
+                    'note': (('Đã tạo mới user CMS/Open edX từ RollNumber/student_code' if is_student_rollnumber else 'Đã tạo mới user CMS/Open edX từ dữ liệu AP') if created else ('Đã chuẩn hóa username user cũ theo RollNumber bằng email AP, giữ nguyên user ID và lịch sử' if create_status == 'migrated_legacy_email_to_rollnumber' else ('Khớp chính xác RollNumber/student_code = CMS/Open edX username' if is_student_rollnumber else 'Khớp chính xác username = CMS/Open edX username'))),
                 }
                 found.append(row)
             else:
