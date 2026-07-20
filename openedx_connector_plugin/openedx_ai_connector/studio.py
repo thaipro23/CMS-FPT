@@ -1065,6 +1065,60 @@ def _update_created_block_fields(store: Any, block: Any, user: Any, fields: dict
         raise RuntimeError(f'Tạo block xong nhưng update fields thất bại: {last_exc}') from last_exc
 
 
+
+
+def _course_quiz_policy_snapshot(course_block: Any) -> dict[str, Any]:
+    """Return normalized course-wide Problem defaults shown in Advanced Settings."""
+    raw_max_attempts = getattr(course_block, 'max_attempts', None)
+    try:
+        max_attempts = int(raw_max_attempts) if raw_max_attempts not in (None, '') else None
+    except (TypeError, ValueError):
+        max_attempts = raw_max_attempts
+    showanswer = _safe_str(getattr(course_block, 'showanswer', '')).strip().lower() or None
+    return {
+        'max_attempts': max_attempts,
+        'showanswer': showanswer,
+    }
+
+
+def _ensure_course_quiz_policy(store: Any, course_id: str, user: Any) -> dict[str, Any]:
+    """Enforce the course-wide Quiz policy before creating any Quiz node.
+
+    These are Course Advanced Settings defaults inherited by Problem blocks
+    unless an individual Problem has an explicit override.
+    """
+    desired = {
+        'max_attempts': 1,
+        'showanswer': 'never',
+    }
+    CourseKey, _ = _load_openedx_modules()
+    course_key = CourseKey.from_string(_normalize_course_id(course_id))
+    course_block = _draft_course_block(store, course_key)
+    before = _course_quiz_policy_snapshot(course_block)
+    changed = before != desired
+    if changed:
+        _update_created_block_fields(store, course_block, user, desired)
+
+    reread = _draft_course_block(store, course_key)
+    after = _course_quiz_policy_snapshot(reread)
+    verified = after == desired
+    if not verified:
+        raise RuntimeError(
+            'Không lưu/xác minh được Course Advanced Settings bắt buộc cho Quiz: '
+            f'expected={desired}, actual={after}'
+        )
+    normalized_course_id = _normalize_course_id(course_id)
+    return {
+        'ok': True,
+        'verified': True,
+        'changed': changed,
+        'scope': 'course',
+        'before': before,
+        'after': after,
+        'advanced_settings_path': f'/authoring/course/{normalized_course_id}/settings/advanced',
+        'message': 'Đã đặt Maximum Attempts = 1 và Show Answer = Never cho toàn Course.',
+    }
+
 def _resolve_created_child_block(
     store: Any,
     created: Any,
@@ -1214,6 +1268,7 @@ def create_quiz_node(request, course_id: str):
         _, modulestore = _load_openedx_modules()
         store = modulestore()
         user = _request_publish_user(request)
+        course_quiz_policy_result = _ensure_course_quiz_policy(store, course_id, user)
         parent_block = _resolve_modulestore_parent(store, course_id, parent_node_id)
         parent_type = (_block_type(parent_block) or '').lower()
         created_nodes: list[dict] = []
@@ -1271,7 +1326,8 @@ def create_quiz_node(request, course_id: str):
             'problem_bank_auto_inserted': False,
             'custom_timer_configured': bool(timer_config_result.get('status') == 'saved'),
             'timer_config_result': timer_config_result,
-            'message': 'Đã tạo cấu trúc Quiz draft trong Studio. AI Server có thể tiếp tục tạo native Problem Bank Beta vào leaf Unit.',
+            'course_quiz_policy_result': course_quiz_policy_result,
+            'message': 'Đã đặt Course Advanced Settings và tạo cấu trúc Quiz draft trong Studio. AI Server có thể tiếp tục tạo native Problem Bank Beta vào leaf Unit.',
             'diagnostics': diagnostics,
         })
     except ValueError as exc:
