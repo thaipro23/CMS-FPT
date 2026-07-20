@@ -349,8 +349,96 @@ def quiz_session_runtime_js(request):
   if (!window.parent || window.parent === window) return;
 
   var autoSubmitting = false;
+  var lastReportedHeight = 0;
+  var lastReportedWidth = 0;
+  var resizeTimers = [];
 
   function lower(value){ return ((value || '') + '').toLowerCase(); }
+
+  function parentOrigin(){
+    try { return document.referrer ? new URL(document.referrer).origin : '*'; }
+    catch (error) { return '*'; }
+  }
+
+  function normalizedTheme(value){
+    var raw = lower(value);
+    if (raw.indexOf('dark') >= 0) return 'dark';
+    return 'light';
+  }
+
+  function applyHostTheme(data){
+    var variant = String((data && data.theme_variant) || (data && data.theme) || 'light');
+    var theme = normalizedTheme(variant);
+    var roots = [document.documentElement, document.body].filter(Boolean);
+    var removable = ['dark', 'light', 'theme-dark', 'theme-light', 'dark-theme', 'light-theme'];
+    roots.forEach(function(root){
+      removable.forEach(function(name){ root.classList.remove(name); });
+      root.classList.add(theme === 'dark' ? 'theme-dark' : 'theme-light');
+      root.setAttribute('data-paragon-theme-variant', variant || theme);
+      root.setAttribute('data-bs-theme', theme);
+      root.setAttribute('data-theme', theme);
+      root.setAttribute('data-ai-host-theme', theme);
+      try { root.style.colorScheme = theme; } catch (error) { /* ignore */ }
+    });
+    try {
+      window.dispatchEvent(new CustomEvent('openedx:theme-sync', { detail: { theme: theme, variant: variant } }));
+    } catch (error) { /* ignore */ }
+    scheduleResizeBurst('theme-sync');
+  }
+
+  function contentDimensions(){
+    var doc = document.documentElement;
+    var body = document.body;
+    var content = document.getElementById('content') || document.getElementById('course-content') || document.getElementById('main');
+    var heights = [
+      doc && doc.scrollHeight,
+      doc && doc.offsetHeight,
+      body && body.scrollHeight,
+      body && body.offsetHeight,
+      content && content.scrollHeight,
+      content && content.offsetHeight,
+    ].map(function(value){ return Number(value || 0); });
+    try {
+      var rect = content && content.getBoundingClientRect();
+      if (rect) heights.push(Math.ceil(rect.bottom + window.scrollY));
+    } catch (error) { /* ignore */ }
+    var widths = [
+      doc && doc.scrollWidth,
+      doc && doc.offsetWidth,
+      body && body.scrollWidth,
+      body && body.offsetWidth,
+      content && content.scrollWidth,
+      content && content.offsetWidth,
+    ].map(function(value){ return Number(value || 0); });
+    var width = Math.max.apply(Math, widths);
+    var height = Math.max.apply(Math, heights);
+    return {
+      width: width > 0 ? width : (window.innerWidth || 0),
+      height: height > 0 ? height : (window.innerHeight || 0),
+    };
+  }
+
+  function dispatchResize(reason, force){
+    var size = contentDimensions();
+    if (!force && size.width === lastReportedWidth && size.height === lastReportedHeight) return;
+    lastReportedWidth = size.width;
+    lastReportedHeight = size.height;
+    try {
+      window.parent.postMessage({
+        type: 'plugin.resize',
+        payload: { width: size.width, height: size.height },
+        source: 'ai-unit-reset-runtime',
+        reason: reason || 'content-change'
+      }, parentOrigin());
+    } catch (error) { /* ignore */ }
+  }
+
+  function scheduleResizeBurst(reason){
+    resizeTimers.forEach(function(timer){ window.clearTimeout(timer); });
+    resizeTimers = [0, 50, 150, 350, 700, 1200, 2200].map(function(delay){
+      return window.setTimeout(function(){ dispatchResize(reason, delay === 0); }, delay);
+    });
+  }
   function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
 
   function reloadIframeDocument(reason, token){
@@ -370,9 +458,52 @@ def quiz_session_runtime_js(request):
   }
 
   window.addEventListener('message', function(event){
-    if (!event.data || event.data.type !== 'AI_QUIZ_ACTIVE_SESSION_READY_RELOAD') return;
+    if (!event.data) return;
+    if (event.data.type === 'AI_MFE_THEME_SYNC') {
+      applyHostTheme(event.data);
+      return;
+    }
+    if (event.data.type === 'AI_MFE_REQUEST_RESIZE') {
+      scheduleResizeBurst(event.data.reason || 'parent-request');
+      return;
+    }
+    if (event.data.type !== 'AI_QUIZ_ACTIVE_SESSION_READY_RELOAD') return;
     reloadIframeDocument(event.data.reason || 'active-session-ready', event.data.token || Date.now());
   });
+
+  function isSubmitControl(target){
+    if (!target || !target.closest) return false;
+    var control = target.closest('button,input[type=submit],input[type=button],a');
+    if (!control) return false;
+    var text = lower((control.innerText || control.value || control.getAttribute('aria-label') || '') + '');
+    return text.indexOf('submit') >= 0 || text.indexOf('check') >= 0 || text.indexOf('nộp') >= 0 || text.indexOf('kiểm tra') >= 0;
+  }
+
+  document.addEventListener('click', function(event){
+    if (isSubmitControl(event.target)) scheduleResizeBurst('problem-submit-click');
+  }, true);
+  document.addEventListener('submit', function(){ scheduleResizeBurst('problem-form-submit'); }, true);
+
+  var resizeObserver = null;
+  if (window.ResizeObserver) {
+    resizeObserver = new ResizeObserver(function(){ dispatchResize('resize-observer', false); });
+    if (document.documentElement) resizeObserver.observe(document.documentElement);
+    if (document.body) resizeObserver.observe(document.body);
+    var resizeContent = document.getElementById('content') || document.getElementById('course-content') || document.getElementById('main');
+    if (resizeContent) resizeObserver.observe(resizeContent);
+  }
+  var mutationObserver = new MutationObserver(function(){ dispatchResize('mutation-observer', false); });
+  if (document.body) mutationObserver.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
+  window.addEventListener('load', function(){ scheduleResizeBurst('window-load'); });
+  window.addEventListener('pageshow', function(){ scheduleResizeBurst('page-show'); });
+  try {
+    if (window.jQuery) window.jQuery(document).ajaxComplete(function(){ scheduleResizeBurst('ajax-complete'); });
+  } catch (error) { /* ignore */ }
+
+  try {
+    window.parent.postMessage({ type: 'AI_QUIZ_IFRAME_READY' }, parentOrigin());
+  } catch (error) { /* ignore */ }
+  scheduleResizeBurst('runtime-ready');
 
   function getCookie(name){
     var value = '; ' + (document.cookie || '');
