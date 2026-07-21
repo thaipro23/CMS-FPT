@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -47,6 +48,9 @@ from .auth import (
     _validate_download_url,
 )
 from .runtime import _load_openedx_modules
+
+
+logger = logging.getLogger(__name__)
 
 
 # v25.9.13.39: rollback delete verifies/matches Library components by local component key, not only full usage key.
@@ -1011,6 +1015,91 @@ def _created_node_payload(block: Any, parent: Any | None, *, created: bool) -> d
     }
 
 
+class QuizNodeConflictError(ValueError):
+    """Expected, user-actionable conflict with an existing non-empty Quiz node."""
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.detail = detail or {}
+
+
+def _location_block_id(value: Any) -> str:
+    location = getattr(value, 'location', value)
+    for candidate in (
+        getattr(location, 'block_id', None),
+        getattr(location, 'name', None),
+        getattr(value, 'block_id', None),
+    ):
+        text = _safe_str(candidate).strip()
+        if text:
+            return text
+    try:
+        from opaque_keys.edx.keys import UsageKey  # type: ignore
+        parsed = UsageKey.from_string(_clean_usage_key(location))
+        return _safe_str(getattr(parsed, 'block_id', '')).strip()
+    except Exception:
+        return ''
+
+
+def _resolved_child_blocks(store: Any, block: Any) -> list[Any]:
+    children: list[Any] = []
+    for child_key in _children_locations(block):
+        child = _get_item_best_effort(store, child_key)
+        if child is not None:
+            children.append(child)
+    return children
+
+
+def _is_recoverable_empty_quiz_partial(
+    store: Any,
+    block: Any,
+    category: str,
+    metadata: dict | None,
+) -> bool:
+    """Recognize only the empty hierarchy left by a failed create_quiz_node call.
+
+    Batch 27 intentionally stopped reusing nodes by display name to prevent 5 + 5
+    questions from becoming 10.  A connector failure after creating a container but
+    before returning its usage key, however, can leave an empty chapter/sequential/
+    vertical.  Reusing that *empty* shell is safe; any leaf content makes this return
+    False so an existing real Quiz is never appended to.
+    """
+    metadata = metadata or {}
+    children = _resolved_child_blocks(store, block)
+    if not children:
+        return True
+    if len(children) != 1:
+        return False
+
+    child = children[0]
+    child_type = (_block_type(child) or '').lower()
+    child_title = (_display_name(child) or '').strip().lower()
+
+    if category == 'chapter':
+        expected = _normalize_xblock_title(
+            metadata.get('sequential_title'),
+            'AI Learning Check',
+        ).strip().lower()
+        return (
+            child_type == 'sequential'
+            and child_title == expected
+            and _is_recoverable_empty_quiz_partial(store, child, 'sequential', metadata)
+        )
+    if category == 'sequential':
+        expected = _normalize_xblock_title(
+            metadata.get('unit_title'),
+            'Quiz',
+        ).strip().lower()
+        return (
+            child_type == 'vertical'
+            and child_title == expected
+            and _is_recoverable_empty_quiz_partial(store, child, 'vertical', metadata)
+        )
+    if category == 'vertical':
+        return False
+    return False
+
+
 def _find_existing_child_block(store: Any, parent_block: Any, category: str, display_name: str) -> Any | None:
     expected = (display_name or '').strip().lower()
     for child_key in _children_locations(parent_block):
@@ -1179,21 +1268,44 @@ def _create_child_xblock(
     *,
     allow_existing: bool = True,
 ) -> tuple[Any, bool, list[dict]]:
-    existing = _find_existing_child_block(store, parent_block, category, display_name)
-    if existing is not None:
-        if not allow_existing:
-            raise ValueError(
-                f'Đã có {category} tên {display_name!r} dưới node đã chọn. '
-                'Connector từ chối dùng lại node cũ vì có thể cộng dồn câu hỏi. '
-                'Hãy Khôi phục Quiz cũ trong AI Server hoặc đổi vị trí/tên bài kiểm tra.'
-            )
-        if extra_fields:
-            _update_created_block_fields(store, existing, user, {'display_name': display_name, **extra_fields})
-            existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
-        return existing, False, [{'mode': 'reuse_existing_child_by_display_name', 'status': 'ok'}]
-
+    metadata = metadata or {}
     parent_location = getattr(parent_block, 'location', parent_block)
     block_id = _stable_child_block_id(parent_location, category, display_name, metadata)
+    existing = _find_existing_child_block(store, parent_block, category, display_name)
+    if existing is not None:
+        existing_block_id = _location_block_id(existing)
+        idempotent_match = bool(existing_block_id and existing_block_id == block_id)
+        recover_empty_partial = bool(metadata.get('recover_empty_legacy_partial')) and _is_recoverable_empty_quiz_partial(
+            store, existing, category, metadata
+        )
+        if not allow_existing and not idempotent_match and not recover_empty_partial:
+            raise QuizNodeConflictError(
+                f'Đã có {category} tên {display_name!r} và node này đã chứa nội dung. '
+                'Connector từ chối dùng lại node cũ vì có thể cộng dồn câu hỏi. '
+                'Hãy Khôi phục Quiz cũ trong AI Server hoặc xóa node cũ trong Studio trước khi tạo lại.',
+                detail={
+                    'category': category,
+                    'display_name': display_name,
+                    'existing_usage_key': _clean_usage_key(getattr(existing, 'location', existing)),
+                    'existing_block_id': existing_block_id,
+                    'expected_block_id': block_id,
+                    'existing_child_count': len(_resolved_child_blocks(store, existing)),
+                },
+            )
+        fields = {'display_name': display_name, **(extra_fields or {})}
+        if fields:
+            _update_created_block_fields(store, existing, user, fields)
+            existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
+        mode = 'reuse_idempotent_existing_child' if idempotent_match else (
+            'recover_empty_legacy_partial_child' if recover_empty_partial else 'reuse_existing_child_by_display_name'
+        )
+        return existing, False, [{
+            'mode': mode,
+            'status': 'ok',
+            'usage_key': _clean_usage_key(getattr(existing, 'location', existing)),
+            'block_id': _location_block_id(existing),
+        }]
+
     fields = {'display_name': display_name, **(extra_fields or {})}
     user_id = getattr(user, 'id', user)
     attempts: list[tuple[str, Any]] = [
@@ -1236,18 +1348,45 @@ def _create_child_xblock(
             refreshed_parent = _get_item_best_effort(store, parent_location) or parent_block
             existing = _find_existing_child_block(store, refreshed_parent, category, display_name)
             if existing is not None:
-                if not allow_existing:
-                    raise ValueError(
-                        f'Đã có {category} tên {display_name!r} sau lỗi create_child. '
-                        'Connector không dùng lại node cũ để tránh cộng dồn câu hỏi.'
+                existing_block_id = _location_block_id(existing)
+                idempotent_match = bool(existing_block_id and existing_block_id == block_id)
+                recover_empty_partial = bool(metadata.get('recover_empty_legacy_partial')) and _is_recoverable_empty_quiz_partial(
+                    store, existing, category, metadata
+                )
+                if not allow_existing and not idempotent_match and not recover_empty_partial:
+                    raise QuizNodeConflictError(
+                        f'Đã có {category} tên {display_name!r} sau lỗi create_child và node đã chứa nội dung. '
+                        'Connector không dùng lại node cũ để tránh cộng dồn câu hỏi.',
+                        detail={
+                            'category': category,
+                            'display_name': display_name,
+                            'existing_usage_key': _clean_usage_key(getattr(existing, 'location', existing)),
+                            'existing_block_id': existing_block_id,
+                            'expected_block_id': block_id,
+                            'existing_child_count': len(_resolved_child_blocks(store, existing)),
+                        },
                     ) from exc
-                diagnostics.append({'mode': 'reuse_existing_after_create_error', 'status': 'ok'})
-                if extra_fields:
-                    _update_created_block_fields(store, existing, user, fields)
-                    existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
+                diagnostics.append({
+                    'mode': 'reuse_idempotent_after_create_error' if idempotent_match else 'recover_empty_partial_after_create_error',
+                    'status': 'ok',
+                })
+                _update_created_block_fields(store, existing, user, fields)
+                existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
                 return existing, False, diagnostics
             continue
     raise RuntimeError(f'Không tạo được XBlock {category} dưới parent {parent_location}. create_child không tương thích hoặc bị từ chối.') from last_exc
+
+
+def _connector_request_id(request: Any) -> str:
+    for value in (
+        getattr(request, 'headers', {}).get('X-Request-ID') if hasattr(request, 'headers') else None,
+        getattr(request, 'META', {}).get('HTTP_X_REQUEST_ID') if hasattr(request, 'META') else None,
+        getattr(request, 'META', {}).get('HTTP_X_CORRELATION_ID') if hasattr(request, 'META') else None,
+    ):
+        text = _safe_str(value).strip()
+        if text:
+            return text[:120]
+    return str(uuid.uuid4())
 
 
 @csrf_exempt
@@ -1258,6 +1397,7 @@ def create_quiz_node(request, course_id: str):
     immediately follows it with the native ItemBank insert endpoint. It fails
     loudly if modulestore cannot create draft children, so no fake success is shown.
     """
+    request_id = _connector_request_id(request)
     guard = _require_connector_write(request)
     if guard:
         return guard
@@ -1325,6 +1465,7 @@ def create_quiz_node(request, course_id: str):
         timer_config_result = _try_save_unit_quiz_timer_config(course_id, leaf.get('usage_key'), created_nodes, quiz_title, unit_title, metadata, user)
         return _json_response({
             'ok': True,
+            'request_id': request_id,
             'created': any(node.get('created') for node in created_nodes),
             'status': 'created_or_existing',
             'course_id': course_id,
@@ -1343,10 +1484,42 @@ def create_quiz_node(request, course_id: str):
             'message': 'Đã đặt Course Advanced Settings và tạo cấu trúc Quiz draft trong Studio. AI Server có thể tiếp tục tạo native Problem Bank Beta vào leaf Unit.',
             'diagnostics': diagnostics,
         })
+    except QuizNodeConflictError as exc:
+        logger.warning(
+            'create_quiz_node conflict request_id=%s course_id=%s parent_node_id=%s detail=%s',
+            request_id, course_id, parent_node_id, exc.detail,
+        )
+        return _json_response({
+            'ok': False,
+            'status': 'conflict',
+            'error_code': 'quiz_node_conflict',
+            'message': str(exc),
+            'request_id': request_id,
+            'detail': {**exc.detail, 'phase': 'create_quiz_node.conflict'},
+            'implementation': 'content_libraries_v2_python_api',
+            'stub': False,
+        }, status=409)
     except ValueError as exc:
-        return _connector_error(str(exc), status=400, code='invalid_quiz_node_request', detail=_exception_detail(exc, 'create_quiz_node.validation'))
+        logger.exception(
+            'create_quiz_node validation failed request_id=%s course_id=%s parent_node_id=%s',
+            request_id, course_id, parent_node_id,
+        )
+        detail = _exception_detail(exc, 'create_quiz_node.validation')
+        detail['request_id'] = request_id
+        return _connector_error(
+            str(exc), status=400, code='invalid_quiz_node_request', detail=detail, request_id=request_id
+        )
     except Exception as exc:
-        return _connector_error(_message_from_exception(exc, 'Tạo Quiz node trong CMS thất bại'), status=502, code='openedx_quiz_node_create_failed', detail=_exception_detail(exc, 'create_quiz_node'))
+        logger.exception(
+            'create_quiz_node failed request_id=%s course_id=%s parent_node_id=%s',
+            request_id, course_id, parent_node_id,
+        )
+        detail = _exception_detail(exc, 'create_quiz_node')
+        detail['request_id'] = request_id
+        return _connector_error(
+            _message_from_exception(exc, 'Tạo Quiz node trong CMS thất bại'),
+            status=502, code='openedx_quiz_node_create_failed', detail=detail, request_id=request_id
+        )
 
 
 
@@ -2009,7 +2182,7 @@ def _message_from_exception(exc: Exception, fallback: str) -> str:
     return f'{fallback}: {exc.__class__.__module__}.{exc.__class__.__name__} {repr(exc)}'
 
 
-def _connector_error(message: str, status: int = 500, code: str = 'openedx_publish_failed', detail: dict | None = None) -> JsonResponse:
+def _connector_error(message: str, status: int = 500, code: str = 'openedx_publish_failed', detail: dict | None = None, request_id: str | None = None) -> JsonResponse:
     public_message = message if _connector_debug_errors_enabled() else 'Không thực hiện được thao tác trên Open edX. Xem log CMS theo request_id để biết chi tiết.'
     public_detail = detail or {}
     if not _connector_debug_errors_enabled():
@@ -2019,6 +2192,7 @@ def _connector_error(message: str, status: int = 500, code: str = 'openedx_publi
         'status': 'error',
         'error_code': code,
         'message': public_message,
+        'request_id': request_id,
         'detail': public_detail,
         'implementation': 'content_libraries_v2_python_api',
         'stub': False,
