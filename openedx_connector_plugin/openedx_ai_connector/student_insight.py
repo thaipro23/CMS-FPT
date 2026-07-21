@@ -21,8 +21,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.98'
-CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.98'
+CONNECTOR_VERSION = '25.9.16.5.99'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.99'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
     'denominator': 'reachable_sequential_subsections',
@@ -221,6 +221,27 @@ def _course_staff_role_class() -> tuple[Any | None, str, str | None]:
         ('common.djangoapps.student.roles', 'CourseStaffRole'),
         ('student.roles', 'CourseStaffRole'),
     ])
+
+
+def _course_limited_staff_role_class() -> tuple[Any | None, str, str | None]:
+    return _import_attr_first([
+        ('common.djangoapps.student.roles', 'CourseLimitedStaffRole'),
+        ('student.roles', 'CourseLimitedStaffRole'),
+    ])
+
+
+def _course_role_has_exact_user(role: Any, user: Any) -> bool:
+    """Check an exact course role without role-inheritance side effects.
+
+    CourseLimitedStaffRole inherits Staff permissions in the LMS. Calling
+    CourseStaffRole.has_user() therefore also returns True for Limited Staff.
+    users_with_role() queries the concrete role assignment and lets this sync
+    safely downgrade legacy AP teachers from full Staff to Limited Staff.
+    """
+    user_pk = getattr(user, 'pk', None) or getattr(user, 'id', None)
+    if user_pk is None:
+        return False
+    return bool(role.users_with_role().filter(pk=user_pk).exists())
 
 
 def _user_profile_model() -> tuple[Any | None, str, str | None]:
@@ -2254,8 +2275,11 @@ def student_insight_class_analytics(request):
 def _student_insight_enroll_results(course_id: str, requested: list[dict[str, Any]], *, mode: str = 'audit', force: bool = False, create_missing: bool = False) -> list[dict[str, Any]]:
     """Enroll AP students and add AP teachers to the mapped Open edX course.
 
-    Students are enrolled as learners. Teachers are created if needed and granted
-    Course Staff role. Student user creation is exact by RollNumber/student_code when AI Server sends it as username; AP username is preserved as an alias only.
+    Students are enrolled as learners. AP teachers are created if needed and granted
+    only Course Limited Staff access. Existing full Course Staff assignments created
+    by earlier sync versions are downgraded. Student user creation is exact by
+    RollNumber/student_code when AI Server sends it as username; AP username is
+    preserved as an alias only.
     """
     course_key = _course_key_from_string(course_id)
     if course_key is None:
@@ -2380,54 +2404,99 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
 
         if is_teacher:
             try:
+                CourseLimitedStaffRole, limited_staff_role_source, limited_staff_role_import_error = _course_limited_staff_role_class()
                 CourseStaffRole, course_staff_role_source, course_staff_role_import_error = _course_staff_role_class()
-                if CourseStaffRole is None:
+                if CourseLimitedStaffRole is None or CourseStaffRole is None:
                     results.append({
                         **base,
-                        'status': 'course_staff_import_failed',
+                        'status': 'course_limited_staff_import_failed',
                         'enrollment_status': 'failed',
                         'is_enrolled': False,
-                        'course_role': 'staff',
+                        'course_role': 'limited_staff',
                         'verified_after_write': False,
-                        'message': 'Không import được CourseStaffRole trên Open edX LMS.',
-                        'diagnostics': {'course_staff_role_import_error': course_staff_role_import_error},
+                        'message': 'Không import được CourseLimitedStaffRole/CourseStaffRole trên Open edX LMS.',
+                        'diagnostics': {
+                            'course_limited_staff_role_import_error': limited_staff_role_import_error,
+                            'course_staff_role_import_error': course_staff_role_import_error,
+                        },
                     })
                     continue
-                role = CourseStaffRole(course_key)
-                already_staff = False
-                try:
-                    already_staff = bool(role.has_user(user))
-                except Exception:
-                    already_staff = False
-                if not already_staff or force:
-                    role.add_users(user)
-                try:
-                    verified_staff = bool(role.has_user(user))
-                except Exception:
-                    verified_staff = already_staff or not force
-                if not verified_staff:
+
+                limited_role = CourseLimitedStaffRole(course_key)
+                full_staff_role = CourseStaffRole(course_key)
+                already_limited = _course_role_has_exact_user(limited_role, user)
+                had_full_staff = _course_role_has_exact_user(full_staff_role, user)
+
+                # Grant the restricted role first so a migration never creates an
+                # access gap, then remove the old full Staff role if Batch 28 or an
+                # earlier sync assigned it.
+                if not already_limited or force:
+                    limited_role.add_users(user)
+                verified_limited = _course_role_has_exact_user(limited_role, user)
+                if not verified_limited:
                     results.append({
                         **base,
-                        'status': 'course_staff_not_verified',
+                        'status': 'course_limited_staff_not_verified',
                         'enrollment_status': 'failed',
                         'is_enrolled': False,
-                        'course_role': 'staff',
+                        'course_role': 'limited_staff',
                         'verified_after_write': False,
-                        'message': 'Đã gọi CourseStaffRole.add_users nhưng chưa xác nhận được giảng viên trong Course Staff',
+                        'message': 'Đã gọi CourseLimitedStaffRole.add_users nhưng chưa xác nhận được giảng viên trong Limited Staff',
                     })
                     continue
+
+                if had_full_staff:
+                    full_staff_role.remove_users(user)
+
+                verified_limited = _course_role_has_exact_user(limited_role, user)
+                full_staff_remaining = _course_role_has_exact_user(full_staff_role, user)
+                if not verified_limited or full_staff_remaining:
+                    results.append({
+                        **base,
+                        'status': 'course_limited_staff_policy_not_verified',
+                        'enrollment_status': 'failed',
+                        'is_enrolled': False,
+                        'course_role': 'limited_staff',
+                        'verified_after_write': False,
+                        'removed_course_staff': had_full_staff and not full_staff_remaining,
+                        'full_course_staff_remaining': full_staff_remaining,
+                        'message': 'Không xác nhận được policy chỉ Limited Staff cho giảng viên AP',
+                    })
+                    continue
+
+                if had_full_staff:
+                    status_value = 'course_limited_staff_migrated'
+                    message = 'Đã chuyển giảng viên AP từ Course Staff sang Limited Staff'
+                elif already_limited:
+                    status_value = 'already_course_limited_staff'
+                    message = 'Giảng viên AP đã có Limited Staff'
+                else:
+                    status_value = 'course_limited_staff_added'
+                    message = 'Đã gán Limited Staff cho giảng viên AP'
+
                 results.append({
                     **base,
-                    'status': 'already_course_staff' if already_staff else 'course_staff_added',
-                    'enrollment_status': 'course_staff',
+                    'status': status_value,
+                    'enrollment_status': 'course_limited_staff',
                     'is_enrolled': True,
-                    'course_role': 'staff',
+                    'course_role': 'limited_staff',
+                    'course_limited_staff_role_model_source': limited_staff_role_source,
                     'course_staff_role_model_source': course_staff_role_source,
+                    'removed_course_staff': had_full_staff,
+                    'full_course_staff_remaining': False,
                     'verified_after_write': True,
-                    'message': 'Giảng viên đã được xác nhận Course Staff',
+                    'message': message,
                 })
             except Exception as exc:
-                results.append({**base, 'status': 'course_staff_failed', 'enrollment_status': 'failed', 'is_enrolled': False, 'message': 'Không gán được Course Staff cho giảng viên'})
+                results.append({
+                    **base,
+                    'status': 'course_limited_staff_failed',
+                    'enrollment_status': 'failed',
+                    'is_enrolled': False,
+                    'course_role': 'limited_staff',
+                    'verified_after_write': False,
+                    'message': 'Không gán được Limited Staff cho giảng viên AP' + (f": {exc}" if _connector_debug_errors_enabled() else ''),
+                })
             continue
         try:
             enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
