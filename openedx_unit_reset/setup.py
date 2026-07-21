@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="openedx-unit-reset",
-    version='0.4.14.6',
+    version='0.4.14.7',
     description="Reset whole Open edX Unit attempt and Problem Bank randomization with server-side cooldown and custom timed-practice quiz runtime.",
     packages=find_packages(),
     include_package_data=True,

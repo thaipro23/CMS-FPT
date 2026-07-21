@@ -352,6 +352,11 @@ def quiz_session_runtime_js(request):
   var lastReportedHeight = 0;
   var lastReportedWidth = 0;
   var resizeTimers = [];
+  var resizeRaf = 0;
+  var queuedResizeReason = '';
+  var queuedResizeForce = false;
+  var RESIZE_TOLERANCE_PX = 4;
+  var MAX_IFRAME_HEIGHT_PX = 50000;
 
   function lower(value){ return ((value || '') + '').toLowerCase(); }
 
@@ -386,41 +391,66 @@ def quiz_session_runtime_js(request):
     scheduleResizeBurst('theme-sync');
   }
 
-  function contentDimensions(){
-    var doc = document.documentElement;
-    var body = document.body;
-    var content = document.getElementById('content') || document.getElementById('course-content') || document.getElementById('main');
-    var heights = [
-      doc && doc.scrollHeight,
-      doc && doc.offsetHeight,
-      body && body.scrollHeight,
-      body && body.offsetHeight,
-      content && content.scrollHeight,
-      content && content.offsetHeight,
-    ].map(function(value){ return Number(value || 0); });
+  function elementBottom(element){
+    if (!element || !element.getBoundingClientRect) return 0;
     try {
-      var rect = content && content.getBoundingClientRect();
-      if (rect) heights.push(Math.ceil(rect.bottom + window.scrollY));
-    } catch (error) { /* ignore */ }
-    var widths = [
-      doc && doc.scrollWidth,
-      doc && doc.offsetWidth,
-      body && body.scrollWidth,
-      body && body.offsetWidth,
-      content && content.scrollWidth,
-      content && content.offsetWidth,
-    ].map(function(value){ return Number(value || 0); });
-    var width = Math.max.apply(Math, widths);
-    var height = Math.max.apply(Math, heights);
-    return {
-      width: width > 0 ? width : (window.innerWidth || 0),
-      height: height > 0 ? height : (window.innerHeight || 0),
-    };
+      var style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.position === 'fixed') return 0;
+      var rect = element.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) return 0;
+      return Math.ceil(rect.bottom + window.scrollY);
+    } catch (error) { return 0; }
   }
 
-  function dispatchResize(reason, force){
+  function intrinsicContentHeight(){
+    var body = document.body;
+    if (!body) return 0;
+    var selectors = [
+      'h1','h2','h3','h4','h5','h6','p','li','table','form','fieldset',
+      'button','input','select','textarea','label','img','video','canvas','svg','iframe',
+      '.problem','.problem-wrapper','.problem-progress','.problem-action-buttons-wrapper',
+      '.notification','.feedback','.submission-feedback','.detailed-solution',
+      '.xblock-student_view','[data-usage-id]'
+    ];
+    var maxBottom = 0;
+    try {
+      var nodes = body.querySelectorAll(selectors.join(','));
+      Array.prototype.forEach.call(nodes, function(node){
+        maxBottom = Math.max(maxBottom, elementBottom(node));
+      });
+      Array.prototype.forEach.call(body.children || [], function(node){
+        // Only use a top-level container when it is not simply stretching to
+        // the iframe viewport. Viewport-height wrappers caused the old +N px
+        // feedback loop after every plugin.resize message.
+        var bottom = elementBottom(node);
+        var rect = node.getBoundingClientRect && node.getBoundingClientRect();
+        if (rect && rect.height < Math.max(160, (window.innerHeight || 0) - 8)) {
+          maxBottom = Math.max(maxBottom, bottom);
+        }
+      });
+      var bodyStyle = window.getComputedStyle(body);
+      maxBottom += parseFloat(bodyStyle.paddingBottom || '0') || 0;
+      maxBottom += parseFloat(bodyStyle.marginBottom || '0') || 0;
+    } catch (error) { /* ignore */ }
+    return Math.ceil(maxBottom + 8);
+  }
+
+  function contentDimensions(){
+    var width = Math.max(1, Math.ceil(document.documentElement && document.documentElement.clientWidth || window.innerWidth || 1));
+    var measuredHeight = intrinsicContentHeight();
+    // Do not use html/body scrollHeight or offsetHeight. Those values include
+    // the current iframe viewport and therefore grow again after the parent
+    // applies the previous resize request.
+    var height = measuredHeight > 0 ? measuredHeight : Math.max(120, lastReportedHeight || 0);
+    height = Math.max(120, Math.min(MAX_IFRAME_HEIGHT_PX, Math.ceil(height)));
+    return { width: width, height: height };
+  }
+
+  function dispatchResizeNow(reason, force){
     var size = contentDimensions();
-    if (!force && size.width === lastReportedWidth && size.height === lastReportedHeight) return;
+    var widthChanged = Math.abs(size.width - lastReportedWidth) > RESIZE_TOLERANCE_PX;
+    var heightChanged = Math.abs(size.height - lastReportedHeight) > RESIZE_TOLERANCE_PX;
+    if (!force && !widthChanged && !heightChanged) return;
     lastReportedWidth = size.width;
     lastReportedHeight = size.height;
     try {
@@ -433,10 +463,24 @@ def quiz_session_runtime_js(request):
     } catch (error) { /* ignore */ }
   }
 
+  function dispatchResize(reason, force){
+    queuedResizeReason = reason || queuedResizeReason || 'content-change';
+    queuedResizeForce = queuedResizeForce || Boolean(force);
+    if (resizeRaf) return;
+    resizeRaf = window.requestAnimationFrame(function(){
+      resizeRaf = 0;
+      var nextReason = queuedResizeReason;
+      var nextForce = queuedResizeForce;
+      queuedResizeReason = '';
+      queuedResizeForce = false;
+      dispatchResizeNow(nextReason, nextForce);
+    });
+  }
+
   function scheduleResizeBurst(reason){
     resizeTimers.forEach(function(timer){ window.clearTimeout(timer); });
-    resizeTimers = [0, 50, 150, 350, 700, 1200, 2200].map(function(delay){
-      return window.setTimeout(function(){ dispatchResize(reason, delay === 0); }, delay);
+    resizeTimers = [0, 80, 220, 500, 1000, 1800].map(function(delay){
+      return window.setTimeout(function(){ dispatchResize(reason, false); }, delay);
     });
   }
   function sleep(ms){ return new Promise(function(resolve){ setTimeout(resolve, ms); }); }
@@ -487,13 +531,31 @@ def quiz_session_runtime_js(request):
   var resizeObserver = null;
   if (window.ResizeObserver) {
     resizeObserver = new ResizeObserver(function(){ dispatchResize('resize-observer', false); });
-    if (document.documentElement) resizeObserver.observe(document.documentElement);
-    if (document.body) resizeObserver.observe(document.body);
-    var resizeContent = document.getElementById('content') || document.getElementById('course-content') || document.getElementById('main');
-    if (resizeContent) resizeObserver.observe(resizeContent);
+    // Never observe html/body: their size is the iframe viewport, so parent
+    // height changes would trigger another resize request forever.
+    var observed = document.querySelectorAll('.problem,.problem-wrapper,.xblock-student_view,form,table,img,video,iframe');
+    Array.prototype.forEach.call(observed, function(node){
+      try { resizeObserver.observe(node); } catch (error) { /* ignore */ }
+    });
   }
-  var mutationObserver = new MutationObserver(function(){ dispatchResize('mutation-observer', false); });
-  if (document.body) mutationObserver.observe(document.body, { attributes: true, childList: true, subtree: true, characterData: true });
+  var mutationObserver = new MutationObserver(function(records){
+    if (resizeObserver) {
+      records.forEach(function(record){
+        Array.prototype.forEach.call(record.addedNodes || [], function(node){
+          if (!node || node.nodeType !== 1) return;
+          try { resizeObserver.observe(node); } catch (error) { /* ignore */ }
+          if (node.querySelectorAll) {
+            Array.prototype.forEach.call(node.querySelectorAll('.problem,.problem-wrapper,.xblock-student_view,form,table,img,video,iframe'), function(child){
+              try { resizeObserver.observe(child); } catch (error) { /* ignore */ }
+            });
+          }
+        });
+      });
+    }
+    dispatchResize('mutation-observer', false);
+  });
+  if (document.body) mutationObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+  window.addEventListener('resize', function(){ scheduleResizeBurst('iframe-window-resize'); });
   window.addEventListener('load', function(){ scheduleResizeBurst('window-load'); });
   window.addEventListener('pageshow', function(){ scheduleResizeBurst('page-show'); });
   try {
