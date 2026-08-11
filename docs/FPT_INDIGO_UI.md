@@ -13,6 +13,19 @@ Mục tiêu của patch này là giữ nguyên logic Open edX/Indigo/Paragon và
 - Footer MFE + LMS legacy: bỏ Tutor/Open edX marketing links, dùng thông tin liên hệ FPT.
 - Dark mode: tắt toggle và ép light mode.
 
+## Cấu trúc Tutor plugin
+
+Các Tutor plugin được đặt riêng, ngang hàng trong thư mục `tutor-plugins/`:
+
+```text
+tutor-plugins/
+├── openedx_connector.py
+├── openedx_unit_reset.py
+└── fpt_indigo_ui.py
+```
+
+`fpt_indigo_ui.py` chỉ phụ trách UI/branding; không trộn logic connector hoặc Unit Reset.
+
 ## Cài plugin
 
 ```bash
@@ -23,9 +36,9 @@ git fetch origin --prune
 git switch fpt-indigo-ui
 git reset --hard origin/fpt-indigo-ui
 
-cp tutor-plugins/fpt_indigo_branding.py "$(tutor plugins printroot)/fpt_indigo_branding.py"
+cp tutor-plugins/fpt_indigo_ui.py "$(tutor plugins printroot)/fpt_indigo_ui.py"
 
-tutor plugins enable fpt_indigo_branding
+tutor plugins enable fpt_indigo_ui
 tutor config save --set INDIGO_ENABLE_DARK_TOGGLE=false
 tutor config save --set INDIGO_FOOTER_NAV_LINKS='[]'
 tutor config save
@@ -34,8 +47,8 @@ tutor config save
 ## Kiểm tra plugin được load
 
 ```bash
-tutor plugins list | grep -E 'indigo|fpt_indigo_branding'
-python -m py_compile "$(tutor plugins printroot)/fpt_indigo_branding.py"
+tutor plugins list | grep -E 'indigo|fpt_indigo_ui'
+python -m py_compile "$(tutor plugins printroot)/fpt_indigo_ui.py"
 ```
 
 ## Build Open edX
@@ -78,7 +91,7 @@ tutor local start -d
 
 ```bash
 source ~/tutor-venv/bin/activate
-tutor plugins disable fpt_indigo_branding
+tutor plugins disable fpt_indigo_ui
 tutor config save
 tutor local stop
 tutor local start -d
