@@ -26,13 +26,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-new_tmp() {
-  local f
-  f="$(mktemp)"
-  TMP_FILES+=("$f")
-  printf '%s' "$f"
-}
-
 log "Target: $LMS_URL"
 log "Waiting for LMS login route to become ready"
 READY=0
@@ -50,12 +43,13 @@ for attempt in $(seq 1 30); do
     sleep 2
   fi
 done
-[ "$READY" -eq 1 ] || fail "LMS did not become ready after 60s (last HTTP $LAST_STATUS)"
+[ "$READY" -eq 1 ] || fail "LMS did not become ready after 30 attempts (last HTTP $LAST_STATUS)"
 
 for name in "${ASSETS[@]}"; do
   url="$LMS_URL/static/indigo/images/fpt/$name"
-  headers="$(new_tmp)"
-  body="$(new_tmp)"
+  headers="$(mktemp)"
+  body="$(mktemp)"
+  TMP_FILES+=("$headers" "$body")
   status="$(curl "${CURL_COMMON[@]}" --output "$body" --dump-header "$headers" --write-out '%{http_code}' "$url" 2>/dev/null || printf '000')"
   [ "$status" = "200" ] || fail "$name returned HTTP $status"
   bytes="$(wc -c < "$body" | tr -d ' ')"
@@ -68,7 +62,8 @@ for name in "${ASSETS[@]}"; do
   log "PASS asset $name (${bytes} bytes, $content_type)"
 done
 
-courses_tmp="$(new_tmp)"
+courses_tmp="$(mktemp)"
+TMP_FILES+=("$courses_tmp")
 courses_status="$(curl "${CURL_COMMON[@]}" --output "$courses_tmp" --write-out '%{http_code}' "$LMS_URL/courses" 2>/dev/null || printf '000')"
 case "$courses_status" in
   200)
