@@ -36,7 +36,11 @@ jobs:
             scripts/fpt-ui-setup.sh \
             scripts/fpt-ui-build.sh \
             scripts/fpt-ui-smoke.sh \
-            scripts/fpt-ui-validate-static.sh
+            scripts/fpt-ui-validate-static.sh \
+            scripts/fpt-ui-validate-polish.sh
 
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
+
+      - name: Validate legacy polish fixture
+        run: bash scripts/fpt-ui-validate-polish.sh
