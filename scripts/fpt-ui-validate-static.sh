@@ -207,6 +207,10 @@ checks = [
     ('docker info' in build, 'Docker daemon preflight missing'),
     ('metadata.version("openedx-unit-reset")' in build, 'Unit Reset backend package verification missing'),
     ('AI_MFE_REQUEST_RESIZE' in build and 'AI_QUIZ_ACTIVE_SESSION_READY_RELOAD' in build, 'compiled Learning Unit Reset verification missing'),
+    ('declare -F rollback_on_error' in build and 'rollback_on_error 1' in build, 'assertion failures are not routed through rollback'),
+    ('docker tag "$PREV_OPENEDX_ID" "$OPENEDX_IMAGE"' in build and 'docker tag "$PREV_MFE_ID" "$MFE_IMAGE"' in build, 'transactional image-tag rollback missing'),
+    ('verify_service_image()' in build and 'tutor local dc ps -q "$service"' in build, 'running-container image identity verification missing'),
+    ('for service in lms cms lms-worker cms-worker' in build and 'verify_service_image mfe "$EXPECTED_MFE_ID"' in build, 'openedx/mfe service image assertions incomplete'),
     ('MFE_HOST' in build and 'learner-dashboard/' in smoke and 'authn/' in smoke, 'direct MFE post-restart smoke checks missing'),
 ]
 for ok, message in checks:
