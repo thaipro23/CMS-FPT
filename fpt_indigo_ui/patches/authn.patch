@@ -5,7 +5,9 @@ const fs = require('fs');
 const root = '/openedx/app/src/base-container/components/default-layout';
 const write = (name, value) => fs.writeFileSync(`${root}/${name}`, value, 'utf8');
 
-write('LargeLayout.jsx', String.raw`import { getConfig } from '@edx/frontend-platform';
+write('LargeLayout.jsx', String.raw`import React from 'react';
+
+import { getConfig } from '@edx/frontend-platform';
 import { Hyperlink, Image } from '@openedx/paragon';
 
 const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
@@ -48,7 +50,9 @@ const LargeLayout = () => (
 export default LargeLayout;
 `);
 
-write('MediumLayout.jsx', String.raw`import { getConfig } from '@edx/frontend-platform';
+write('MediumLayout.jsx', String.raw`import React from 'react';
+
+import { getConfig } from '@edx/frontend-platform';
 import { Hyperlink, Image } from '@openedx/paragon';
 
 const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
@@ -76,7 +80,9 @@ const MediumLayout = () => (
 export default MediumLayout;
 `);
 
-write('SmallLayout.jsx', String.raw`import { getConfig } from '@edx/frontend-platform';
+write('SmallLayout.jsx', String.raw`import React from 'react';
+
+import { getConfig } from '@edx/frontend-platform';
 import { Hyperlink, Image } from '@openedx/paragon';
 
 const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
