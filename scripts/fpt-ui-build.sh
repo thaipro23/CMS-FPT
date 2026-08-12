@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 log() { printf '[fpt-ui-build] %s\n' "$*"; }
+warn() { printf '[fpt-ui-build] WARN: %s\n' "$*" >&2; }
 fail() { printf '[fpt-ui-build] ERROR: %s\n' "$*" >&2; exit 1; }
 
 command -v git >/dev/null 2>&1 || fail "git is required"
@@ -41,11 +42,59 @@ bash "$REPO_ROOT/scripts/fpt-ui-validate-static.sh"
 log "Preflight/setup"
 bash "$REPO_ROOT/scripts/fpt-ui-setup.sh"
 
+OPENEDX_IMAGE="$(tutor config printvalue DOCKER_IMAGE_OPENEDX)"
+MFE_IMAGE="$(tutor config printvalue MFE_DOCKER_IMAGE 2>/dev/null || true)"
+[ -n "$OPENEDX_IMAGE" ] || fail "Could not resolve DOCKER_IMAGE_OPENEDX"
+[ -n "$MFE_IMAGE" ] || fail "Could not resolve MFE_DOCKER_IMAGE"
+
+# Treat the two shared image tags as one deploy transaction. If a later build,
+# verification, restart or smoke check fails, restore the exact image IDs that
+# were tagged before this run. Running containers are only restarted during
+# rollback if this script already touched the deployment.
+PREV_OPENEDX_ID="$(docker image inspect --format '{{.Id}}' "$OPENEDX_IMAGE" 2>/dev/null || true)"
+PREV_MFE_ID="$(docker image inspect --format '{{.Id}}' "$MFE_IMAGE" 2>/dev/null || true)"
+ROLLBACK_ARMED=0
+DEPLOYMENT_TOUCHED=0
+
+if [ -n "$PREV_OPENEDX_ID" ] && [ -n "$PREV_MFE_ID" ]; then
+  ROLLBACK_ARMED=1
+  log "Rollback checkpoint: openedx=$PREV_OPENEDX_ID mfe=$PREV_MFE_ID"
+else
+  warn "A previous openedx/mfe image is missing; automatic image rollback cannot be fully armed for this first build"
+fi
+
+rollback_on_error() {
+  local status=$?
+  trap - ERR
+  set +e
+  if [ "$ROLLBACK_ARMED" -eq 1 ]; then
+    warn "Deployment transaction failed (exit $status). Restoring previous image tags."
+    docker tag "$PREV_OPENEDX_ID" "$OPENEDX_IMAGE"
+    local openedx_restore=$?
+    docker tag "$PREV_MFE_ID" "$MFE_IMAGE"
+    local mfe_restore=$?
+    if [ "$openedx_restore" -ne 0 ] || [ "$mfe_restore" -ne 0 ]; then
+      warn "One or more previous image tags could not be restored automatically"
+    else
+      log "Previous openedx/mfe image tags restored"
+    fi
+
+    if [ "$DEPLOYMENT_TOUCHED" -eq 1 ]; then
+      warn "Restarting previous Tutor deployment after rollback"
+      tutor local stop || true
+      tutor local start -d || true
+      tutor local status || true
+    fi
+  else
+    warn "Deployment transaction failed (exit $status); no complete rollback checkpoint was available"
+  fi
+  exit "$status"
+}
+trap rollback_on_error ERR
+
 log "Building Open edX image (BuildKit cache enabled)"
 tutor images build openedx
 
-OPENEDX_IMAGE="$(tutor config printvalue DOCKER_IMAGE_OPENEDX)"
-[ -n "$OPENEDX_IMAGE" ] || fail "Could not resolve DOCKER_IMAGE_OPENEDX"
 log "Verifying FPT assets/templates + Unit Reset backend in $OPENEDX_IMAGE"
 docker run --rm --entrypoint bash -e UNIT_RESET_EXPECTED_VERSION="$UNIT_RESET_EXPECTED_VERSION" "$OPENEDX_IMAGE" -lc '
 set -euo pipefail
@@ -83,17 +132,14 @@ ls -lh "$base"
 log "Building MFE image (no --no-cache)"
 tutor images build mfe
 
-MFE_IMAGE="$(tutor config printvalue MFE_DOCKER_IMAGE 2>/dev/null || true)"
-[ -n "$MFE_IMAGE" ] || fail "Could not resolve MFE_DOCKER_IMAGE"
 log "Verifying compiled Authn/Learner Dashboard/Learning artifacts in $MFE_IMAGE"
-
 CID="$(docker create "$MFE_IMAGE")"
 TMP_DIR="$(mktemp -d)"
-cleanup() {
+cleanup_artifacts() {
   docker rm -f "$CID" >/dev/null 2>&1 || true
   rm -rf "$TMP_DIR"
 }
-trap cleanup EXIT
+trap cleanup_artifacts EXIT
 
 docker cp "$CID:/openedx/dist/authn" "$TMP_DIR/authn" >/dev/null
 docker cp "$CID:/openedx/dist/learner-dashboard" "$TMP_DIR/learner-dashboard" >/dev/null
@@ -105,11 +151,12 @@ grep -R -Fq "Tiếp tục hành trình học tập" "$TMP_DIR/learner-dashboard"
 grep -R -Fq "AI_MFE_REQUEST_RESIZE" "$TMP_DIR/learning" || fail "Compiled Learning bundle does not contain the custom Unit Reset frontend marker"
 grep -R -Fq "AI_QUIZ_ACTIVE_SESSION_READY_RELOAD" "$TMP_DIR/learning" || fail "Compiled Learning bundle is missing the Unit Reset active-session reload contract"
 
-cleanup
+cleanup_artifacts
 trap - EXIT
 log "Compiled MFE branding + Unit Reset markers PASS"
 
 if [ "$RESTART" -eq 1 ]; then
+  DEPLOYMENT_TOUCHED=1
   log "Restarting Tutor local deployment"
   tutor local stop
   tutor local start -d
@@ -133,6 +180,9 @@ if [ "$RESTART" -eq 1 ]; then
   bash "$REPO_ROOT/scripts/fpt-ui-smoke.sh" "$LMS_URL" "$MFE_URL"
 fi
 
+# Commit the transaction only after all image and optional live smoke checks pass.
+ROLLBACK_ARMED=0
+trap - ERR
 log "BUILD VERIFIED: openedx + mfe + Unit Reset backend/frontend"
 if [ "$RESTART" -ne 1 ]; then
   log "Run with --restart when ready; --restart will also run LMS + MFE post-deploy smoke checks"
