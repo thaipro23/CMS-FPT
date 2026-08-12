@@ -11,6 +11,7 @@ command -v python >/dev/null 2>&1 || fail "python is required"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$REPO_ROOT" ] || fail "Run this script from inside the CMS-FPT repository"
 REPO_ROOT_REAL="$(readlink -f "$REPO_ROOT")"
+TUTOR_ROOT="$(tutor config printroot)"
 PLUGIN_ROOT="$(tutor plugins printroot)"
 ASSET_DIR="$REPO_ROOT/fpt_indigo_ui/assets"
 LEGACY_ASSET_DIR="$REPO_ROOT/tutor-plugins/fpt-assets"
@@ -24,6 +25,7 @@ EXPECTED_ASSETS=(
 )
 
 log "Repository: $REPO_ROOT"
+log "Tutor root: $TUTOR_ROOT"
 log "Tutor plugin root: $PLUGIN_ROOT"
 
 mkdir -p "$ASSET_DIR"
@@ -63,12 +65,14 @@ if 'mfe-dockerfile-pre-npm-build-authn' not in plugin:
     raise SystemExit('Authn patch must run at pre-npm-build after source copy')
 if 'mfe-dockerfile-post-npm-install-authn' in plugin:
     raise SystemExit('obsolete Authn post-npm-install hook is still registered')
-if 'getConfig as getFptConfig' not in plugin:
-    raise SystemExit('MFE runtime getConfig import is missing')
+if "import React from 'react';" not in plugin or 'getConfig as getFptConfig' not in plugin:
+    raise SystemExit('MFE runtime React/getConfig imports are incomplete')
 if "RUN node - <<'JS2'" not in authn:
     raise SystemExit('Authn patch must use Node.js')
 if "RUN python - <<'PY2'" in authn:
     raise SystemExit('Authn patch still contains Python heredoc')
+if authn.count("import React from 'react';") != 3:
+    raise SystemExit('all three Ulmo Authn layouts must preserve an explicit React import')
 if authn.count('<div className="fpt-auth-wedge"') != 1:
     raise SystemExit('Authn must contain exactly one orange wedge element')
 if '.fpt-auth-wedge' not in authn or 'clip-path:polygon' not in authn:
@@ -128,7 +132,7 @@ done
 log "Rendering Tutor environment"
 tutor config save
 
-GENERATED_OPENEDX="$HOME/.local/share/tutor/env/build/openedx/Dockerfile"
+GENERATED_OPENEDX="$TUTOR_ROOT/env/build/openedx/Dockerfile"
 [ -f "$GENERATED_OPENEDX" ] || fail "Generated Open edX Dockerfile not found: $GENERATED_OPENEDX"
 
 COPY_COUNT="$(grep -Fc 'COPY --from=edx-platform /fpt_indigo_ui/assets/' "$GENERATED_OPENEDX" || true)"
@@ -138,8 +142,9 @@ if grep -Eq 'curl .*(caodang\.fpt\.edu\.vn|seeklogo\.com|wikimedia\.org|chungta\
   fail "Generated Open edX Dockerfile downloads FPT assets from the Internet"
 fi
 
-MFE_DOCKERFILE="$(grep -RIl --include='Dockerfile' 'FPT Polytechnic V8 production branding overlay' "$HOME/.local/share/tutor/env" 2>/dev/null | head -n1 || true)"
-[ -n "$MFE_DOCKERFILE" ] || fail "Could not find generated MFE Dockerfile containing the FPT Authn patch"
+MFE_DOCKERFILE="$TUTOR_ROOT/env/plugins/mfe/build/mfe/Dockerfile"
+[ -f "$MFE_DOCKERFILE" ] || fail "Generated MFE Dockerfile not found: $MFE_DOCKERFILE"
+grep -Fq 'FPT Polytechnic V8 production branding overlay' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn patch"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
 
 python - "$MFE_DOCKERFILE" <<'PYORDER'
