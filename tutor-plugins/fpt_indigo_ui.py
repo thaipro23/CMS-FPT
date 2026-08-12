@@ -41,11 +41,12 @@ MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
 ))
 
-# Runtime widgets need the LMS URL but must not depend on another theme/plugin
-# to import getConfig for us. Alias it to avoid collisions with other plugins.
+# Runtime widgets use JSX and LMS runtime config. Import both explicitly so
+# their compilation never depends on another theme/plugin or JSX transform.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-buildtime-imports",
-    _jinja_raw("import { getConfig as getFptConfig } from '@edx/frontend-platform';"),
+    _jinja_raw("""import React from 'react';
+import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
 # Authn source is copied into /openedx/app after npm install in Tutor MFE 21.x.
