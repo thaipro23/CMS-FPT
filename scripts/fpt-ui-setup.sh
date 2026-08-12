@@ -19,6 +19,9 @@ LEGACY_ASSET_DIR="$REPO_ROOT/tutor-plugins/fpt-assets"
 FPT_PLUGIN="$REPO_ROOT/tutor-plugins/fpt_indigo_ui.py"
 ALLOW_UNTESTED_BASELINE="${FPT_UI_ALLOW_UNTESTED_BASELINE:-0}"
 EXPECTED_COMMON_VERSION="release/ulmo.3"
+LEARNING_REPO="${FPT_LEARNING_REPO:-/opt/openedx/frontend-app-learning}"
+LEARNING_BRANCH="${FPT_LEARNING_BRANCH:-mfe-unit-reset}"
+SKIP_LEARNING_GUARD="${FPT_UI_SKIP_LEARNING_GUARD:-0}"
 
 log "Repository: $REPO_ROOT"
 log "Tutor root: $TUTOR_ROOT"
@@ -116,20 +119,52 @@ if any('curl ' in data.lower() for data in (plugin, authn, openedx, runtime)):
 print('[fpt-ui] Source guardrails PASS')
 PYGUARD
 
-MOUNT_FOUND=0
-while IFS= read -r mount_name; do
-  [ -n "$mount_name" ] || continue
-  if [ "$(readlink -f "$mount_name" 2>/dev/null || true)" = "$REPO_ROOT_REAL" ]; then
-    MOUNT_FOUND=1
-    break
+# Tutor-MFE automatically turns a mount whose basename is frontend-app-APPNAME
+# into a build-time source mount for APPNAME. Preserve the custom Learning MFE
+# so rebuilding the shared mfe image cannot silently drop Unit Reset.
+if [ "$SKIP_LEARNING_GUARD" != "1" ]; then
+  [ -d "$LEARNING_REPO/.git" ] || fail "Custom Learning repo not found at $LEARNING_REPO. Set FPT_LEARNING_REPO to the correct path, or FPT_UI_SKIP_LEARNING_GUARD=1 only for an intentional test without Unit Reset."
+  [ "$(basename "$LEARNING_REPO")" = "frontend-app-learning" ] || fail "Learning repo directory must be named frontend-app-learning for Tutor-MFE build mounts: $LEARNING_REPO"
+  LEARNING_REPO_REAL="$(readlink -f "$LEARNING_REPO")"
+  LEARNING_CURRENT_BRANCH="$(git -C "$LEARNING_REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [ "$LEARNING_CURRENT_BRANCH" = "$LEARNING_BRANCH" ] || fail "Learning repo must be on '$LEARNING_BRANCH', found '${LEARNING_CURRENT_BRANCH:-unknown}'"
+  if ! git -C "$LEARNING_REPO" diff --quiet || ! git -C "$LEARNING_REPO" diff --cached --quiet; then
+    fail "Learning repo has tracked local modifications. Commit/stash them before rebuilding the shared MFE image."
   fi
-done < <(tutor mounts list 2>/dev/null | sed -n 's/^- name: //p')
+  UNIT_RESET_MARKER="$LEARNING_REPO/src/courseware/course/sequence/unit-reset/UnitResetButton.jsx"
+  [ -s "$UNIT_RESET_MARKER" ] || fail "Unit Reset frontend marker is missing: $UNIT_RESET_MARKER"
+  grep -Fq 'function getLmsBaseUrl()' "$UNIT_RESET_MARKER" || fail "Unit Reset marker file does not contain the expected implementation"
+  log "Learning Unit Reset source: branch=$LEARNING_CURRENT_BRANCH commit=$(git -C "$LEARNING_REPO" rev-parse HEAD)"
+else
+  warn "FPT_UI_SKIP_LEARNING_GUARD=1: custom Learning/Unit Reset source protection is bypassed"
+  LEARNING_REPO_REAL=""
+fi
 
-if [ "$MOUNT_FOUND" -ne 1 ]; then
+mount_is_configured() {
+  local expected_real="$1"
+  while IFS= read -r mount_name; do
+    [ -n "$mount_name" ] || continue
+    if [ "$(readlink -f "$mount_name" 2>/dev/null || true)" = "$expected_real" ]; then
+      return 0
+    fi
+  done < <(tutor mounts list 2>/dev/null | sed -n 's/^- name: //p')
+  return 1
+}
+
+if ! mount_is_configured "$REPO_ROOT_REAL"; then
   log "Adding edx-platform source mount: $REPO_ROOT"
   tutor mounts add "$REPO_ROOT"
 else
   log "edx-platform source mount already configured"
+fi
+
+if [ "$SKIP_LEARNING_GUARD" != "1" ]; then
+  if ! mount_is_configured "$LEARNING_REPO_REAL"; then
+    log "Adding custom Learning build mount: $LEARNING_REPO"
+    tutor mounts add "$LEARNING_REPO"
+  else
+    log "custom Learning build mount already configured"
+  fi
 fi
 
 mkdir -p "$PLUGIN_ROOT"
@@ -194,4 +229,4 @@ print('[fpt-ui] Generated Authn patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
-log "Setup OK: tested baseline, clean source, plugins linked, assets vendored, patch ordering verified, environment rendered"
+log "Setup OK: tested baseline, clean source, Unit Reset Learning mount, plugins linked, assets vendored, patch ordering verified, environment rendered"
