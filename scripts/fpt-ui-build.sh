@@ -4,6 +4,11 @@ set -euo pipefail
 log() { printf '[fpt-ui-build] %s\n' "$*"; }
 fail() { printf '[fpt-ui-build] ERROR: %s\n' "$*" >&2; exit 1; }
 
+command -v git >/dev/null 2>&1 || fail "git is required"
+command -v tutor >/dev/null 2>&1 || fail "Tutor is not available in PATH"
+command -v docker >/dev/null 2>&1 || fail "docker is required"
+docker info >/dev/null 2>&1 || fail "Docker daemon is not reachable by the current user"
+
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$REPO_ROOT" ] || fail "Run this script from inside the CMS-FPT repository"
 
@@ -13,6 +18,8 @@ if [ "${1:-}" = "--restart" ]; then
 elif [ -n "${1:-}" ]; then
   fail "Unknown argument: $1 (supported: --restart)"
 fi
+
+log "Source commit: $(git -C "$REPO_ROOT" rev-parse HEAD)"
 
 log "Static/fixture validation"
 bash "$REPO_ROOT/scripts/fpt-ui-validate-static.sh"
@@ -80,18 +87,24 @@ if [ "$RESTART" -eq 1 ]; then
   tutor local status
 
   LMS_HOST="$(tutor config printvalue LMS_HOST)"
+  MFE_HOST="$(tutor config printvalue MFE_HOST 2>/dev/null || true)"
   ENABLE_HTTPS="$(tutor config printvalue ENABLE_HTTPS 2>/dev/null || echo false)"
+  [ -n "$LMS_HOST" ] || fail "Could not resolve LMS_HOST after restart"
+  [ -n "$MFE_HOST" ] || fail "Could not resolve MFE_HOST after restart"
+
   if [ "$ENABLE_HTTPS" = "true" ] || [ "$ENABLE_HTTPS" = "True" ]; then
     LMS_URL="https://$LMS_HOST"
+    MFE_URL="https://$MFE_HOST"
   else
     LMS_URL="http://$LMS_HOST"
+    MFE_URL="http://$MFE_HOST"
   fi
 
-  log "Post-restart smoke test: $LMS_URL"
-  bash "$REPO_ROOT/scripts/fpt-ui-smoke.sh" "$LMS_URL"
+  log "Post-restart smoke test: LMS=$LMS_URL MFE=$MFE_URL"
+  bash "$REPO_ROOT/scripts/fpt-ui-smoke.sh" "$LMS_URL" "$MFE_URL"
 fi
 
 log "BUILD VERIFIED: openedx + mfe"
 if [ "$RESTART" -ne 1 ]; then
-  log "Run with --restart when ready; --restart will also run post-deploy smoke checks"
+  log "Run with --restart when ready; --restart will also run LMS + MFE post-deploy smoke checks"
 fi
