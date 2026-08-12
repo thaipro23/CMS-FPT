@@ -108,7 +108,13 @@ def _fpt_brand_all_mfes(mfes: dict[str, MFE_ATTRS_TYPE]) -> dict[str, MFE_ATTRS_
     return mfes
 
 
+# Keep the large legacy branding patch stable and compose small, fail-closed
+# accessibility/contact refinements after it. Both render into one Docker hook.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
-    _jinja_raw(_read_patch("openedx.patch")),
+    _jinja_raw(
+        _read_patch("openedx.patch")
+        + "\n"
+        + _read_patch("openedx_polish.patch")
+    ),
 ))
