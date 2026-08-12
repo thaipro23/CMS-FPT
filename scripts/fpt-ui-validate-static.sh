@@ -49,7 +49,7 @@ Path(sys.argv[1]).write_text(code, encoding='utf-8')
 PY
 node --check "$TMP_DIR/authn.js"
 
-log "Applying Authn patch to an isolated fixture"
+log "Applying Authn patch twice to an isolated fixture"
 FIXTURE_APP="$TMP_DIR/openedx/app"
 mkdir -p "$FIXTURE_APP/src/base-container/components/default-layout"
 printf '/* fixture */\n' > "$FIXTURE_APP/src/index.scss"
@@ -63,6 +63,7 @@ source = source.replace('/openedx/app/src/base-container/components/default-layo
 source = source.replace('/openedx/app/src/index.scss', root + '/src/index.scss')
 Path(sys.argv[2]).write_text(source, encoding='utf-8')
 PY
+node "$TMP_DIR/authn-fixture.js"
 node "$TMP_DIR/authn-fixture.js"
 
 python - "$FIXTURE_APP" <<'PY'
@@ -104,13 +105,15 @@ required = [
 for marker in required:
     if marker not in scss:
         raise SystemExit(f'missing Authn responsive/geometry marker: {marker}')
+if scss.count('FPT Polytechnic V8 production branding overlay') != 1:
+    raise SystemExit('Authn CSS overlay is not idempotent')
 if 'right:18px' in scss or '95.8% 100%' in scss:
     raise SystemExit('legacy unsynchronised blue/wedge geometry is still present')
 if scss.count('background:var(--fpt-accent);') != 1:
     raise SystemExit('orange wedge fill must be emitted exactly once')
 if scss.count('calc(100% - var(--fpt-auth-wedge-top)) 0') != 1:
     raise SystemExit('desktop orange wedge polygon must be emitted exactly once')
-print('[fpt-ui-static] Authn fixture + shared-edge geometry PASS')
+print('[fpt-ui-static] Authn fixture/idempotence + shared-edge geometry PASS')
 PY
 
 log "Extracting, compiling and applying Open edX patch twice"
@@ -167,7 +170,7 @@ if 'fpt-lms-footer' not in footer or 'fpt-polytechnic-logo.png' not in footer:
 print('[fpt-ui-static] Open edX fixture/idempotence PASS')
 PY
 
-log "Checking plugin/runtime production guardrails"
+log "Checking plugin/runtime/setup production guardrails"
 python - <<'PY'
 from pathlib import Path
 
@@ -175,17 +178,23 @@ plugin = Path('tutor-plugins/fpt_indigo_ui.py').read_text(encoding='utf-8')
 authn = Path('fpt_indigo_ui/patches/authn.patch').read_text(encoding='utf-8')
 runtime = Path('fpt_indigo_ui/patches/runtime.patch').read_text(encoding='utf-8')
 openedx = Path('fpt_indigo_ui/patches/openedx.patch').read_text(encoding='utf-8')
+setup = Path('scripts/fpt-ui-setup.sh').read_text(encoding='utf-8')
 
 checks = [
     ('mfe-dockerfile-pre-npm-build-authn' in plugin, 'safe Authn pre-build hook missing'),
     ('mfe-dockerfile-post-npm-install-authn' not in plugin, 'unsafe Authn post-install hook present'),
     ("import React from 'react';" in plugin, 'runtime JSX React import missing'),
     ('getConfig as getFptConfig' in plugin, 'runtime getConfig alias missing'),
+    ('MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' in plugin, 'tested Authn DefaultLayout pin missing'),
     (authn.count("import React from 'react';") == 3, 'Authn React imports must be exactly three'),
     (authn.count('<div className="fpt-auth-wedge"') == 1, 'single-wedge contract violated'),
     ('useEffect(' not in runtime and 'getConfig()' not in runtime, 'unscoped runtime dependency present'),
     ('getFptConfig()' in runtime, 'runtime scoped config alias unused'),
     (openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') == 4, 'vendored asset COPY count must be four'),
+    ('EXPECTED_COMMON_VERSION="release/ulmo.3"' in setup, 'Ulmo.3 baseline guard missing'),
+    ('FPT_UI_ALLOW_UNTESTED_BASELINE' in setup, 'explicit compatibility-test override missing'),
+    ('git -C "$REPO_ROOT" diff --quiet' in setup, 'dirty tracked source guard missing'),
+    ('frontend-app-authn.git#release/ulmo.3' in setup, 'generated Authn source tag guard missing'),
 ]
 for ok, message in checks:
     if not ok:
