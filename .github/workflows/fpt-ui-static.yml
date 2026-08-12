@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - 'tutor-plugins/fpt_indigo_ui.py'
+      - 'openedx_unit_reset/**'
       - 'fpt_indigo_ui/**'
       - 'scripts/fpt-ui-*.sh'
       - '.github/workflows/fpt-ui-static.yml'
@@ -27,6 +28,15 @@ jobs:
           python --version
           node --version
           bash --version | head -n1
+          shellcheck --version
+
+      - name: ShellCheck deployment scripts
+        run: |
+          shellcheck \
+            scripts/fpt-ui-setup.sh \
+            scripts/fpt-ui-build.sh \
+            scripts/fpt-ui-smoke.sh \
+            scripts/fpt-ui-validate-static.sh
 
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
