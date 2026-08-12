@@ -26,8 +26,6 @@ EXPECTED_ASSETS=(
 log "Repository: $REPO_ROOT"
 log "Tutor plugin root: $PLUGIN_ROOT"
 
-# One-time migration for older UAT layouts. Fresh clones should already contain
-# all four assets in Git under fpt_indigo_ui/assets.
 mkdir -p "$ASSET_DIR"
 if [ -d "$LEGACY_ASSET_DIR" ]; then
   for name in "${EXPECTED_ASSETS[@]}"; do
@@ -46,7 +44,6 @@ if command -v file >/dev/null 2>&1; then
   file "$ASSET_DIR"/*
 fi
 
-# Production guardrails for the approved source mapping.
 PATCH_DIR="$REPO_ROOT/fpt_indigo_ui/patches"
 AUTHN_PATCH="$PATCH_DIR/authn.patch"
 OPENEDX_PATCH="$PATCH_DIR/openedx.patch"
@@ -62,12 +59,24 @@ import sys
 plugin, authn, openedx, runtime = [Path(x).read_text(encoding='utf-8') for x in sys.argv[1:]]
 if '_read_patch("authn.patch")' not in plugin or '_read_patch("openedx.patch")' not in plugin:
     raise SystemExit('Tutor plugin is not loading modular FPT patch sources')
+if 'mfe-dockerfile-pre-npm-build-authn' not in plugin:
+    raise SystemExit('Authn patch must run at pre-npm-build after source copy')
+if 'mfe-dockerfile-post-npm-install-authn' in plugin:
+    raise SystemExit('obsolete Authn post-npm-install hook is still registered')
+if 'getConfig as getFptConfig' not in plugin:
+    raise SystemExit('MFE runtime getConfig import is missing')
 if "RUN node - <<'JS2'" not in authn:
     raise SystemExit('Authn patch must use Node.js')
 if "RUN python - <<'PY2'" in authn:
     raise SystemExit('Authn patch still contains Python heredoc')
+if authn.count('<div className="fpt-auth-wedge"') != 1:
+    raise SystemExit('Authn must contain exactly one orange wedge element')
 if '.fpt-auth-wedge' not in authn or 'clip-path:polygon' not in authn:
     raise SystemExit('approved single-wedge CSS is missing')
+if 'useEffect(' in runtime or 'getConfig()' in runtime:
+    raise SystemExit('runtime patch contains unscoped React/getConfig dependency')
+if 'getFptConfig()' not in runtime:
+    raise SystemExit('runtime patch is not using the FPT-scoped getConfig alias')
 if openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') != 4:
     raise SystemExit('expected exactly four vendored FPT asset COPY statements')
 if 'FptHeaderLogo' not in runtime or 'FptFooter' not in runtime:
@@ -77,7 +86,6 @@ if any('curl ' in data.lower() for data in (plugin, authn, openedx, runtime)):
 print('[fpt-ui] Source guardrails PASS')
 PYGUARD
 
-# Ensure the canonical edx-platform checkout is exposed as Tutor build context.
 MOUNT_FOUND=0
 while IFS= read -r mount_name; do
   [ -n "$mount_name" ] || continue
@@ -130,11 +138,25 @@ if grep -Eq 'curl .*(caodang\.fpt\.edu\.vn|seeklogo\.com|wikimedia\.org|chungta\
   fail "Generated Open edX Dockerfile downloads FPT assets from the Internet"
 fi
 
-# Tutor MFE output path changes across versions, so discover the generated
-# Dockerfile by the unique FPT Authn marker instead of assuming one path.
 MFE_DOCKERFILE="$(grep -RIl --include='Dockerfile' 'FPT Polytechnic V8 production branding overlay' "$HOME/.local/share/tutor/env" 2>/dev/null | head -n1 || true)"
 [ -n "$MFE_DOCKERFILE" ] || fail "Could not find generated MFE Dockerfile containing the FPT Authn patch"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
-log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
 
-log "Setup OK: plugins linked, assets vendored, Authn Node patch verified, environment rendered"
+python - "$MFE_DOCKERFILE" <<'PYORDER'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding='utf-8')
+common = text.find('######## authn (common)')
+source_copy = text.find('COPY --from=authn-src / /openedx/app', common)
+marker = text.find('FPT Polytechnic V8 production branding overlay', common)
+dev = text.find('######## authn (dev)', common)
+if min(common, source_copy, marker, dev) < 0:
+    raise SystemExit('could not resolve Authn stage/patch markers in generated MFE Dockerfile')
+if not (common < source_copy < marker < dev):
+    raise SystemExit('Authn patch ordering is unsafe: FPT patch must be after authn-src COPY and before authn build')
+print('[fpt-ui] Generated Authn patch ordering PASS')
+PYORDER
+
+log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
+log "Setup OK: plugins linked, assets vendored, patch ordering verified, environment rendered"
