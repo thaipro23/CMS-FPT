@@ -1,0 +1,43 @@
+
+# Small post-patch refinements kept separate from the main legacy branding block.
+# Fail closed if the expected FPT markup changes unexpectedly.
+RUN python - <<'PY3'
+from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    if new in text:
+        return text
+    if old not in text:
+        raise RuntimeError(f"FPT UI polish target not found: {label}")
+    return text.replace(old, new, 1)
+
+
+courses = Path('/openedx/themes/indigo/lms/templates/courseware/courses.html')
+if courses.exists():
+    text = courses.read_text(encoding='utf-8')
+    text = replace_once(
+        text,
+        'role="tablist" aria-label="Chọn slide"',
+        'role="group" aria-label="Chọn slide"',
+        'hero navigation semantics',
+    )
+    text = replace_once(
+        text,
+        "root.addEventListener('focusin',stop);root.addEventListener('focusout',start);",
+        "root.addEventListener('focusin',stop);root.addEventListener('focusout',function(e){if(!root.contains(e.relatedTarget)){start()}});",
+        'hero focus/autoplay behavior',
+    )
+    courses.write_text(text, encoding='utf-8')
+
+footer = Path('/openedx/themes/indigo/lms/templates/footer.html')
+if footer.exists():
+    text = footer.read_text(encoding='utf-8')
+    text = replace_once(
+        text,
+        '<div><strong class="fpt-lms-footer__title">Trụ sở chính</strong><p>Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br/>Phường Xuân Phương, TP Hà Nội</p></div>',
+        '<div><strong class="fpt-lms-footer__title">FPT Polytechnic Hà Nội</strong><p>Cổng Ong, Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc,<br/>phường Xuân Phương, TP Hà Nội</p></div>',
+        'official FPT Polytechnic Hanoi contact wording',
+    )
+    footer.write_text(text, encoding='utf-8')
+PY3
