@@ -41,10 +41,17 @@ MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
 ))
 
-# Large patch bodies are kept as reviewable source files in Git instead of one
-# giant Python string. Tutor still receives the exact same rendered patches.
+# Runtime widgets need the LMS URL but must not depend on another theme/plugin
+# to import getConfig for us. Alias it to avoid collisions with other plugins.
 hooks.Filters.ENV_PATCHES.add_item((
-    "mfe-dockerfile-post-npm-install-authn",
+    "mfe-env-config-buildtime-imports",
+    _jinja_raw("import { getConfig as getFptConfig } from '@edx/frontend-platform';"),
+))
+
+# Authn source is copied into /openedx/app after npm install in Tutor MFE 21.x.
+# Apply our files at pre-npm-build so they cannot be overwritten by that copy.
+hooks.Filters.ENV_PATCHES.add_item((
+    "mfe-dockerfile-pre-npm-build-authn",
     _jinja_raw(_read_patch("authn.patch")),
 ))
 
