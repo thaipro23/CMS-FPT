@@ -3,6 +3,7 @@ set -euo pipefail
 
 log() { printf '[fpt-ui] %s\n' "$*"; }
 fail() { printf '[fpt-ui] ERROR: %s\n' "$*" >&2; exit 1; }
+warn() { printf '[fpt-ui] WARN: %s\n' "$*" >&2; }
 
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v tutor >/dev/null 2>&1 || fail "Tutor is not available in PATH. Activate the Tutor virtualenv first."
@@ -16,6 +17,33 @@ PLUGIN_ROOT="$(tutor plugins printroot)"
 ASSET_DIR="$REPO_ROOT/fpt_indigo_ui/assets"
 LEGACY_ASSET_DIR="$REPO_ROOT/tutor-plugins/fpt-assets"
 FPT_PLUGIN="$REPO_ROOT/tutor-plugins/fpt_indigo_ui.py"
+ALLOW_UNTESTED_BASELINE="${FPT_UI_ALLOW_UNTESTED_BASELINE:-0}"
+EXPECTED_COMMON_VERSION="release/ulmo.3"
+
+log "Repository: $REPO_ROOT"
+log "Tutor root: $TUTOR_ROOT"
+log "Tutor plugin root: $PLUGIN_ROOT"
+
+# Never build a production-like image from tracked source that differs from the
+# checked-out commit. Untracked operational files are intentionally ignored.
+if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
+  fail "Tracked source has local modifications. Commit/stash them before building FPT UI."
+fi
+
+COMMON_VERSION="$(tutor config printvalue OPENEDX_COMMON_VERSION 2>/dev/null || true)"
+TUTOR_VERSION_RAW="$(tutor --version 2>/dev/null || true)"
+log "Open edX common version: ${COMMON_VERSION:-unknown}"
+log "Tutor version: ${TUTOR_VERSION_RAW:-unknown}"
+
+if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
+  [ "$COMMON_VERSION" = "$EXPECTED_COMMON_VERSION" ] || fail "FPT UI is validated for OPENEDX_COMMON_VERSION=$EXPECTED_COMMON_VERSION, found '${COMMON_VERSION:-unknown}'. Set FPT_UI_ALLOW_UNTESTED_BASELINE=1 only for an intentional compatibility test."
+  case "$TUTOR_VERSION_RAW" in
+    *"21."*) ;;
+    *) fail "FPT UI is validated on Tutor 21.x, found '${TUTOR_VERSION_RAW:-unknown}'. Set FPT_UI_ALLOW_UNTESTED_BASELINE=1 only for an intentional compatibility test." ;;
+  esac
+else
+  warn "FPT_UI_ALLOW_UNTESTED_BASELINE=1: baseline compatibility guards are bypassed"
+fi
 
 EXPECTED_ASSETS=(
   fpt-polytechnic-logo.png
@@ -23,10 +51,6 @@ EXPECTED_ASSETS=(
   fpt-campus-primary.jpg
   fpt-campus-secondary.jpg
 )
-
-log "Repository: $REPO_ROOT"
-log "Tutor root: $TUTOR_ROOT"
-log "Tutor plugin root: $PLUGIN_ROOT"
 
 mkdir -p "$ASSET_DIR"
 if [ -d "$LEGACY_ASSET_DIR" ]; then
@@ -67,6 +91,8 @@ if 'mfe-dockerfile-post-npm-install-authn' in plugin:
     raise SystemExit('obsolete Authn post-npm-install hook is still registered')
 if "import React from 'react';" not in plugin or 'getConfig as getFptConfig' not in plugin:
     raise SystemExit('MFE runtime React/getConfig imports are incomplete')
+if 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' not in plugin:
+    raise SystemExit('Authn must be pinned to the tested DefaultLayout')
 if "RUN node - <<'JS2'" not in authn:
     raise SystemExit('Authn patch must use Node.js')
 if "RUN python - <<'PY2'" in authn:
@@ -147,6 +173,10 @@ MFE_DOCKERFILE="$TUTOR_ROOT/env/plugins/mfe/build/mfe/Dockerfile"
 grep -Fq 'FPT Polytechnic V8 production branding overlay' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn patch"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
 
+if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
+  grep -Fq 'ADD --keep-git-dir=true https://github.com/openedx/frontend-app-authn.git#release/ulmo.3 .' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile is not sourcing Authn from release/ulmo.3"
+fi
+
 python - "$MFE_DOCKERFILE" <<'PYORDER'
 from pathlib import Path
 import sys
@@ -164,4 +194,4 @@ print('[fpt-ui] Generated Authn patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
-log "Setup OK: plugins linked, assets vendored, patch ordering verified, environment rendered"
+log "Setup OK: tested baseline, clean source, plugins linked, assets vendored, patch ordering verified, environment rendered"
