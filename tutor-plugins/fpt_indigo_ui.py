@@ -6,21 +6,20 @@ from tutormfe.hooks import MFE_APPS, MFE_ATTRS_TYPE, PLUGIN_SLOTS
 FPT_PRIMARY = "#0B3B82"
 FPT_ACCENT = "#F97316"
 
-# Asset sources selected for the FPT branding layer.
-# Logo shape/usage was checked against FPT Polytechnic's official 2024 logo guideline.
-# The banner photographs below are hosted by the official FPT Polytechnic website.
 FPT_LOGO_SOURCE = "https://images.seeklogo.com/logo-png/64/1/cao-ng-fpt-polytechnic-logo-png_seeklogo-648612.png"
 FPT_BANNER_STUDENTS_SOURCE = "https://caodang.fpt.edu.vn/wp-content/uploads/H1-113.jpg"
 FPT_BANNER_HANOI_SOURCE = "https://caodang.fpt.edu.vn/wp-content/uploads/1-255.jpg"
 FPT_BANNER_CAMPUS_SOURCE = "https://caodang.fpt.edu.vn/wp-content/uploads/Nhiep-anh-cong-trinh_03_TOA-NHA-FPL-HCM-1.jpg"
 
 
-# -----------------------------------------------------------------------------
-# Runtime config
-# -----------------------------------------------------------------------------
+def _jinja_raw(text: str) -> str:
+    """Protect JSX/CSS braces from Tutor/Jinja patch rendering."""
+    return "{% raw %}\n" + text + "\n{% endraw %}"
+
+
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-lms-common-settings",
-    f"""
+    _jinja_raw(f"""
 MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = False
 MFE_CONFIG["INDIGO_FOOTER_NAV_LINKS"] = []
 MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
@@ -28,17 +27,13 @@ MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
 MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
 MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
-""",
+"""),
 ))
 
 
-# -----------------------------------------------------------------------------
-# Authn MFE
-# Keep upstream form + FEID/SSO logic, change only branding/layout presentation.
-# -----------------------------------------------------------------------------
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-post-npm-install-authn",
-    r"""
+    _jinja_raw(r"""
 RUN python - <<'PY2'
 from pathlib import Path
 
@@ -49,7 +44,6 @@ if messages.exists():
     text = text.replace("defaultMessage: 'with {siteName}'", "defaultMessage: '{siteName}'")
     messages.write_text(text, encoding='utf-8')
 
-# Desktop login hero: use a real FPT Polytechnic student photo served locally by LMS.
 large = Path('/openedx/app/src/base-container/components/default-layout/LargeLayout.jsx')
 if large.exists():
     text = large.read_text(encoding='utf-8')
@@ -61,10 +55,8 @@ if large.exists():
           }}
         >'''
     if needle in text and 'fpt-auth-photo' not in text:
-        text = text.replace(needle, replacement, 1)
-        large.write_text(text, encoding='utf-8')
+        large.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
 
-# Tablet login hero uses the same official photo while preserving upstream layout.
 medium = Path('/openedx/app/src/base-container/components/default-layout/MediumLayout.jsx')
 if medium.exists():
     text = medium.read_text(encoding='utf-8')
@@ -76,11 +68,11 @@ if medium.exists():
           }}
         >'''
     if needle in text and 'fpt-auth-photo' not in text:
-        text = text.replace(needle, replacement, 1)
-        medium.write_text(text, encoding='utf-8')
+        medium.write_text(text.replace(needle, replacement, 1), encoding='utf-8')
 
 scss = Path('/openedx/app/src/index.scss')
 if scss.exists():
+    marker = 'FPT Polytechnic branding overlay'
     branding = '''
 /* FPT Polytechnic branding overlay. Authentication behavior remains upstream. */
 :root { --fpt-primary:#0B3B82; --fpt-primary-dark:#072B61; --fpt-accent:#F97316; }
@@ -111,23 +103,21 @@ if scss.exists():
   box-shadow:0 18px 48px rgba(11,59,130,.08);
   padding:32px;
 }
-@media (max-width: 767.98px) {
+@media (max-width:767.98px) {
   #main-content { padding:22px; border-radius:14px; }
 }
 '''
-    if 'FPT Polytechnic branding overlay' not in scss.read_text(encoding='utf-8'):
-        scss.write_text(scss.read_text(encoding='utf-8') + '\n' + branding, encoding='utf-8')
+    current = scss.read_text(encoding='utf-8')
+    if marker not in current:
+        scss.write_text(current + '\n' + branding, encoding='utf-8')
 PY2
-""",
+"""),
 ))
 
 
-# -----------------------------------------------------------------------------
-# Runtime React components for Indigo MFE slots
-# -----------------------------------------------------------------------------
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-runtime-definitions",
-    r"""
+    _jinja_raw(r"""
 const getFptAsset = (name) => `${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/${name}`;
 
 const FptInlineLogo = ({ compact = false }) => (
@@ -155,7 +145,7 @@ const FptHeaderLogo = () => {
 
 const FptFooter = () => {
   useEffect(() => {
-    ['selected-paragon-theme-variant', 'selected-theme-variant'].forEach(name => {
+    ['selected-paragon-theme-variant', 'selected-theme-variant'].forEach((name) => {
       window.localStorage.setItem(name, 'light');
     });
     document.documentElement.setAttribute('data-paragon-theme-variant', 'light');
@@ -163,108 +153,85 @@ const FptFooter = () => {
   }, []);
 
   return (
-    <footer style={{ borderTop: '1px solid #E7EBF2', background: '#fff', marginTop: 40 }}>
-      <div className="container-fluid" style={{ maxWidth: 1320, padding: '34px 24px 26px' }}>
-        <div className="fpt-footer-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(220px,1fr) minmax(220px,1fr) minmax(280px,1.4fr)', gap: 32 }}>
+    <footer className="fpt-ui-footer">
+      <div className="container-fluid fpt-ui-footer__container">
+        <div className="fpt-ui-footer__grid">
           <div><FptInlineLogo /></div>
           <div>
-            <div style={{ color: '#0B3B82', fontWeight: 800, marginBottom: 10 }}>THÔNG TIN LIÊN HỆ</div>
-            <a href="mailto:caodang@fpt.edu.vn" style={{ color: '#26364A', textDecoration: 'none' }}>caodang@fpt.edu.vn</a>
+            <div className="fpt-ui-footer__title">THÔNG TIN LIÊN HỆ</div>
+            <a href="mailto:caodang@fpt.edu.vn">caodang@fpt.edu.vn</a>
           </div>
           <div>
-            <div style={{ color: '#0B3B82', fontWeight: 800, marginBottom: 10 }}>Trụ sở chính</div>
-            <div style={{ color: '#445468', lineHeight: 1.7 }}>
-              Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br />Phường Xuân Phương, TP Hà Nội
-            </div>
+            <div className="fpt-ui-footer__title">Trụ sở chính</div>
+            <div className="fpt-ui-footer__address">Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br />Phường Xuân Phương, TP Hà Nội</div>
           </div>
         </div>
-        <div style={{ borderTop: '1px solid #EEF1F5', marginTop: 26, paddingTop: 18, color: '#718096', fontSize: 13, textAlign: 'center' }}>
-          © FPT Polytechnic. All rights reserved.
-        </div>
+        <div className="fpt-ui-footer__copyright">© FPT Polytechnic. All rights reserved.</div>
       </div>
-      <style>{`@media(max-width:767px){.fpt-footer-grid{grid-template-columns:1fr !important;gap:22px !important;}}`}</style>
+      <style>{`
+        .fpt-ui-footer{border-top:1px solid #E7EBF2;background:#fff;margin-top:40px}
+        .fpt-ui-footer__container{max-width:1320px;padding:34px 24px 26px}
+        .fpt-ui-footer__grid{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr) minmax(280px,1.4fr);gap:32px}
+        .fpt-ui-footer__title{color:#0B3B82;font-weight:800;margin-bottom:10px}
+        .fpt-ui-footer a{color:#26364A;text-decoration:none}
+        .fpt-ui-footer__address{color:#445468;line-height:1.7}
+        .fpt-ui-footer__copyright{border-top:1px solid #EEF1F5;margin-top:26px;padding-top:18px;color:#718096;font-size:13px;text-align:center}
+        @media(max-width:767px){.fpt-ui-footer__grid{grid-template-columns:1fr;gap:22px}}
+      `}</style>
     </footer>
   );
 };
 
 const FptLearnerBanner = () => (
-  <div style={{
-    position: 'relative',
-    overflow: 'hidden',
-    minHeight: 150,
-    border: '1px solid #E6ECF5',
-    borderRadius: 14,
-    marginBottom: 24,
-    boxShadow: '0 8px 24px rgba(11,59,130,.05)',
-    background: `linear-gradient(90deg, rgba(255,255,255,.98) 0%, rgba(255,247,237,.94) 58%, rgba(255,247,237,.18) 100%), url(${getFptAsset('fpt-hanoi-campus.jpg')}) center 43% / cover no-repeat`,
-  }}>
-    <div style={{ maxWidth: 650, padding: '28px 30px', position: 'relative', zIndex: 1 }}>
-      <div style={{ color: '#0B3B82', fontSize: 24, fontWeight: 800, marginBottom: 6 }}>Tiếp tục hành trình học tập</div>
-      <div style={{ color: '#58677A', lineHeight: 1.55 }}>Chọn một khóa học bên dưới để tiếp tục học tập trên FPT Polytechnic.</div>
+  <div className="fpt-learner-banner">
+    <div className="fpt-learner-banner__content">
+      <div className="fpt-learner-banner__title">Tiếp tục hành trình học tập</div>
+      <div className="fpt-learner-banner__text">Chọn một khóa học bên dưới để tiếp tục học tập trên FPT Polytechnic.</div>
     </div>
+    <style>{`
+      .fpt-learner-banner{position:relative;overflow:hidden;min-height:150px;border:1px solid #E6ECF5;border-radius:14px;margin-bottom:24px;box-shadow:0 8px 24px rgba(11,59,130,.05);background:linear-gradient(90deg,rgba(255,255,255,.98) 0%,rgba(255,247,237,.94) 58%,rgba(255,247,237,.18) 100%),url(${getFptAsset('fpt-hanoi-campus.jpg')}) center 43%/cover no-repeat}
+      .fpt-learner-banner__content{max-width:650px;padding:28px 30px;position:relative;z-index:1}
+      .fpt-learner-banner__title{color:#0B3B82;font-size:24px;font-weight:800;margin-bottom:6px}
+      .fpt-learner-banner__text{color:#58677A;line-height:1.55}
+    `}</style>
   </div>
 );
-""",
+"""),
 ))
 
 
 FPT_FOOTER_SLOT = (
     "org.openedx.frontend.layout.footer.v1",
-    r"""
+    """
     { op: PLUGIN_OPERATIONS.Hide, widgetId: 'indigo_footer' },
     { op: PLUGIN_OPERATIONS.Hide, widgetId: 'default_contents' },
-    {
-      op: PLUGIN_OPERATIONS.Insert,
-      widget: {
-        id: 'fpt_footer',
-        type: DIRECT_PLUGIN,
-        priority: 100,
-        RenderWidget: FptFooter,
-      },
-    },
+    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_footer', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptFooter } },
 """,
 )
 
 FPT_LOGO_SLOT = (
     "logo_slot",
-    r"""
+    """
     { op: PLUGIN_OPERATIONS.Hide, widgetId: 'custom_logo' },
     { op: PLUGIN_OPERATIONS.Hide, widgetId: 'default_contents' },
-    {
-      op: PLUGIN_OPERATIONS.Insert,
-      widget: {
-        id: 'fpt_logo',
-        type: DIRECT_PLUGIN,
-        priority: 100,
-        RenderWidget: FptHeaderLogo,
-      },
-    },
+    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_logo', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptHeaderLogo } },
 """,
 )
 
 FPT_HIDE_THEME_TOGGLE = (
     "desktop_secondary_menu_slot",
-    r"""{ op: PLUGIN_OPERATIONS.Hide, widgetId: 'theme_switch_button' },""",
+    "{ op: PLUGIN_OPERATIONS.Hide, widgetId: 'theme_switch_button' },",
 )
 
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
     PLUGIN_SLOTS.add_item((_mfe, *FPT_HIDE_THEME_TOGGLE))
 
-# Insert only; default Indigo CourseList remains intact.
 PLUGIN_SLOTS.add_item((
     "learner-dashboard",
     "org.openedx.frontend.learner_dashboard.course_list.v1",
-    r"""
-    {
-      op: PLUGIN_OPERATIONS.Insert,
-      widget: {
-        id: 'fpt_learner_banner',
-        type: DIRECT_PLUGIN,
-        priority: 1,
-        RenderWidget: FptLearnerBanner,
-      },
-    },
+    """
+    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_learner_banner', type: DIRECT_PLUGIN, priority: 1, RenderWidget: FptLearnerBanner } },
 """,
 ))
 
@@ -276,14 +243,9 @@ def _fpt_brand_all_mfes(mfes: dict[str, MFE_ATTRS_TYPE]) -> dict[str, MFE_ATTRS_
     return mfes
 
 
-# -----------------------------------------------------------------------------
-# Open edX/Indigo legacy LMS assets + Course Discovery hero + footer.
-# The external assets are downloaded ONCE while building the openedx image and
-# then served locally from /static/indigo/images/fpt/. No production hotlinking.
-# -----------------------------------------------------------------------------
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
-    f"""
+    _jinja_raw(f"""
 RUN mkdir -p /openedx/staticfiles/indigo/images/fpt \\
     && curl -fL --retry 3 -A 'Mozilla/5.0' '{FPT_LOGO_SOURCE}' -o /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png \\
     && curl -fL --retry 3 -A 'Mozilla/5.0' '{FPT_BANNER_STUDENTS_SOURCE}' -o /openedx/staticfiles/indigo/images/fpt/fpt-students.jpg \\
@@ -318,26 +280,13 @@ if courses.exists():
 @media(max-width:900px){{.fpt-slide__photo{{inset:0;opacity:.34}}.fpt-slide__photo:after{{background:linear-gradient(90deg,rgba(11,59,130,.98),rgba(11,59,130,.68))}}.fpt-slide__content{{width:78%;padding-left:6%}}.fpt-slide h1{{font-size:34px}}}}
 @media(max-width:600px){{.fpt-hero,.fpt-slide{{min-height:300px}}.fpt-slide__content{{width:100%;padding:38px 24px 55px}}.fpt-slide h1{{font-size:30px}}.fpt-slide p{{font-size:16px}}}}
 </style>
-<div class="fpt-slide is-active">
-  <div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-students.jpg" alt="Sinh viên FPT Polytechnic"></div>
-  <div class="fpt-slide__content"><h1>Học tập cùng FPT Polytechnic</h1><p>Nâng cao kiến thức, phát triển kỹ năng và tiếp tục hành trình học tập trên nền tảng số.</p><a href="#discovery-form">Khám phá khóa học</a></div>
-</div>
-<div class="fpt-slide">
-  <div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-hanoi-campus.jpg" alt="FPT Polytechnic Hà Nội"></div>
-  <div class="fpt-slide__content"><h1>Học mọi lúc, mọi nơi</h1><p>Truy cập khóa học, nội dung và hoạt động học tập thuận tiện trên nhiều thiết bị.</p><a href="#discovery-form">Tìm khóa học</a></div>
-</div>
-<div class="fpt-slide">
-  <div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-campus.jpg" alt="Không gian FPT Polytechnic"></div>
-  <div class="fpt-slide__content"><h1>Sẵn sàng cho tương lai</h1><p>Môi trường học tập hiện đại, tập trung vào trải nghiệm sinh viên và năng lực nghề nghiệp.</p><a href="#discovery-form">Bắt đầu ngay</a></div>
-</div>
-<div class="fpt-hero__nav">
-  <button class="fpt-dot is-active" type="button" aria-label="Slide 1"></button>
-  <button class="fpt-dot" type="button" aria-label="Slide 2"></button>
-  <button class="fpt-dot" type="button" aria-label="Slide 3"></button>
-</div>
+<div class="fpt-slide is-active"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-students.jpg" alt="Sinh viên FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Học tập cùng FPT Polytechnic</h1><p>Nâng cao kiến thức, phát triển kỹ năng và tiếp tục hành trình học tập trên nền tảng số.</p><a href="#discovery-form">Khám phá khóa học</a></div></div>
+<div class="fpt-slide"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-hanoi-campus.jpg" alt="FPT Polytechnic Hà Nội"></div><div class="fpt-slide__content"><h1>Học mọi lúc, mọi nơi</h1><p>Truy cập khóa học, nội dung và hoạt động học tập thuận tiện trên nhiều thiết bị.</p><a href="#discovery-form">Tìm khóa học</a></div></div>
+<div class="fpt-slide"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-campus.jpg" alt="Không gian FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Sẵn sàng cho tương lai</h1><p>Môi trường học tập hiện đại, tập trung vào trải nghiệm sinh viên và năng lực nghề nghiệp.</p><a href="#discovery-form">Bắt đầu ngay</a></div></div>
+<div class="fpt-hero__nav"><button class="fpt-dot is-active" type="button" aria-label="Slide 1"></button><button class="fpt-dot" type="button" aria-label="Slide 2"></button><button class="fpt-dot" type="button" aria-label="Slide 3"></button></div>
 <script>
 (function(){{
-  var root=document.getElementById('fpt-hero-slider'); if(!root)return;
+  var root=document.getElementById('fpt-hero-slider');if(!root)return;
   var slides=root.querySelectorAll('.fpt-slide'),dots=root.querySelectorAll('.fpt-dot'),i=0,timer;
   function show(n){{i=(n+slides.length)%slides.length;slides.forEach(function(s,x){{s.classList.toggle('is-active',x===i)}});dots.forEach(function(d,x){{d.classList.toggle('is-active',x===i)}})}}
   function start(){{timer=setInterval(function(){{show(i+1)}},6500)}}
@@ -365,5 +314,5 @@ if footer.exists():
 </footer>
 ''', encoding='utf-8')
 PY2
-""",
+"""),
 ))
