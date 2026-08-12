@@ -1,0 +1,32 @@
+name: FPT UI Static Validation
+
+on:
+  push:
+    branches:
+      - fpt-indigo-ui
+  pull_request:
+    paths:
+      - 'tutor-plugins/fpt_indigo_ui.py'
+      - 'fpt_indigo_ui/**'
+      - 'scripts/fpt-ui-*.sh'
+      - '.github/workflows/fpt-ui-static.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Tool versions
+        run: |
+          python --version
+          node --version
+          bash --version | head -n1
+
+      - name: Validate FPT UI source and fixtures
+        run: bash scripts/fpt-ui-validate-static.sh
