@@ -88,18 +88,27 @@ if large.count('className="fpt-auth-wedge"') != 1:
 scss = (app / 'src/index.scss').read_text(encoding='utf-8')
 required = [
     'FPT Polytechnic V8 production branding overlay',
-    '.fpt-auth-wedge',
-    'clip-path:polygon(82% 0,100% 0,42% 100%,0 100%)',
+    '.layout,.layout * { box-sizing:border-box; }',
+    '--fpt-auth-slant:clamp(72px,6.4vw,96px)',
+    '--fpt-auth-wedge-top:4px',
+    '--fpt-auth-wedge-bottom:clamp(17px,1.45vw,22px)',
+    'right:calc(0px - var(--fpt-auth-slant))',
+    'clip-path:polygon(0 0,100% 0,calc(100% - var(--fpt-auth-slant)) 100%,0 100%)',
+    'calc(100% - var(--fpt-auth-wedge-top)) 0',
+    'calc(100% - var(--fpt-auth-slant) - var(--fpt-auth-wedge-bottom)) 100%',
     'flex:0 0 53%',
+    'flex-direction:row',
     '@media (min-width:768px) and (max-width:1199.98px)',
     '@media (max-width:767.98px)',
 ]
 for marker in required:
     if marker not in scss:
-        raise SystemExit(f'missing Authn responsive marker: {marker}')
+        raise SystemExit(f'missing Authn responsive/geometry marker: {marker}')
+if 'right:18px' in scss or '95.8% 100%' in scss:
+    raise SystemExit('legacy unsynchronised blue/wedge geometry is still present')
 if scss.count('.fpt-auth-wedge {') != 1:
     raise SystemExit('wedge CSS must be defined exactly once')
-print('[fpt-ui-static] Authn fixture PASS')
+print('[fpt-ui-static] Authn fixture + shared-edge geometry PASS')
 PY
 
 log "Extracting, compiling and applying Open edX patch twice"
