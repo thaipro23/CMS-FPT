@@ -193,6 +193,39 @@ done
 log "Rendering Tutor environment"
 tutor config save
 
+# Verify Tutor-MFE resolved the custom Learning folder into the exact build
+# context used by the shared production MFE image.
+if [ "$SKIP_LEARNING_GUARD" != "1" ]; then
+  MOUNTS_CHECK_FILE="$(mktemp)"
+  tutor mounts list > "$MOUNTS_CHECK_FILE"
+  python - "$MOUNTS_CHECK_FILE" "$LEARNING_REPO_REAL" <<'PYMOUNTS'
+from pathlib import Path
+import os
+import sys
+import yaml
+
+entries = yaml.safe_load(Path(sys.argv[1]).read_text(encoding='utf-8')) or []
+expected = os.path.realpath(sys.argv[2])
+for entry in entries:
+    name = entry.get('name') if isinstance(entry, dict) else None
+    if not name or os.path.realpath(str(name)) != expected:
+        continue
+    build_mounts = entry.get('build_mounts') or []
+    if any(item.get('image') == 'mfe' and item.get('context') == 'learning-src' for item in build_mounts if isinstance(item, dict)):
+        print('[fpt-ui] Learning build mount mfe -> learning-src PASS')
+        break
+else:
+    raise SystemExit('Custom Learning mount is not mapped to MFE build context learning-src')
+PYMOUNTS
+  rm -f "$MOUNTS_CHECK_FILE"
+fi
+
+GENERATED_LMS_SETTINGS="$TUTOR_ROOT/env/apps/openedx/settings/lms/production.py"
+[ -f "$GENERATED_LMS_SETTINGS" ] || fail "Generated LMS production settings not found: $GENERATED_LMS_SETTINGS"
+grep -Fq 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive ENABLE_IMAGE_LAYOUT=False"
+grep -Fq 'MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive FPT SITE_NAME"
+log "Rendered LMS MFE configuration PASS"
+
 GENERATED_OPENEDX="$TUTOR_ROOT/env/build/openedx/Dockerfile"
 [ -f "$GENERATED_OPENEDX" ] || fail "Generated Open edX Dockerfile not found: $GENERATED_OPENEDX"
 
@@ -204,9 +237,17 @@ if grep -Eq 'curl .*(caodang\.fpt\.edu\.vn|seeklogo\.com|wikimedia\.org|chungta\
 fi
 
 MFE_DOCKERFILE="$TUTOR_ROOT/env/plugins/mfe/build/mfe/Dockerfile"
+MFE_ENV_CONFIG="$TUTOR_ROOT/env/plugins/mfe/build/mfe/env.config.jsx"
 [ -f "$MFE_DOCKERFILE" ] || fail "Generated MFE Dockerfile not found: $MFE_DOCKERFILE"
+[ -f "$MFE_ENV_CONFIG" ] || fail "Generated MFE env.config.jsx not found: $MFE_ENV_CONFIG"
 grep -Fq 'FPT Polytechnic V8 production branding overlay' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn patch"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
+grep -Fq "import React from 'react';" "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing explicit React import"
+grep -Fq 'getConfig as getFptConfig' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT getConfig alias"
+grep -Fq 'const FptHeaderLogo' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT header runtime"
+grep -Fq 'const FptFooter' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT footer runtime"
+grep -Fq 'const FptLearnerBanner' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT learner banner runtime"
+log "Rendered MFE runtime configuration PASS"
 
 if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
   grep -Fq 'ADD --keep-git-dir=true https://github.com/openedx/frontend-app-authn.git#release/ulmo.3 .' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile is not sourcing Authn from release/ulmo.3"
@@ -229,4 +270,4 @@ print('[fpt-ui] Generated Authn patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
-log "Setup OK: tested baseline, clean source, Unit Reset Learning mount, plugins linked, assets vendored, patch ordering verified, environment rendered"
+log "Setup OK: tested baseline, clean source, rendered config, Unit Reset Learning build mount, plugins linked, assets vendored, patch ordering verified"
