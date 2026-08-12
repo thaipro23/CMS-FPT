@@ -3,7 +3,15 @@ set -Eeuo pipefail
 
 log() { printf '[fpt-ui-build] %s\n' "$*"; }
 warn() { printf '[fpt-ui-build] WARN: %s\n' "$*" >&2; }
-fail() { printf '[fpt-ui-build] ERROR: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf '[fpt-ui-build] ERROR: %s\n' "$*" >&2
+  # After the deployment transaction is initialized, assertion failures must
+  # use the same rollback path as command/subprocess failures.
+  if declare -F rollback_on_error >/dev/null 2>&1; then
+    rollback_on_error 1
+  fi
+  exit 1
+}
 
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v tutor >/dev/null 2>&1 || fail "Tutor is not available in PATH"
@@ -65,6 +73,9 @@ fi
 
 rollback_on_error() {
   local status=$?
+  if [ "$#" -gt 0 ]; then
+    status="$1"
+  fi
   trap - ERR
   set +e
   if [ "$ROLLBACK_ARMED" -eq 1 ]; then
