@@ -14,6 +14,9 @@ elif [ -n "${1:-}" ]; then
   fail "Unknown argument: $1 (supported: --restart)"
 fi
 
+log "Static/fixture validation"
+bash "$REPO_ROOT/scripts/fpt-ui-validate-static.sh"
+
 log "Preflight/setup"
 bash "$REPO_ROOT/scripts/fpt-ui-setup.sh"
 
