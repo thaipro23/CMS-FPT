@@ -17,6 +17,8 @@ bash -n scripts/fpt-ui-build.sh
 bash -n scripts/fpt-ui-smoke.sh
 bash -n scripts/fpt-ui-validate-static.sh
 python -m py_compile tutor-plugins/fpt_indigo_ui.py
+python -m py_compile tutor-plugins/openedx_unit_reset.py
+python -m py_compile openedx_unit_reset/setup.py
 
 log "Checking vendored assets"
 for asset in \
@@ -170,7 +172,7 @@ if 'fpt-lms-footer' not in footer or 'fpt-polytechnic-logo.png' not in footer:
 print('[fpt-ui-static] Open edX fixture/idempotence PASS')
 PY
 
-log "Checking plugin/runtime/setup production guardrails"
+log "Checking plugin/runtime/setup/build production guardrails"
 python - <<'PY'
 from pathlib import Path
 
@@ -179,6 +181,8 @@ authn = Path('fpt_indigo_ui/patches/authn.patch').read_text(encoding='utf-8')
 runtime = Path('fpt_indigo_ui/patches/runtime.patch').read_text(encoding='utf-8')
 openedx = Path('fpt_indigo_ui/patches/openedx.patch').read_text(encoding='utf-8')
 setup = Path('scripts/fpt-ui-setup.sh').read_text(encoding='utf-8')
+build = Path('scripts/fpt-ui-build.sh').read_text(encoding='utf-8')
+smoke = Path('scripts/fpt-ui-smoke.sh').read_text(encoding='utf-8')
 
 checks = [
     ('mfe-dockerfile-pre-npm-build-authn' in plugin, 'safe Authn pre-build hook missing'),
@@ -195,6 +199,15 @@ checks = [
     ('FPT_UI_ALLOW_UNTESTED_BASELINE' in setup, 'explicit compatibility-test override missing'),
     ('git -C "$REPO_ROOT" diff --quiet' in setup, 'dirty tracked source guard missing'),
     ('frontend-app-authn.git#release/ulmo.3' in setup, 'generated Authn source tag guard missing'),
+    ('FPT_LEARNING_REPO' in setup and 'mfe-unit-reset' in setup, 'custom Learning baseline guard missing'),
+    ('UnitResetButton.jsx' in setup and 'function getLmsBaseUrl()' in setup, 'Unit Reset frontend source marker guard missing'),
+    ("item.get('image') == 'mfe'" in setup and "item.get('context') == 'learning-src'" in setup, 'Learning MFE build-mount assertion missing'),
+    ('GENERATED_LMS_SETTINGS' in setup and 'Rendered LMS MFE configuration PASS' in setup, 'rendered LMS config assertion missing'),
+    ('MFE_ENV_CONFIG' in setup and 'FptLearnerBanner' in setup, 'rendered MFE runtime assertion missing'),
+    ('docker info' in build, 'Docker daemon preflight missing'),
+    ('metadata.version("openedx-unit-reset")' in build, 'Unit Reset backend package verification missing'),
+    ('AI_MFE_REQUEST_RESIZE' in build and 'AI_QUIZ_ACTIVE_SESSION_READY_RELOAD' in build, 'compiled Learning Unit Reset verification missing'),
+    ('MFE_HOST' in build and 'learner-dashboard/' in smoke and 'authn/' in smoke, 'direct MFE post-restart smoke checks missing'),
 ]
 for ok, message in checks:
     if not ok:
