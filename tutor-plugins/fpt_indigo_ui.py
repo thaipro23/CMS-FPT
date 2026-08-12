@@ -35,6 +35,9 @@ MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = False
 MFE_CONFIG["INDIGO_FOOTER_NAV_LINKS"] = []
 MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
+# Authn release/ulmo.3 can switch to a different upstream ImageLayout. Pin it
+# off so the approved/tested FPT DefaultLayout is always the login layout.
+MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False
 MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
 MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
