@@ -1,5 +1,5 @@
 
-const getFptAsset = (name) => `${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/${name}`;
+const getFptAsset = (name) => `${getFptConfig().LMS_BASE_URL}/static/indigo/images/fpt/${name}`;
 
 const FptInlineLogo = ({ compact = false }) => (
   <img
@@ -16,7 +16,7 @@ const FptInlineLogo = ({ compact = false }) => (
 );
 
 const FptHeaderLogo = () => {
-  const baseUrl = getConfig().LMS_BASE_URL;
+  const baseUrl = getFptConfig().LMS_BASE_URL;
   return (
     <a href={`${baseUrl}/dashboard`} aria-label="FPT Polytechnic" className="logo fpt-ui-header-logo" style={{ textDecoration: 'none' }}>
       <FptInlineLogo compact />
@@ -24,49 +24,39 @@ const FptHeaderLogo = () => {
   );
 };
 
-const FptFooter = () => {
-  useEffect(() => {
-    ['selected-paragon-theme-variant', 'selected-theme-variant'].forEach((name) => {
-      window.localStorage.setItem(name, 'light');
-    });
-    document.documentElement.setAttribute('data-paragon-theme-variant', 'light');
-    document.documentElement.setAttribute('data-theme-variant', 'light');
-  }, []);
-
-  return (
-    <footer className="fpt-ui-footer">
-      <div className="container-fluid fpt-ui-footer__container">
-        <div className="fpt-ui-footer__grid">
-          <div className="fpt-ui-footer__brand">
-            <FptInlineLogo />
-            <div className="fpt-ui-footer__tagline">Thực học – Thực nghiệp</div>
-          </div>
-          <div>
-            <div className="fpt-ui-footer__title">THÔNG TIN LIÊN HỆ</div>
-            <a href="mailto:caodang@fpt.edu.vn">caodang@fpt.edu.vn</a>
-          </div>
-          <div>
-            <div className="fpt-ui-footer__title">Trụ sở chính</div>
-            <div className="fpt-ui-footer__address">Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br />Phường Xuân Phương, TP Hà Nội</div>
-          </div>
+const FptFooter = () => (
+  <footer className="fpt-ui-footer">
+    <div className="container-fluid fpt-ui-footer__container">
+      <div className="fpt-ui-footer__grid">
+        <div className="fpt-ui-footer__brand">
+          <FptInlineLogo />
+          <div className="fpt-ui-footer__tagline">Thực học – Thực nghiệp</div>
         </div>
-        <div className="fpt-ui-footer__copyright">© FPT Polytechnic. All rights reserved.</div>
+        <div>
+          <div className="fpt-ui-footer__title">THÔNG TIN LIÊN HỆ</div>
+          <a href="mailto:caodang@fpt.edu.vn">caodang@fpt.edu.vn</a>
+        </div>
+        <div>
+          <div className="fpt-ui-footer__title">Trụ sở chính</div>
+          <div className="fpt-ui-footer__address">Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br />Phường Xuân Phương, TP Hà Nội</div>
+        </div>
       </div>
-      <style>{`
-        .fpt-ui-footer{border-top:1px solid #E3EAF2;background:linear-gradient(180deg,#fff,#F8FAFD);margin-top:52px;color:#445468}
-        .fpt-ui-footer__container{max-width:1340px;padding:40px 28px 26px}
-        .fpt-ui-footer__grid{display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}
-        .fpt-ui-footer__brand img{width:228px!important;height:64px!important}
-        .fpt-ui-footer__tagline{margin-top:7px;color:#7A899C;font-size:13px;font-weight:650}
-        .fpt-ui-footer__title{color:#0B3B82;font-size:14px;font-weight:850;margin:6px 0 12px;letter-spacing:.01em}
-        .fpt-ui-footer a{color:#344B66;text-decoration:none}.fpt-ui-footer a:hover{color:#0B3B82;text-decoration:underline}
-        .fpt-ui-footer__address{color:#52647A;line-height:1.7}
-        .fpt-ui-footer__copyright{border-top:1px solid #E8EDF3;margin-top:30px;padding-top:18px;color:#8492A4;font-size:12px;text-align:center}
-        @media(max-width:767px){.fpt-ui-footer{margin-top:34px}.fpt-ui-footer__container{padding:30px 22px 22px}.fpt-ui-footer__grid{grid-template-columns:1fr;gap:24px}.fpt-ui-footer__brand img{width:205px!important}}
-      `}</style>
-    </footer>
-  );
-};
+      <div className="fpt-ui-footer__copyright">© FPT Polytechnic. All rights reserved.</div>
+    </div>
+    <style>{`
+      .fpt-ui-footer{border-top:1px solid #E3EAF2;background:linear-gradient(180deg,#fff,#F8FAFD);margin-top:52px;color:#445468}
+      .fpt-ui-footer__container{max-width:1340px;padding:40px 28px 26px}
+      .fpt-ui-footer__grid{display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}
+      .fpt-ui-footer__brand img{width:228px!important;height:64px!important}
+      .fpt-ui-footer__tagline{margin-top:7px;color:#7A899C;font-size:13px;font-weight:650}
+      .fpt-ui-footer__title{color:#0B3B82;font-size:14px;font-weight:850;margin:6px 0 12px;letter-spacing:.01em}
+      .fpt-ui-footer a{color:#344B66;text-decoration:none}.fpt-ui-footer a:hover{color:#0B3B82;text-decoration:underline}
+      .fpt-ui-footer__address{color:#52647A;line-height:1.7}
+      .fpt-ui-footer__copyright{border-top:1px solid #E8EDF3;margin-top:30px;padding-top:18px;color:#8492A4;font-size:12px;text-align:center}
+      @media(max-width:767px){.fpt-ui-footer{margin-top:34px}.fpt-ui-footer__container{padding:30px 22px 22px}.fpt-ui-footer__grid{grid-template-columns:1fr;gap:24px}.fpt-ui-footer__brand img{width:205px!important}}
+    `}</style>
+  </footer>
+);
 
 const FptLearnerBanner = () => (
   <div className="fpt-learner-banner">
