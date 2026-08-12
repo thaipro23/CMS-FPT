@@ -6,11 +6,6 @@ from tutormfe.hooks import MFE_APPS, MFE_ATTRS_TYPE, PLUGIN_SLOTS
 FPT_PRIMARY = "#0B3B82"
 FPT_ACCENT = "#F97316"
 
-FPT_LOGO_SOURCE = "https://images.seeklogo.com/logo-png/64/1/cao-ng-fpt-polytechnic-logo-png_seeklogo-648612.png"
-FPT_BANNER_STUDENTS_SOURCE = "https://caodang.fpt.edu.vn/wp-content/uploads/H1-113.jpg"
-FPT_BANNER_HANOI_SOURCE = "https://caodang.fpt.edu.vn/wp-content/uploads/1-255.jpg"
-FPT_BANNER_CAMPUS_SOURCE = "https://caodang.fpt.edu.vn/wp-content/uploads/Nhiep-anh-cong-trinh_03_TOA-NHA-FPL-HCM-1.jpg"
-
 
 def _jinja_raw(text: str) -> str:
     """Protect JSX/CSS braces from Tutor/Jinja patch rendering."""
@@ -51,7 +46,7 @@ if large.exists():
     replacement = '''<div
           className="col-md-9 bg-primary-400 fpt-auth-photo"
           style={{
-            backgroundImage: `linear-gradient(90deg, rgba(7,43,97,.94) 0%, rgba(11,59,130,.84) 45%, rgba(11,59,130,.50) 100%), url(${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/fpt-students.jpg)`,
+            backgroundImage: `linear-gradient(90deg, rgba(7,43,97,.94) 0%, rgba(11,59,130,.84) 45%, rgba(11,59,130,.50) 100%), url(${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/fpt-students.png)`,
           }}
         >'''
     if needle in text and 'fpt-auth-photo' not in text:
@@ -64,7 +59,7 @@ if medium.exists():
     replacement = '''<div
           className="col-md-10 bg-primary-400 fpt-auth-photo"
           style={{
-            backgroundImage: `linear-gradient(90deg, rgba(7,43,97,.94) 0%, rgba(11,59,130,.72) 100%), url(${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/fpt-students.jpg)`,
+            backgroundImage: `linear-gradient(90deg, rgba(7,43,97,.94) 0%, rgba(11,59,130,.72) 100%), url(${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/fpt-students.png)`,
           }}
         >'''
     if needle in text and 'fpt-auth-photo' not in text:
@@ -189,7 +184,7 @@ const FptLearnerBanner = () => (
       <div className="fpt-learner-banner__text">Chọn một khóa học bên dưới để tiếp tục học tập trên FPT Polytechnic.</div>
     </div>
     <style>{`
-      .fpt-learner-banner{position:relative;overflow:hidden;min-height:150px;border:1px solid #E6ECF5;border-radius:14px;margin-bottom:24px;box-shadow:0 8px 24px rgba(11,59,130,.05);background:linear-gradient(90deg,rgba(255,255,255,.98) 0%,rgba(255,247,237,.94) 58%,rgba(255,247,237,.18) 100%),url(${getFptAsset('fpt-hanoi-campus.jpg')}) center 43%/cover no-repeat}
+      .fpt-learner-banner{position:relative;overflow:hidden;min-height:150px;border:1px solid #E6ECF5;border-radius:14px;margin-bottom:24px;box-shadow:0 8px 24px rgba(11,59,130,.05);background:linear-gradient(90deg,rgba(255,255,255,.98) 0%,rgba(255,247,237,.94) 58%,rgba(255,247,237,.18) 100%),url(${getFptAsset('fpt-campus-primary.jpg')}) center 43%/cover no-repeat}
       .fpt-learner-banner__content{max-width:650px;padding:28px 30px;position:relative;z-index:1}
       .fpt-learner-banner__title{color:#0B3B82;font-size:24px;font-weight:800;margin-bottom:6px}
       .fpt-learner-banner__text{color:#58677A;line-height:1.55}
@@ -245,12 +240,15 @@ def _fpt_brand_all_mfes(mfes: dict[str, MFE_ATTRS_TYPE]) -> dict[str, MFE_ATTRS_
 
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
-    _jinja_raw(f"""
-RUN mkdir -p /openedx/staticfiles/indigo/images/fpt \\
-    && curl -fL --retry 3 -A 'Mozilla/5.0' '{FPT_LOGO_SOURCE}' -o /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png \\
-    && curl -fL --retry 3 -A 'Mozilla/5.0' '{FPT_BANNER_STUDENTS_SOURCE}' -o /openedx/staticfiles/indigo/images/fpt/fpt-students.jpg \\
-    && curl -fL --retry 3 -A 'Mozilla/5.0' '{FPT_BANNER_HANOI_SOURCE}' -o /openedx/staticfiles/indigo/images/fpt/fpt-hanoi-campus.jpg \\
-    && curl -fL --retry 3 -A 'Mozilla/5.0' '{FPT_BANNER_CAMPUS_SOURCE}' -o /openedx/staticfiles/indigo/images/fpt/fpt-campus.jpg
+    _jinja_raw(r"""
+# FPT assets are vendored inside the edx-platform repository. The Tutor
+# openedx build already exposes that repository as the named build context
+# "edx-platform", so builds are deterministic and require no external HTTP.
+RUN mkdir -p /openedx/staticfiles/indigo/images/fpt
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-students.png /openedx/staticfiles/indigo/images/fpt/fpt-students.png
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-campus-primary.jpg /openedx/staticfiles/indigo/images/fpt/fpt-campus-primary.jpg
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-campus-secondary.jpg /openedx/staticfiles/indigo/images/fpt/fpt-campus-secondary.jpg
 
 RUN python - <<'PY2'
 from pathlib import Path
@@ -263,38 +261,38 @@ if courses.exists():
         hero = '''
 <section id="fpt-hero-slider" class="fpt-hero" aria-label="FPT Polytechnic">
 <style>
-.fpt-hero{{position:relative;overflow:hidden;margin:0 0 28px;background:#0B3B82;color:#fff;min-height:330px;box-shadow:0 14px 34px rgba(11,59,130,.12)}}
-.fpt-slide{{display:none;position:relative;min-height:330px;align-items:center;background:#0B3B82}}
-.fpt-slide.is-active{{display:flex}}
-.fpt-slide__photo{{position:absolute;inset:0 0 0 48%;overflow:hidden}}
-.fpt-slide__photo:after{{content:'';position:absolute;inset:0;background:linear-gradient(90deg,#0B3B82 0%,rgba(11,59,130,.62) 25%,rgba(11,59,130,.12) 70%)}}
-.fpt-slide__photo img{{width:100%;height:100%;object-fit:cover;display:block}}
-.fpt-slide__content{{width:58%;padding:52px 0 60px 7%;position:relative;z-index:2}}
-.fpt-slide h1{{margin:0 0 14px;color:#fff;font-size:42px;line-height:1.12;font-weight:800;letter-spacing:-.025em}}
-.fpt-slide p{{margin:0 0 24px;max-width:570px;font-size:18px;line-height:1.55;color:rgba(255,255,255,.92)}}
-.fpt-slide a{{display:inline-block;background:#F97316;color:#fff!important;padding:12px 20px;border-radius:7px;font-weight:700;text-decoration:none}}
-.fpt-slide a:hover{{background:#E9640C}}
-.fpt-hero__nav{{position:absolute;z-index:4;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:8px}}
-.fpt-dot{{width:9px;height:9px;border:0;border-radius:50%;background:rgba(255,255,255,.45);padding:0;cursor:pointer}}
-.fpt-dot.is-active{{width:24px;border-radius:8px;background:#fff}}
-@media(max-width:900px){{.fpt-slide__photo{{inset:0;opacity:.34}}.fpt-slide__photo:after{{background:linear-gradient(90deg,rgba(11,59,130,.98),rgba(11,59,130,.68))}}.fpt-slide__content{{width:78%;padding-left:6%}}.fpt-slide h1{{font-size:34px}}}}
-@media(max-width:600px){{.fpt-hero,.fpt-slide{{min-height:300px}}.fpt-slide__content{{width:100%;padding:38px 24px 55px}}.fpt-slide h1{{font-size:30px}}.fpt-slide p{{font-size:16px}}}}
+.fpt-hero{position:relative;overflow:hidden;margin:0 0 28px;background:#0B3B82;color:#fff;min-height:330px;box-shadow:0 14px 34px rgba(11,59,130,.12)}
+.fpt-slide{display:none;position:relative;min-height:330px;align-items:center;background:#0B3B82}
+.fpt-slide.is-active{display:flex}
+.fpt-slide__photo{position:absolute;inset:0 0 0 48%;overflow:hidden}
+.fpt-slide__photo:after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,#0B3B82 0%,rgba(11,59,130,.62) 25%,rgba(11,59,130,.12) 70%)}
+.fpt-slide__photo img{width:100%;height:100%;object-fit:cover;display:block}
+.fpt-slide__content{width:58%;padding:52px 0 60px 7%;position:relative;z-index:2}
+.fpt-slide h1{margin:0 0 14px;color:#fff;font-size:42px;line-height:1.12;font-weight:800;letter-spacing:-.025em}
+.fpt-slide p{margin:0 0 24px;max-width:570px;font-size:18px;line-height:1.55;color:rgba(255,255,255,.92)}
+.fpt-slide a{display:inline-block;background:#F97316;color:#fff!important;padding:12px 20px;border-radius:7px;font-weight:700;text-decoration:none}
+.fpt-slide a:hover{background:#E9640C}
+.fpt-hero__nav{position:absolute;z-index:4;left:50%;bottom:18px;transform:translateX(-50%);display:flex;gap:8px}
+.fpt-dot{width:9px;height:9px;border:0;border-radius:50%;background:rgba(255,255,255,.45);padding:0;cursor:pointer}
+.fpt-dot.is-active{width:24px;border-radius:8px;background:#fff}
+@media(max-width:900px){.fpt-slide__photo{inset:0;opacity:.34}.fpt-slide__photo:after{background:linear-gradient(90deg,rgba(11,59,130,.98),rgba(11,59,130,.68))}.fpt-slide__content{width:78%;padding-left:6%}.fpt-slide h1{font-size:34px}}
+@media(max-width:600px){.fpt-hero,.fpt-slide{min-height:300px}.fpt-slide__content{width:100%;padding:38px 24px 55px}.fpt-slide h1{font-size:30px}.fpt-slide p{font-size:16px}}
 </style>
-<div class="fpt-slide is-active"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-students.jpg" alt="Sinh viên FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Học tập cùng FPT Polytechnic</h1><p>Nâng cao kiến thức, phát triển kỹ năng và tiếp tục hành trình học tập trên nền tảng số.</p><a href="#discovery-form">Khám phá khóa học</a></div></div>
-<div class="fpt-slide"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-hanoi-campus.jpg" alt="FPT Polytechnic Hà Nội"></div><div class="fpt-slide__content"><h1>Học mọi lúc, mọi nơi</h1><p>Truy cập khóa học, nội dung và hoạt động học tập thuận tiện trên nhiều thiết bị.</p><a href="#discovery-form">Tìm khóa học</a></div></div>
-<div class="fpt-slide"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-campus.jpg" alt="Không gian FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Sẵn sàng cho tương lai</h1><p>Môi trường học tập hiện đại, tập trung vào trải nghiệm sinh viên và năng lực nghề nghiệp.</p><a href="#discovery-form">Bắt đầu ngay</a></div></div>
+<div class="fpt-slide is-active"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-students.png" alt="Sinh viên FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Học tập cùng FPT Polytechnic</h1><p>Nâng cao kiến thức, phát triển kỹ năng và tiếp tục hành trình học tập trên nền tảng số.</p><a href="#discovery-form">Khám phá khóa học</a></div></div>
+<div class="fpt-slide"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-campus-primary.jpg" alt="Không gian FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Học mọi lúc, mọi nơi</h1><p>Truy cập khóa học, nội dung và hoạt động học tập thuận tiện trên nhiều thiết bị.</p><a href="#discovery-form">Tìm khóa học</a></div></div>
+<div class="fpt-slide"><div class="fpt-slide__photo"><img src="/static/indigo/images/fpt/fpt-campus-secondary.jpg" alt="Cơ sở FPT Polytechnic"></div><div class="fpt-slide__content"><h1>Sẵn sàng cho tương lai</h1><p>Môi trường học tập hiện đại, tập trung vào trải nghiệm sinh viên và năng lực nghề nghiệp.</p><a href="#discovery-form">Bắt đầu ngay</a></div></div>
 <div class="fpt-hero__nav"><button class="fpt-dot is-active" type="button" aria-label="Slide 1"></button><button class="fpt-dot" type="button" aria-label="Slide 2"></button><button class="fpt-dot" type="button" aria-label="Slide 3"></button></div>
 <script>
-(function(){{
+(function(){
   var root=document.getElementById('fpt-hero-slider');if(!root)return;
   var slides=root.querySelectorAll('.fpt-slide'),dots=root.querySelectorAll('.fpt-dot'),i=0,timer;
-  function show(n){{i=(n+slides.length)%slides.length;slides.forEach(function(s,x){{s.classList.toggle('is-active',x===i)}});dots.forEach(function(d,x){{d.classList.toggle('is-active',x===i)}})}}
-  function start(){{timer=setInterval(function(){{show(i+1)}},6500)}}
-  dots.forEach(function(d,x){{d.addEventListener('click',function(){{clearInterval(timer);show(x);start()}})}});
-  root.addEventListener('mouseenter',function(){{clearInterval(timer)}});
+  function show(n){i=(n+slides.length)%slides.length;slides.forEach(function(s,x){s.classList.toggle('is-active',x===i)});dots.forEach(function(d,x){d.classList.toggle('is-active',x===i)})}
+  function start(){timer=setInterval(function(){show(i+1)},6500)}
+  dots.forEach(function(d,x){d.addEventListener('click',function(){clearInterval(timer);show(x);start()})});
+  root.addEventListener('mouseenter',function(){clearInterval(timer)});
   root.addEventListener('mouseleave',start);
   start();
-}})();
+})();
 </script>
 </section>
 '''
