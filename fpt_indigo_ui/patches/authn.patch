@@ -1,0 +1,208 @@
+
+RUN node - <<'JS2'
+const fs = require('fs');
+
+const root = '/openedx/app/src/base-container/components/default-layout';
+const write = (name, value) => fs.writeFileSync(`${root}/${name}`, value, 'utf8');
+
+write('LargeLayout.jsx', String.raw`import { getConfig } from '@edx/frontend-platform';
+import { Hyperlink, Image } from '@openedx/paragon';
+
+const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
+
+const Feature = ({ icon, children }) => (
+  <div className="fpt-auth-feature">
+    <span className="fpt-auth-feature__icon" aria-hidden="true">{icon}</span>
+    <span>{children}</span>
+  </div>
+);
+
+const LargeLayout = () => (
+  <aside className="fpt-auth-visual fpt-auth-visual--large" aria-label="FPT Polytechnic">
+    <div
+      className="fpt-auth-visual__backdrop"
+      style={{ backgroundImage: 'linear-gradient(112deg, rgba(4,43,102,.97) 0%, rgba(6,60,132,.92) 56%, rgba(7,74,151,.78) 100%), url(' + getFptAsset('fpt-campus-primary.jpg') + ')' }}
+      aria-hidden="true"
+    />
+    <div className="fpt-auth-wedge" aria-hidden="true" />
+    <div className="fpt-auth-visual__content">
+      <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
+        <Image className="fpt-auth-logo" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo.png')} />
+      </Hyperlink>
+
+      <div className="fpt-auth-copy">
+        <div className="fpt-auth-eyebrow">NỀN TẢNG HỌC TẬP TRỰC TUYẾN</div>
+        <h1>Học tập cùng<br /><strong>FPT Polytechnic</strong></h1>
+        <p>Học chủ động, thực hành liên tục và phát triển kỹ năng nghề nghiệp trên một trải nghiệm số thống nhất.</p>
+      </div>
+
+      <div className="fpt-auth-features" aria-label="Điểm nổi bật">
+        <Feature icon="↗">Học mọi lúc,<br />mọi nơi</Feature>
+        <Feature icon="✓">Nội dung chất lượng,<br />cập nhật liên tục</Feature>
+        <Feature icon="✦">Hiện đại,<br />dễ sử dụng</Feature>
+      </div>
+    </div>
+  </aside>
+);
+
+export default LargeLayout;
+`);
+
+write('MediumLayout.jsx', String.raw`import { getConfig } from '@edx/frontend-platform';
+import { Hyperlink, Image } from '@openedx/paragon';
+
+const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
+
+const MediumLayout = () => (
+  <aside className="fpt-auth-visual fpt-auth-visual--medium" aria-label="FPT Polytechnic">
+    <div
+      className="fpt-auth-visual__backdrop"
+      style={{ backgroundImage: 'linear-gradient(100deg, rgba(4,43,102,.98), rgba(7,73,151,.72)), url(' + getFptAsset('fpt-campus-primary.jpg') + ')' }}
+      aria-hidden="true"
+    />
+    <div className="fpt-auth-visual__content">
+      <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
+        <Image className="fpt-auth-logo" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo.png')} />
+      </Hyperlink>
+      <div className="fpt-auth-copy">
+        <div className="fpt-auth-eyebrow">NỀN TẢNG HỌC TẬP TRỰC TUYẾN</div>
+        <h1>Học tập cùng <strong>FPT Polytechnic</strong></h1>
+        <p>Thực học – Thực nghiệp, trên mọi thiết bị.</p>
+      </div>
+    </div>
+  </aside>
+);
+
+export default MediumLayout;
+`);
+
+write('SmallLayout.jsx', String.raw`import { getConfig } from '@edx/frontend-platform';
+import { Hyperlink, Image } from '@openedx/paragon';
+
+const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
+
+const SmallLayout = () => (
+  <aside className="fpt-auth-visual fpt-auth-visual--small" aria-label="FPT Polytechnic">
+    <div
+      className="fpt-auth-visual__backdrop"
+      style={{ backgroundImage: 'linear-gradient(105deg, rgba(4,43,102,.98), rgba(7,73,151,.72)), url(' + getFptAsset('fpt-campus-primary.jpg') + ')' }}
+      aria-hidden="true"
+    />
+    <div className="fpt-auth-visual__content">
+      <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
+        <Image className="fpt-auth-logo" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo.png')} />
+      </Hyperlink>
+      <div className="fpt-auth-copy">
+        <h1>Học tập cùng <strong>FPT Polytechnic</strong></h1>
+      </div>
+    </div>
+  </aside>
+);
+
+export default SmallLayout;
+`);
+
+const scss = '/openedx/app/src/index.scss';
+if (fs.existsSync(scss)) {
+  const marker = 'FPT Polytechnic V8 production branding overlay';
+  let current = fs.readFileSync(scss, 'utf8');
+  if (!current.includes(marker)) {
+    current += String.raw`
+
+/* FPT Polytechnic V8 production branding overlay */
+:root {
+  --fpt-primary:#0B3B82;
+  --fpt-primary-dark:#072B61;
+  --fpt-accent:#F36F21;
+  --fpt-ink:#163453;
+  --fpt-muted:#60748A;
+  --fpt-line:#DCE5EF;
+}
+
+html,body,#root { min-height:100%; }
+body { background:#fff; }
+.extra-large-screen-top-stripe,.medium-screen-top-stripe,.small-screen-top-stripe { display:none !important; }
+.bg-primary-400,.bg-primary-500 { background-color:var(--fpt-primary) !important; }
+.text-accent-a { color:var(--fpt-accent) !important; }
+.btn-primary { background:var(--fpt-primary) !important; border-color:var(--fpt-primary) !important; }
+.btn-primary:hover,.btn-primary:focus { background:var(--fpt-primary-dark) !important; border-color:var(--fpt-primary-dark) !important; }
+
+.fpt-auth-visual { position:relative; overflow:hidden; color:#fff; isolation:isolate; }
+.fpt-auth-visual__backdrop {
+  position:absolute; inset:0; z-index:-2;
+  background-size:cover; background-position:center; background-repeat:no-repeat;
+}
+.fpt-auth-visual__backdrop::after {
+  content:''; position:absolute; inset:0;
+  background:linear-gradient(180deg,rgba(0,0,0,.02),rgba(0,0,0,.13));
+}
+.fpt-auth-visual__content { position:relative; z-index:2; height:100%; display:flex; flex-direction:column; }
+.fpt-auth-logo-link { display:inline-flex; width:max-content; text-decoration:none !important; }
+.fpt-auth-logo { display:block; width:205px; height:auto; object-fit:contain; object-position:left center; }
+.fpt-auth-copy { max-width:610px; }
+.fpt-auth-eyebrow { margin-bottom:14px; font-size:11px; line-height:1.2; letter-spacing:.17em; font-weight:800; color:rgba(255,255,255,.76); }
+.fpt-auth-copy h1 { margin:0; color:#fff; font-size:clamp(38px,3.65vw,58px); line-height:1.06; letter-spacing:-.035em; font-weight:720; }
+.fpt-auth-copy h1 strong { color:#FF7A25; font-weight:850; }
+.fpt-auth-copy p { margin:19px 0 0; max-width:560px; color:rgba(255,255,255,.86); font-size:16px; line-height:1.7; }
+.fpt-auth-features { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-top:auto; padding-top:42px; }
+.fpt-auth-feature { display:grid; grid-template-columns:38px 1fr; gap:10px; align-items:center; color:rgba(255,255,255,.91); font-size:12px; line-height:1.45; font-weight:650; }
+.fpt-auth-feature__icon { width:38px; height:38px; border:1px solid rgba(255,255,255,.34); border-radius:12px; background:rgba(255,255,255,.10); display:grid; place-items:center; color:#fff; font-size:16px; font-weight:900; backdrop-filter:blur(8px); }
+
+/* Exactly one orange wedge. Top is narrow; bottom progressively wider. */
+.fpt-auth-wedge {
+  position:absolute; z-index:1; top:0; bottom:0; right:-1px; width:30px;
+  background:var(--fpt-accent);
+  clip-path:polygon(82% 0,100% 0,42% 100%,0 100%);
+  pointer-events:none;
+}
+
+.layout > .content { background:radial-gradient(circle at 88% 10%,rgba(70,163,255,.09),transparent 31%),linear-gradient(155deg,#FBFDFF,#fff 66%); }
+#main-content {
+  width:min(430px,100%);
+  background:#fff;
+  border:1px solid #E2E9F1;
+  border-radius:16px;
+  box-shadow:0 22px 60px rgba(14,47,86,.10);
+  padding:36px 36px 32px;
+}
+#main-content h1,#main-content h2 { color:#153C73; letter-spacing:-.02em; }
+#main-content .form-control { min-height:48px; border-radius:8px; border-color:#C7D3E0; }
+#main-content .form-control:focus { border-color:#6F91BA; box-shadow:0 0 0 3px rgba(11,59,130,.08); }
+#main-content .btn { min-height:47px; border-radius:8px; font-weight:750; }
+
+@media (min-width:1200px) {
+  .layout { min-height:100vh; align-items:stretch; justify-content:stretch !important; overflow:hidden; }
+  .fpt-auth-visual--large { flex:0 0 53%; width:53%; min-height:100vh; overflow:visible; }
+  .fpt-auth-visual--large .fpt-auth-visual__backdrop { right:18px; clip-path:polygon(0 0,100% 0,95.8% 100%,0 100%); }
+  .fpt-auth-visual--large .fpt-auth-visual__content { padding:48px 9.5% 46px 8.3%; }
+  .fpt-auth-visual--large .fpt-auth-copy { margin:auto 0 0; padding-bottom:26px; }
+  .layout > .content { flex:0 0 47%; width:47vw !important; min-height:100vh; margin-top:0 !important; display:flex; align-items:center; justify-content:center; padding:48px clamp(34px,5vw,84px) 48px clamp(32px,4.4vw,72px); }
+}
+
+@media (min-width:768px) and (max-width:1199.98px) {
+  .layout { min-height:100vh; justify-content:flex-start !important; background:#fff; }
+  .fpt-auth-visual--medium { width:100%; min-height:285px; }
+  .fpt-auth-visual--medium .fpt-auth-visual__content { padding:30px clamp(34px,7vw,72px) 34px; }
+  .fpt-auth-visual--medium .fpt-auth-logo { width:180px; }
+  .fpt-auth-visual--medium .fpt-auth-copy { margin:auto 0 0; max-width:720px; }
+  .fpt-auth-visual--medium .fpt-auth-copy h1 { font-size:36px; }
+  .fpt-auth-visual--medium .fpt-auth-copy p { margin-top:10px; }
+  .layout > .content { width:100% !important; margin-top:0 !important; padding:34px 24px 46px; display:flex; justify-content:center; }
+  #main-content { width:min(500px,100%); }
+}
+
+@media (max-width:767.98px) {
+  .layout { min-height:100vh; justify-content:flex-start !important; background:#fff; }
+  .fpt-auth-visual--small { width:100%; min-height:205px; }
+  .fpt-auth-visual--small .fpt-auth-visual__content { padding:22px 22px 28px; }
+  .fpt-auth-visual--small .fpt-auth-logo { width:155px; }
+  .fpt-auth-visual--small .fpt-auth-copy { margin:auto 0 0; }
+  .fpt-auth-visual--small .fpt-auth-copy h1 { font-size:27px; line-height:1.12; }
+  .layout > .content { width:100% !important; margin-top:0 !important; padding:22px 16px 34px; display:flex; justify-content:center; background:#fff; }
+  #main-content { width:100%; max-width:470px; border:0; box-shadow:none; padding:18px 8px 10px; }
+}
+`;
+    fs.writeFileSync(scss, current, 'utf8');
+  }
+}
+JS2

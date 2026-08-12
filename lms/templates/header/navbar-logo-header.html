@@ -27,9 +27,14 @@ enterprise_customer_link = get_enterprise_learner_portal(request)
         % endif
     </a>
   % else:
-    <a href="${branding_api.get_home_url()}">
+    <a href="${branding_api.get_home_url()}" aria-label="FPT Polytechnic">
       <%block name="navigation_logo">
-        <img  class="logo" src="${branding_api.get_logo_url(is_secure)}" alt="${_("{platform_name} Home Page").format(platform_name=static.get_platform_name())}"/>
+        <img
+          class="logo fpt-polytechnic-header-logo"
+          src="/static/indigo/images/fpt/fpt-polytechnic-logo.png"
+          alt="FPT Polytechnic"
+          style="width:190px;height:52px;max-width:100%;object-fit:contain;object-position:left center;margin:0;"
+        />
       </%block>
         % if settings.LOGO_IMAGE_EXTRA_TEXT == 'edge':
             <span class="font-italic"> | EDGE</span>

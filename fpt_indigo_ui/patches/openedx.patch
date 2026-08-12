@@ -1,0 +1,117 @@
+
+# All FPT assets are vendored in Git. No runtime/build-time hotlinking.
+RUN mkdir -p /openedx/staticfiles/indigo/images/fpt
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-students.png /openedx/staticfiles/indigo/images/fpt/fpt-students.png
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-campus-primary.jpg /openedx/staticfiles/indigo/images/fpt/fpt-campus-primary.jpg
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-campus-secondary.jpg /openedx/staticfiles/indigo/images/fpt/fpt-campus-secondary.jpg
+
+RUN python - <<'PY2'
+from pathlib import Path
+
+courses = Path('/openedx/themes/indigo/lms/templates/courseware/courses.html')
+if courses.exists():
+    text = courses.read_text(encoding='utf-8')
+    anchor = '<section class="courses-container">'
+    start = '<!-- FPT_DISCOVERY_V8_START -->'
+    end = '<!-- FPT_DISCOVERY_V8_END -->'
+    hero = r'''
+<!-- FPT_DISCOVERY_V8_START -->
+<section id="fpt-hero-slider" class="fpt-hero" aria-label="FPT Polytechnic">
+<style>
+.fpt-hero{--fpt-blue:#0B3B82;--fpt-orange:#F36F21;position:relative;overflow:hidden;margin:0 0 30px;background:linear-gradient(135deg,#F3F8FF 0%,#EBF5FF 54%,#FFF6EF 100%);min-height:410px;border-bottom:1px solid #E3ECF5}
+.fpt-hero__stage{position:relative;max-width:1440px;min-height:410px;margin:0 auto}
+.fpt-slide{display:none;grid-template-columns:minmax(0,.86fr) minmax(500px,1.14fr);gap:32px;min-height:410px;align-items:center;padding:44px 6.5% 54px}
+.fpt-slide.is-active{display:grid}
+.fpt-slide__copy{position:relative;z-index:3;max-width:590px}
+.fpt-kicker{display:inline-flex;align-items:center;gap:8px;margin-bottom:14px;color:#F36F21;font-size:11px;line-height:1.2;font-weight:850;letter-spacing:.13em}
+.fpt-kicker:before{content:'';width:24px;height:2px;border-radius:2px;background:#F36F21}
+.fpt-slide h1{margin:0;color:#133D73;font-size:44px;line-height:1.08;font-weight:850;letter-spacing:-.035em}
+.fpt-slide h1 em{color:#F36F21;font-style:normal}
+.fpt-slide p{margin:17px 0 24px;max-width:555px;color:#586D84;font-size:16px;line-height:1.7}
+.fpt-slide__cta{display:inline-flex!important;align-items:center;gap:8px;background:#F36F21;color:#fff!important;padding:12px 19px;border-radius:9px;font-weight:800;text-decoration:none!important;box-shadow:0 9px 22px rgba(243,111,33,.22);transition:transform .18s ease,box-shadow .18s ease,background .18s ease}
+.fpt-slide__cta:hover{background:#E86414;transform:translateY(-1px);box-shadow:0 12px 26px rgba(243,111,33,.28)}
+.fpt-collage{position:relative;height:320px;min-width:0}
+.fpt-card{position:absolute;overflow:hidden;border:6px solid rgba(255,255,255,.96);border-radius:20px;background:#fff;box-shadow:0 22px 46px rgba(27,65,111,.16)}
+.fpt-card img{width:100%;height:100%;display:block;object-fit:cover}
+.fpt-card--main{left:4%;top:26px;width:58%;height:268px;transform:rotate(-2.6deg);z-index:3}
+.fpt-card--top{right:2%;top:4px;width:39%;height:146px;transform:rotate(3.6deg);z-index:2}
+.fpt-card--bottom{right:0;bottom:7px;width:42%;height:146px;transform:rotate(-3.2deg);z-index:4}
+.fpt-card--main img{object-position:center 45%}.fpt-card--top img{object-position:center}.fpt-card--bottom img{object-position:center}
+.fpt-hero__arrow{position:absolute;z-index:8;top:50%;width:42px;height:42px;margin-top:-21px;border:1px solid #D9E5F0;border-radius:50%;background:rgba(255,255,255,.94);color:#0B3B82;display:grid;place-items:center;font-size:24px;line-height:1;box-shadow:0 8px 20px rgba(19,61,115,.10);cursor:pointer}
+.fpt-hero__arrow:hover{background:#fff;box-shadow:0 10px 24px rgba(19,61,115,.16)}
+.fpt-hero__arrow--prev{left:18px}.fpt-hero__arrow--next{right:18px}
+.fpt-hero__nav{position:absolute;z-index:8;left:50%;bottom:19px;transform:translateX(-50%);display:flex;gap:8px;align-items:center}
+.fpt-dot{width:8px;height:8px;border:0;border-radius:50%;background:#AFC2D8;padding:0;cursor:pointer;transition:width .18s ease,background .18s ease}
+.fpt-dot.is-active{width:26px;border-radius:8px;background:#0B3B82}
+@media(max-width:1050px){.fpt-slide{grid-template-columns:minmax(0,.9fr) minmax(400px,1.1fr);padding-left:7%;padding-right:7%}.fpt-slide h1{font-size:38px}.fpt-collage{height:290px}.fpt-card--main{height:238px}.fpt-card--top,.fpt-card--bottom{height:130px}}
+@media(max-width:820px){.fpt-hero,.fpt-hero__stage{min-height:620px}.fpt-slide{grid-template-columns:1fr;gap:18px;min-height:620px;padding:38px 52px 58px}.fpt-slide__copy{max-width:680px}.fpt-collage{height:300px;width:min(620px,100%);margin:0 auto}.fpt-card--main{left:3%;width:59%;height:250px}.fpt-card--top{right:2%;width:40%;height:136px}.fpt-card--bottom{width:42%;height:136px}.fpt-hero__arrow--prev{left:12px}.fpt-hero__arrow--next{right:12px}}
+@media(max-width:520px){.fpt-hero,.fpt-hero__stage{min-height:615px}.fpt-slide{min-height:615px;padding:32px 22px 54px}.fpt-slide h1{font-size:32px}.fpt-slide p{font-size:15px}.fpt-collage{height:270px}.fpt-card{border-width:4px;border-radius:15px}.fpt-card--main{left:0;top:24px;width:67%;height:225px}.fpt-card--top{right:0;top:2px;width:39%;height:116px}.fpt-card--bottom{right:0;bottom:4px;width:42%;height:118px}.fpt-hero__arrow{display:none}}
+@media(prefers-reduced-motion:reduce){.fpt-slide__cta,.fpt-dot{transition:none!important}}
+</style>
+<div class="fpt-hero__stage">
+  <div class="fpt-slide is-active">
+    <div class="fpt-slide__copy"><div class="fpt-kicker">FPT POLYTECHNIC E-LEARNING</div><h1>Học tập chủ động.<br/><em>Phát triển mỗi ngày.</em></h1><p>Tiếp cận nội dung học tập, hoạt động môn học và tiến độ của bạn trong một trải nghiệm rõ ràng, hiện đại và nhất quán.</p><a class="fpt-slide__cta" href="#discovery-form">Khám phá khóa học <span aria-hidden="true">→</span></a></div>
+    <div class="fpt-collage" aria-hidden="true"><figure class="fpt-card fpt-card--main"><img src="/static/indigo/images/fpt/fpt-students.png" alt=""/></figure><figure class="fpt-card fpt-card--top"><img src="/static/indigo/images/fpt/fpt-campus-primary.jpg" alt=""/></figure><figure class="fpt-card fpt-card--bottom"><img src="/static/indigo/images/fpt/fpt-campus-secondary.jpg" alt=""/></figure></div>
+  </div>
+  <div class="fpt-slide">
+    <div class="fpt-slide__copy"><div class="fpt-kicker">THỰC HỌC – THỰC NGHIỆP</div><h1>Học để làm được.<br/><em>Học để đi xa hơn.</em></h1><p>Không chỉ hoàn thành bài học: hãy dùng kiến thức để giải quyết bài toán thực tế và xây dựng năng lực nghề nghiệp của chính bạn.</p><a class="fpt-slide__cta" href="#discovery-form">Tiếp tục học tập <span aria-hidden="true">→</span></a></div>
+    <div class="fpt-collage" aria-hidden="true"><figure class="fpt-card fpt-card--main"><img src="/static/indigo/images/fpt/fpt-campus-primary.jpg" alt=""/></figure><figure class="fpt-card fpt-card--top"><img src="/static/indigo/images/fpt/fpt-students.png" alt=""/></figure><figure class="fpt-card fpt-card--bottom"><img src="/static/indigo/images/fpt/fpt-campus-secondary.jpg" alt=""/></figure></div>
+  </div>
+  <div class="fpt-slide">
+    <div class="fpt-slide__copy"><div class="fpt-kicker">MỌI LÚC • MỌI THIẾT BỊ</div><h1>Một hành trình học tập.<br/><em>Một trải nghiệm thống nhất.</em></h1><p>Truy cập khóa học và tiếp tục đúng nơi bạn đang học trên máy tính, máy tính bảng hoặc điện thoại.</p><a class="fpt-slide__cta" href="#discovery-form">Tìm khóa học <span aria-hidden="true">→</span></a></div>
+    <div class="fpt-collage" aria-hidden="true"><figure class="fpt-card fpt-card--main"><img src="/static/indigo/images/fpt/fpt-campus-secondary.jpg" alt=""/></figure><figure class="fpt-card fpt-card--top"><img src="/static/indigo/images/fpt/fpt-campus-primary.jpg" alt=""/></figure><figure class="fpt-card fpt-card--bottom"><img src="/static/indigo/images/fpt/fpt-students.png" alt=""/></figure></div>
+  </div>
+  <button class="fpt-hero__arrow fpt-hero__arrow--prev" type="button" aria-label="Slide trước">‹</button>
+  <button class="fpt-hero__arrow fpt-hero__arrow--next" type="button" aria-label="Slide sau">›</button>
+  <div class="fpt-hero__nav" role="tablist" aria-label="Chọn slide"><button class="fpt-dot is-active" type="button" aria-label="Slide 1"></button><button class="fpt-dot" type="button" aria-label="Slide 2"></button><button class="fpt-dot" type="button" aria-label="Slide 3"></button></div>
+</div>
+<script>
+(function(){
+  var root=document.getElementById('fpt-hero-slider');if(!root)return;
+  var slides=root.querySelectorAll('.fpt-slide'),dots=root.querySelectorAll('.fpt-dot');
+  var prev=root.querySelector('.fpt-hero__arrow--prev'),next=root.querySelector('.fpt-hero__arrow--next');
+  var i=0,timer=null,reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function show(n){i=(n+slides.length)%slides.length;for(var x=0;x<slides.length;x++){slides[x].classList.toggle('is-active',x===i);dots[x].classList.toggle('is-active',x===i);dots[x].setAttribute('aria-current',x===i?'true':'false')}}
+  function stop(){if(timer){clearInterval(timer);timer=null}}
+  function start(){stop();if(!reduced){timer=setInterval(function(){show(i+1)},7000)}}
+  for(var d=0;d<dots.length;d++){(function(x){dots[x].addEventListener('click',function(){show(x);start()})})(d)}
+  prev.addEventListener('click',function(){show(i-1);start()});next.addEventListener('click',function(){show(i+1);start()});
+  root.addEventListener('mouseenter',stop);root.addEventListener('mouseleave',start);
+  root.addEventListener('focusin',stop);root.addEventListener('focusout',start);
+  root.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'){show(i-1)}if(e.key==='ArrowRight'){show(i+1)}});
+  show(0);start();
+})();
+</script>
+</section>
+<!-- FPT_DISCOVERY_V8_END -->
+'''
+    if start in text and end in text:
+        before = text.split(start, 1)[0]
+        after = text.split(end, 1)[1]
+        text = before + hero + after
+    elif anchor in text:
+        text = text.replace(anchor, hero + '\n' + anchor, 1)
+    courses.write_text(text, encoding='utf-8')
+
+footer = Path('/openedx/themes/indigo/lms/templates/footer.html')
+if footer.exists():
+    footer.write_text(r'''
+<footer class="fpt-lms-footer">
+  <style>
+  .fpt-lms-footer{margin-top:52px;border-top:1px solid #E3EAF2;background:linear-gradient(180deg,#fff,#F8FAFD);color:#445468}
+  .fpt-lms-footer__grid{max-width:1340px;margin:0 auto;padding:40px 28px 28px;display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}
+  .fpt-lms-footer__logo{width:228px;max-height:66px;object-fit:contain;object-position:left center}.fpt-lms-footer__tag{margin-top:7px;color:#7A899C;font-size:13px;font-weight:650}
+  .fpt-lms-footer__title{display:block;margin:6px 0 12px;color:#0B3B82;font-size:14px;font-weight:850}.fpt-lms-footer p{margin:0;color:#52647A;line-height:1.7}.fpt-lms-footer a{color:#344B66;text-decoration:none}.fpt-lms-footer a:hover{color:#0B3B82;text-decoration:underline}
+  .fpt-lms-footer__copy{max-width:1340px;margin:0 auto;border-top:1px solid #E8EDF3;padding:18px 28px 24px;text-align:center;color:#8492A4;font-size:12px}
+  @media(max-width:760px){.fpt-lms-footer{margin-top:34px}.fpt-lms-footer__grid{grid-template-columns:1fr;gap:24px;padding:30px 22px 24px}.fpt-lms-footer__logo{width:205px}.fpt-lms-footer__copy{padding:17px 22px 22px}}
+  </style>
+  <div class="fpt-lms-footer__grid">
+    <div><img class="fpt-lms-footer__logo" src="/static/indigo/images/fpt/fpt-polytechnic-logo.png" alt="FPT Polytechnic"/><div class="fpt-lms-footer__tag">Thực học – Thực nghiệp</div></div>
+    <div><strong class="fpt-lms-footer__title">THÔNG TIN LIÊN HỆ</strong><p><a href="mailto:caodang@fpt.edu.vn">caodang@fpt.edu.vn</a></p></div>
+    <div><strong class="fpt-lms-footer__title">Trụ sở chính</strong><p>Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br/>Phường Xuân Phương, TP Hà Nội</p></div>
+  </div>
+  <div class="fpt-lms-footer__copy">© FPT Polytechnic. All rights reserved.</div>
+</footer>
+''', encoding='utf-8')
+PY2

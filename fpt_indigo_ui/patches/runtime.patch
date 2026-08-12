@@ -1,0 +1,90 @@
+
+const getFptAsset = (name) => `${getConfig().LMS_BASE_URL}/static/indigo/images/fpt/${name}`;
+
+const FptInlineLogo = ({ compact = false }) => (
+  <img
+    src={getFptAsset('fpt-polytechnic-logo.png')}
+    alt="FPT Polytechnic"
+    style={{
+      display: 'block',
+      width: compact ? 176 : 226,
+      height: compact ? 46 : 62,
+      objectFit: 'contain',
+      objectPosition: 'left center',
+    }}
+  />
+);
+
+const FptHeaderLogo = () => {
+  const baseUrl = getConfig().LMS_BASE_URL;
+  return (
+    <a href={`${baseUrl}/dashboard`} aria-label="FPT Polytechnic" className="logo fpt-ui-header-logo" style={{ textDecoration: 'none' }}>
+      <FptInlineLogo compact />
+    </a>
+  );
+};
+
+const FptFooter = () => {
+  useEffect(() => {
+    ['selected-paragon-theme-variant', 'selected-theme-variant'].forEach((name) => {
+      window.localStorage.setItem(name, 'light');
+    });
+    document.documentElement.setAttribute('data-paragon-theme-variant', 'light');
+    document.documentElement.setAttribute('data-theme-variant', 'light');
+  }, []);
+
+  return (
+    <footer className="fpt-ui-footer">
+      <div className="container-fluid fpt-ui-footer__container">
+        <div className="fpt-ui-footer__grid">
+          <div className="fpt-ui-footer__brand">
+            <FptInlineLogo />
+            <div className="fpt-ui-footer__tagline">Thực học – Thực nghiệp</div>
+          </div>
+          <div>
+            <div className="fpt-ui-footer__title">THÔNG TIN LIÊN HỆ</div>
+            <a href="mailto:caodang@fpt.edu.vn">caodang@fpt.edu.vn</a>
+          </div>
+          <div>
+            <div className="fpt-ui-footer__title">Trụ sở chính</div>
+            <div className="fpt-ui-footer__address">Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br />Phường Xuân Phương, TP Hà Nội</div>
+          </div>
+        </div>
+        <div className="fpt-ui-footer__copyright">© FPT Polytechnic. All rights reserved.</div>
+      </div>
+      <style>{`
+        .fpt-ui-footer{border-top:1px solid #E3EAF2;background:linear-gradient(180deg,#fff,#F8FAFD);margin-top:52px;color:#445468}
+        .fpt-ui-footer__container{max-width:1340px;padding:40px 28px 26px}
+        .fpt-ui-footer__grid{display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}
+        .fpt-ui-footer__brand img{width:228px!important;height:64px!important}
+        .fpt-ui-footer__tagline{margin-top:7px;color:#7A899C;font-size:13px;font-weight:650}
+        .fpt-ui-footer__title{color:#0B3B82;font-size:14px;font-weight:850;margin:6px 0 12px;letter-spacing:.01em}
+        .fpt-ui-footer a{color:#344B66;text-decoration:none}.fpt-ui-footer a:hover{color:#0B3B82;text-decoration:underline}
+        .fpt-ui-footer__address{color:#52647A;line-height:1.7}
+        .fpt-ui-footer__copyright{border-top:1px solid #E8EDF3;margin-top:30px;padding-top:18px;color:#8492A4;font-size:12px;text-align:center}
+        @media(max-width:767px){.fpt-ui-footer{margin-top:34px}.fpt-ui-footer__container{padding:30px 22px 22px}.fpt-ui-footer__grid{grid-template-columns:1fr;gap:24px}.fpt-ui-footer__brand img{width:205px!important}}
+      `}</style>
+    </footer>
+  );
+};
+
+const FptLearnerBanner = () => (
+  <div className="fpt-learner-banner">
+    <div className="fpt-learner-banner__content">
+      <div className="fpt-learner-banner__eyebrow">FPT POLYTECHNIC E-LEARNING</div>
+      <div className="fpt-learner-banner__title">Tiếp tục hành trình học tập</div>
+      <div className="fpt-learner-banner__text">Chọn một khóa học bên dưới để tiếp tục tiến độ của bạn.</div>
+    </div>
+    <div className="fpt-learner-banner__visual" aria-hidden="true" />
+    <style>{`
+      .fpt-learner-banner{position:relative;overflow:hidden;min-height:170px;border:1px solid #DFE8F2;border-radius:18px;margin-bottom:26px;box-shadow:0 10px 30px rgba(11,59,130,.06);background:linear-gradient(100deg,#fff 0%,#F8FBFF 60%,#EEF6FF 100%)}
+      .fpt-learner-banner__content{max-width:670px;padding:32px 34px;position:relative;z-index:2}
+      .fpt-learner-banner__eyebrow{color:#F36F21;font-size:11px;font-weight:850;letter-spacing:.12em;margin-bottom:9px}
+      .fpt-learner-banner__title{color:#0B3B82;font-size:26px;line-height:1.2;font-weight:850;letter-spacing:-.025em;margin-bottom:7px}
+      .fpt-learner-banner__text{color:#5D6E82;line-height:1.55}
+      .fpt-learner-banner__visual{position:absolute;right:-12px;top:-42px;width:390px;height:260px;transform:rotate(-3deg);border-radius:34px;background:linear-gradient(90deg,rgba(238,246,255,.10),rgba(238,246,255,.05)),url(${getFptAsset('fpt-campus-secondary.jpg')}) center/cover no-repeat;box-shadow:-20px 20px 45px rgba(11,59,130,.08)}
+      @media(max-width:900px){.fpt-learner-banner__visual{opacity:.16;right:-70px}.fpt-learner-banner__content{max-width:100%}}
+      @media(max-width:600px){.fpt-learner-banner{min-height:154px}.fpt-learner-banner__content{padding:26px 24px}.fpt-learner-banner__title{font-size:22px}}
+    `}</style>
+  </div>
+);
