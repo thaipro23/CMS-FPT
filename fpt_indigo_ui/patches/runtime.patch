@@ -37,8 +37,8 @@ const FptFooter = () => (
           <a href="mailto:caodang@fpt.edu.vn">caodang@fpt.edu.vn</a>
         </div>
         <div>
-          <div className="fpt-ui-footer__title">Trụ sở chính</div>
-          <div className="fpt-ui-footer__address">Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br />Phường Xuân Phương, TP Hà Nội</div>
+          <div className="fpt-ui-footer__title">FPT Polytechnic Hà Nội</div>
+          <div className="fpt-ui-footer__address">Cổng Ong, Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc,<br />phường Xuân Phương, TP Hà Nội</div>
         </div>
       </div>
       <div className="fpt-ui-footer__copyright">© FPT Polytechnic. All rights reserved.</div>
