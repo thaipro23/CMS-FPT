@@ -21,6 +21,20 @@ fi
 
 log "Source commit: $(git -C "$REPO_ROOT" rev-parse HEAD)"
 
+UNIT_RESET_EXPECTED_VERSION="$(python - "$REPO_ROOT/openedx_unit_reset/setup.py" <<'PY'
+from pathlib import Path
+import re
+import sys
+text = Path(sys.argv[1]).read_text(encoding='utf-8')
+match = re.search(r"\bversion\s*=\s*['\"]([^'\"]+)['\"]", text)
+if not match:
+    raise SystemExit('could not resolve openedx-unit-reset version from setup.py')
+print(match.group(1))
+PY
+)"
+[ -n "$UNIT_RESET_EXPECTED_VERSION" ] || fail "Could not resolve Unit Reset package version"
+log "Expected Unit Reset backend version: $UNIT_RESET_EXPECTED_VERSION"
+
 log "Static/fixture validation"
 bash "$REPO_ROOT/scripts/fpt-ui-validate-static.sh"
 
@@ -32,8 +46,8 @@ tutor images build openedx
 
 OPENEDX_IMAGE="$(tutor config printvalue DOCKER_IMAGE_OPENEDX)"
 [ -n "$OPENEDX_IMAGE" ] || fail "Could not resolve DOCKER_IMAGE_OPENEDX"
-log "Verifying FPT assets/templates in $OPENEDX_IMAGE"
-docker run --rm --entrypoint bash "$OPENEDX_IMAGE" -lc '
+log "Verifying FPT assets/templates + Unit Reset backend in $OPENEDX_IMAGE"
+docker run --rm --entrypoint bash -e UNIT_RESET_EXPECTED_VERSION="$UNIT_RESET_EXPECTED_VERSION" "$OPENEDX_IMAGE" -lc '
 set -euo pipefail
 base=/openedx/staticfiles/indigo/images/fpt
 for f in \
@@ -50,6 +64,18 @@ grep -Fq "fpt-hero-slider" /openedx/themes/indigo/lms/templates/courseware/cours
 grep -Fq "fpt-lms-footer" /openedx/themes/indigo/lms/templates/footer.html
 grep -Fq "/static/indigo/images/fpt/fpt-polytechnic-logo.png" /openedx/edx-platform/lms/templates/header/navbar-logo-header.html
 
+python - <<"PY"
+import importlib
+import importlib.metadata as metadata
+import os
+expected = os.environ["UNIT_RESET_EXPECTED_VERSION"]
+actual = metadata.version("openedx-unit-reset")
+if actual != expected:
+    raise SystemExit(f"openedx-unit-reset version mismatch: expected {expected}, got {actual}")
+module = importlib.import_module("openedx_unit_reset")
+print(f"[fpt-ui-build] Unit Reset backend PASS version={actual} module={module.__name__}")
+PY
+
 echo "[fpt-ui-build] Open edX image branding markers PASS"
 ls -lh "$base"
 '
@@ -59,7 +85,7 @@ tutor images build mfe
 
 MFE_IMAGE="$(tutor config printvalue MFE_DOCKER_IMAGE 2>/dev/null || true)"
 [ -n "$MFE_IMAGE" ] || fail "Could not resolve MFE_DOCKER_IMAGE"
-log "Verifying compiled Authn/Learner Dashboard branding in $MFE_IMAGE"
+log "Verifying compiled Authn/Learner Dashboard/Learning artifacts in $MFE_IMAGE"
 
 CID="$(docker create "$MFE_IMAGE")"
 TMP_DIR="$(mktemp -d)"
@@ -71,14 +97,17 @@ trap cleanup EXIT
 
 docker cp "$CID:/openedx/dist/authn" "$TMP_DIR/authn" >/dev/null
 docker cp "$CID:/openedx/dist/learner-dashboard" "$TMP_DIR/learner-dashboard" >/dev/null
+docker cp "$CID:/openedx/dist/learning" "$TMP_DIR/learning" >/dev/null
 
 grep -R -Fq "FPT Polytechnic" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain FPT Polytechnic branding"
 grep -R -Fq "fpt-auth-wedge" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain the approved wedge CSS"
 grep -R -Fq "Tiếp tục hành trình học tập" "$TMP_DIR/learner-dashboard" || fail "Compiled Learner Dashboard bundle does not contain FPT learner banner"
+grep -R -Fq "AI_MFE_REQUEST_RESIZE" "$TMP_DIR/learning" || fail "Compiled Learning bundle does not contain the custom Unit Reset frontend marker"
+grep -R -Fq "AI_QUIZ_ACTIVE_SESSION_READY_RELOAD" "$TMP_DIR/learning" || fail "Compiled Learning bundle is missing the Unit Reset active-session reload contract"
 
 cleanup
 trap - EXIT
-log "Compiled MFE branding markers PASS"
+log "Compiled MFE branding + Unit Reset markers PASS"
 
 if [ "$RESTART" -eq 1 ]; then
   log "Restarting Tutor local deployment"
@@ -104,7 +133,7 @@ if [ "$RESTART" -eq 1 ]; then
   bash "$REPO_ROOT/scripts/fpt-ui-smoke.sh" "$LMS_URL" "$MFE_URL"
 fi
 
-log "BUILD VERIFIED: openedx + mfe"
+log "BUILD VERIFIED: openedx + mfe + Unit Reset backend/frontend"
 if [ "$RESTART" -ne 1 ]; then
   log "Run with --restart when ready; --restart will also run LMS + MFE post-deploy smoke checks"
 fi
