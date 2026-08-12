@@ -106,8 +106,10 @@ for marker in required:
         raise SystemExit(f'missing Authn responsive/geometry marker: {marker}')
 if 'right:18px' in scss or '95.8% 100%' in scss:
     raise SystemExit('legacy unsynchronised blue/wedge geometry is still present')
-if scss.count('.fpt-auth-wedge {') != 1:
-    raise SystemExit('wedge CSS must be defined exactly once')
+if scss.count('background:var(--fpt-accent);') != 1:
+    raise SystemExit('orange wedge fill must be emitted exactly once')
+if scss.count('calc(100% - var(--fpt-auth-wedge-top)) 0') != 1:
+    raise SystemExit('desktop orange wedge polygon must be emitted exactly once')
 print('[fpt-ui-static] Authn fixture + shared-edge geometry PASS')
 PY
 
