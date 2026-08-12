@@ -166,12 +166,32 @@ cleanup_artifacts
 trap - EXIT
 log "Compiled MFE branding + Unit Reset markers PASS"
 
+verify_service_image() {
+  local service="$1"
+  local expected_image_id="$2"
+  local container_id
+  local actual_image_id
+  container_id="$(tutor local dc ps -q "$service" 2>/dev/null | head -n1)"
+  [ -n "$container_id" ] || fail "No running container found for service '$service'"
+  actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id" 2>/dev/null || true)"
+  [ -n "$actual_image_id" ] || fail "Could not resolve image ID for running service '$service'"
+  [ "$actual_image_id" = "$expected_image_id" ] || fail "Service '$service' is running image $actual_image_id, expected $expected_image_id"
+  log "PASS running image $service -> $actual_image_id"
+}
+
 if [ "$RESTART" -eq 1 ]; then
   DEPLOYMENT_TOUCHED=1
   log "Restarting Tutor local deployment"
   tutor local stop
   tutor local start -d
   tutor local status
+
+  EXPECTED_OPENEDX_ID="$(docker image inspect --format '{{.Id}}' "$OPENEDX_IMAGE")"
+  EXPECTED_MFE_ID="$(docker image inspect --format '{{.Id}}' "$MFE_IMAGE")"
+  for service in lms cms lms-worker cms-worker; do
+    verify_service_image "$service" "$EXPECTED_OPENEDX_ID"
+  done
+  verify_service_image mfe "$EXPECTED_MFE_ID"
 
   LMS_HOST="$(tutor config printvalue LMS_HOST)"
   MFE_HOST="$(tutor config printvalue MFE_HOST 2>/dev/null || true)"
