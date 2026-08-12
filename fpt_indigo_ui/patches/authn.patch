@@ -127,6 +127,7 @@ if (fs.existsSync(scss)) {
 
 html,body,#root { min-height:100%; }
 body { background:#fff; }
+.layout,.layout * { box-sizing:border-box; }
 .extra-large-screen-top-stripe,.medium-screen-top-stripe,.small-screen-top-stripe { display:none !important; }
 .bg-primary-400,.bg-primary-500 { background-color:var(--fpt-primary) !important; }
 .text-accent-a { color:var(--fpt-accent) !important; }
@@ -154,15 +155,10 @@ body { background:#fff; }
 .fpt-auth-feature { display:grid; grid-template-columns:38px 1fr; gap:10px; align-items:center; color:rgba(255,255,255,.91); font-size:12px; line-height:1.45; font-weight:650; }
 .fpt-auth-feature__icon { width:38px; height:38px; border:1px solid rgba(255,255,255,.34); border-radius:12px; background:rgba(255,255,255,.10); display:grid; place-items:center; color:#fff; font-size:16px; font-weight:900; backdrop-filter:blur(8px); }
 
-/* Exactly one orange wedge. Top is narrow; bottom progressively wider. */
-.fpt-auth-wedge {
-  position:absolute; z-index:1; top:0; bottom:0; right:-1px; width:30px;
-  background:var(--fpt-accent);
-  clip-path:polygon(82% 0,100% 0,42% 100%,0 100%);
-  pointer-events:none;
-}
+/* One DOM wedge only. Desktop geometry shares the exact blue-panel slant. */
+.fpt-auth-wedge { display:none; pointer-events:none; }
 
-.layout > .content { background:radial-gradient(circle at 88% 10%,rgba(70,163,255,.09),transparent 31%),linear-gradient(155deg,#FBFDFF,#fff 66%); }
+.layout > .content { position:relative; z-index:1; background:radial-gradient(circle at 88% 10%,rgba(70,163,255,.09),transparent 31%),linear-gradient(155deg,#FBFDFF,#fff 66%); }
 #main-content {
   width:min(430px,100%);
   background:#fff;
@@ -177,16 +173,35 @@ body { background:#fff; }
 #main-content .btn { min-height:47px; border-radius:8px; font-weight:750; }
 
 @media (min-width:1200px) {
-  .layout { min-height:100vh; align-items:stretch; justify-content:stretch !important; overflow:hidden; }
-  .fpt-auth-visual--large { flex:0 0 53%; width:53%; min-height:100vh; overflow:visible; }
-  .fpt-auth-visual--large .fpt-auth-visual__backdrop { right:18px; clip-path:polygon(0 0,100% 0,95.8% 100%,0 100%); }
+  .layout { min-height:100vh; flex-direction:row; align-items:stretch; justify-content:stretch !important; overflow:hidden; }
+  .fpt-auth-visual--large {
+    --fpt-auth-slant:clamp(72px,6.4vw,96px);
+    --fpt-auth-wedge-top:4px;
+    --fpt-auth-wedge-bottom:clamp(17px,1.45vw,22px);
+    flex:0 0 53%; width:53%; min-height:100vh; overflow:visible; z-index:2;
+  }
+  .fpt-auth-visual--large .fpt-auth-visual__backdrop {
+    right:calc(0px - var(--fpt-auth-slant));
+    clip-path:polygon(0 0,100% 0,calc(100% - var(--fpt-auth-slant)) 100%,0 100%);
+  }
+  .fpt-auth-visual--large .fpt-auth-wedge {
+    display:block; position:absolute; z-index:1; top:0; bottom:0; left:0;
+    right:calc(0px - var(--fpt-auth-slant));
+    background:var(--fpt-accent);
+    clip-path:polygon(
+      calc(100% - var(--fpt-auth-wedge-top)) 0,
+      100% 0,
+      calc(100% - var(--fpt-auth-slant)) 100%,
+      calc(100% - var(--fpt-auth-slant) - var(--fpt-auth-wedge-bottom)) 100%
+    );
+  }
   .fpt-auth-visual--large .fpt-auth-visual__content { padding:48px 9.5% 46px 8.3%; }
   .fpt-auth-visual--large .fpt-auth-copy { margin:auto 0 0; padding-bottom:26px; }
   .layout > .content { flex:0 0 47%; width:47vw !important; min-height:100vh; margin-top:0 !important; display:flex; align-items:center; justify-content:center; padding:48px clamp(34px,5vw,84px) 48px clamp(32px,4.4vw,72px); }
 }
 
 @media (min-width:768px) and (max-width:1199.98px) {
-  .layout { min-height:100vh; justify-content:flex-start !important; background:#fff; }
+  .layout { min-height:100vh; flex-direction:column; align-items:stretch; justify-content:flex-start !important; background:#fff; }
   .fpt-auth-visual--medium { width:100%; min-height:285px; }
   .fpt-auth-visual--medium .fpt-auth-visual__content { padding:30px clamp(34px,7vw,72px) 34px; }
   .fpt-auth-visual--medium .fpt-auth-logo { width:180px; }
@@ -198,7 +213,7 @@ body { background:#fff; }
 }
 
 @media (max-width:767.98px) {
-  .layout { min-height:100vh; justify-content:flex-start !important; background:#fff; }
+  .layout { min-height:100vh; flex-direction:column; align-items:stretch; justify-content:flex-start !important; background:#fff; }
   .fpt-auth-visual--small { width:100%; min-height:205px; }
   .fpt-auth-visual--small .fpt-auth-visual__content { padding:22px 22px 28px; }
   .fpt-auth-visual--small .fpt-auth-logo { width:155px; }
