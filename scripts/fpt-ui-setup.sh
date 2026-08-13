@@ -18,7 +18,11 @@ ASSET_DIR="$REPO_ROOT/fpt_indigo_ui/assets"
 LEGACY_ASSET_DIR="$REPO_ROOT/tutor-plugins/fpt-assets"
 FPT_PLUGIN="$REPO_ROOT/tutor-plugins/fpt_indigo_ui.py"
 ALLOW_UNTESTED_BASELINE="${FPT_UI_ALLOW_UNTESTED_BASELINE:-0}"
-EXPECTED_COMMON_VERSION="release/ulmo.3"
+EXPECTED_COMMON_VERSION="release/ulmo.4"
+EXPECTED_TUTOR_VERSION="21.0.9"
+EXPECTED_TUTOR_MFE_VERSION="21.0.1"
+EXPECTED_TUTOR_INDIGO_VERSION="21.2.1"
+EXPECTED_ULMO4_COMMIT="46c543590c78aa1bfa846d47a4f1c5c6ec388490"
 LEARNING_REPO="${FPT_LEARNING_REPO:-/opt/openedx/frontend-app-learning}"
 LEARNING_BRANCH="${FPT_LEARNING_BRANCH:-mfe-unit-reset}"
 SKIP_LEARNING_GUARD="${FPT_UI_SKIP_LEARNING_GUARD:-0}"
@@ -39,11 +43,28 @@ log "Open edX common version: ${COMMON_VERSION:-unknown}"
 log "Tutor version: ${TUTOR_VERSION_RAW:-unknown}"
 
 if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
-  [ "$COMMON_VERSION" = "$EXPECTED_COMMON_VERSION" ] || fail "FPT UI is validated for OPENEDX_COMMON_VERSION=$EXPECTED_COMMON_VERSION, found '${COMMON_VERSION:-unknown}'. Set FPT_UI_ALLOW_UNTESTED_BASELINE=1 only for an intentional compatibility test."
+  [ "$COMMON_VERSION" = "$EXPECTED_COMMON_VERSION" ] || fail "FPT UI is validated for OPENEDX_COMMON_VERSION=$EXPECTED_COMMON_VERSION, found '${COMMON_VERSION:-unknown}'. Run scripts/fpt-ulmo-upgrade.sh before building."
   case "$TUTOR_VERSION_RAW" in
-    *"21."*) ;;
-    *) fail "FPT UI is validated on Tutor 21.x, found '${TUTOR_VERSION_RAW:-unknown}'. Set FPT_UI_ALLOW_UNTESTED_BASELINE=1 only for an intentional compatibility test." ;;
+    *"$EXPECTED_TUTOR_VERSION"*) ;;
+    *) fail "FPT UI is validated on Tutor $EXPECTED_TUTOR_VERSION, found '${TUTOR_VERSION_RAW:-unknown}'. Run scripts/fpt-ulmo-upgrade.sh before building." ;;
   esac
+
+  python - "$EXPECTED_TUTOR_MFE_VERSION" "$EXPECTED_TUTOR_INDIGO_VERSION" <<'PYVERS'
+import importlib.metadata as metadata
+import sys
+expected = {
+    'tutor-mfe': sys.argv[1],
+    'tutor-indigo': sys.argv[2],
+}
+for package, wanted in expected.items():
+    actual = metadata.version(package)
+    if actual != wanted:
+        raise SystemExit(f'{package} version mismatch: expected {wanted}, got {actual}')
+    print(f'[fpt-ui] {package}={actual} PASS')
+PYVERS
+
+  git -C "$REPO_ROOT" merge-base --is-ancestor "$EXPECTED_ULMO4_COMMIT" HEAD || fail "Checked-out FPT branch does not contain the official release/ulmo.4 baseline commit $EXPECTED_ULMO4_COMMIT. Pull the latest fpt-indigo-ui before building."
+  log "Open edX release/ulmo.4 ancestry PASS"
 else
   warn "FPT_UI_ALLOW_UNTESTED_BASELINE=1: baseline compatibility guards are bypassed"
 fi
@@ -250,7 +271,7 @@ grep -Fq 'const FptLearnerBanner' "$MFE_ENV_CONFIG" || fail "Generated MFE env.c
 log "Rendered MFE runtime configuration PASS"
 
 if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
-  grep -Fq 'ADD --keep-git-dir=true https://github.com/openedx/frontend-app-authn.git#release/ulmo.3 .' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile is not sourcing Authn from release/ulmo.3"
+  grep -Fq 'ADD --keep-git-dir=true https://github.com/openedx/frontend-app-authn.git#release/ulmo.4 .' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile is not sourcing Authn from release/ulmo.4"
 fi
 
 python - "$MFE_DOCKERFILE" <<'PYORDER'
@@ -270,4 +291,4 @@ print('[fpt-ui] Generated Authn patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
-log "Setup OK: tested baseline, clean source, rendered config, Unit Reset Learning build mount, plugins linked, assets vendored, patch ordering verified"
+log "Setup OK: Ulmo.4/Tutor 21.0.9 baseline, clean source, rendered config, Unit Reset Learning build mount, plugins linked, assets vendored, patch ordering verified"
