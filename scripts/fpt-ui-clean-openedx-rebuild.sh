@@ -56,7 +56,7 @@ remove_tutor_openedx_containers_using_image() {
     [ -n "$id" ] || continue
     name="$(docker inspect --format '{{.Name}}' "$id" 2>/dev/null | sed 's#^/##')"
     case "$name" in
-      *tutor_local-lms-*|*tutor_local-cms-*|*tutor_local-lms-worker-*|*tutor_local-cms-worker-*)
+      *tutor_local-lms-worker-*|*tutor_local-cms-worker-*|*tutor_local-lms-[0-9]*|*tutor_local-cms-[0-9]*)
         log "Removing Open edX service container $name ($id)"
         docker rm -f "$id" >/dev/null
         ;;
