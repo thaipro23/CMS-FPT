@@ -18,9 +18,18 @@ const FptInlineLogo = ({ compact = false }) => (
 const FptHeaderLogo = () => {
   const baseUrl = getFptConfig().LMS_BASE_URL;
   return (
-    <a href={`${baseUrl}/dashboard`} aria-label="FPT Polytechnic" className="logo fpt-ui-header-logo" style={{ textDecoration: 'none' }}>
-      <FptInlineLogo compact />
-    </a>
+    <>
+      <a href={`${baseUrl}/dashboard`} aria-label="FPT Polytechnic" className="logo fpt-ui-header-logo" style={{ textDecoration: 'none' }}>
+        <FptInlineLogo compact />
+      </a>
+      <style>{`
+        /* The FPT logo replaces, rather than precedes, Indigo/Open edX logos. */
+        #root header a.logo:not(.fpt-ui-header-logo){display:none!important}
+        #root header .fpt-ui-header-logo{display:inline-flex!important;align-items:center;flex:0 0 auto;margin-right:18px}
+        #root header .fpt-ui-header-logo img{max-width:176px}
+        @media(max-width:767px){#root header .fpt-ui-header-logo{margin-right:10px}#root header .fpt-ui-header-logo img{max-width:150px;height:40px!important}}
+      `}</style>
+    </>
   );
 };
 
@@ -30,7 +39,6 @@ const FptFooter = () => (
       <div className="fpt-ui-footer__grid">
         <div className="fpt-ui-footer__brand">
           <FptInlineLogo />
-          <div className="fpt-ui-footer__tagline">Thực học – Thực nghiệp</div>
         </div>
         <div className="fpt-ui-footer__contact">
           <div className="fpt-ui-footer__title">THÔNG TIN LIÊN HỆ</div>
@@ -44,7 +52,7 @@ const FptFooter = () => (
       <div className="fpt-ui-footer__copyright">© FPT Polytechnic. All rights reserved.</div>
     </div>
     <style>{`
-      .fpt-ui-footer{border-top:1px solid #E3EAF2;background:linear-gradient(180deg,#fff,#F8FAFD);margin-top:52px;color:#445468}
+      .fpt-ui-footer{border-top:1px solid #E3EAF2;background:linear-gradient(180deg,#fff,#F8FAFD);margin-top:52px;color:#445468;transition:background .2s ease,border-color .2s ease,color .2s ease}
       .fpt-ui-footer__container{max-width:1340px;padding:40px 28px 26px}
       .fpt-ui-footer__grid{display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(210px,.88fr) minmax(280px,1.22fr);gap:44px;align-items:start}
       .fpt-ui-footer__brand img{width:228px!important;height:64px!important}
@@ -53,6 +61,12 @@ const FptFooter = () => (
       .fpt-ui-footer a{color:#344B66;text-decoration:none}.fpt-ui-footer a:hover{color:#0B3B82;text-decoration:underline}
       .fpt-ui-footer__address{color:#52647A;line-height:1.7}
       .fpt-ui-footer__copyright{border-top:1px solid #E8EDF3;margin-top:30px;padding-top:18px;color:#65758A;font-size:12px;text-align:center}
+      [data-paragon-theme-variant="dark"] .fpt-ui-footer{background:linear-gradient(180deg,#111820,#0C1219);border-top-color:#273444;color:#D8E1EB}
+      [data-paragon-theme-variant="dark"] .fpt-ui-footer__title{color:#8CB8F2}
+      [data-paragon-theme-variant="dark"] .fpt-ui-footer a{color:#D6E5F6}
+      [data-paragon-theme-variant="dark"] .fpt-ui-footer a:hover{color:#fff}
+      [data-paragon-theme-variant="dark"] .fpt-ui-footer__address{color:#BCC8D5}
+      [data-paragon-theme-variant="dark"] .fpt-ui-footer__copyright{border-top-color:#273444;color:#93A4B8}
       @media(max-width:960px){.fpt-ui-footer__container{padding:34px 28px 24px}.fpt-ui-footer__grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:26px 40px}.fpt-ui-footer__brand{grid-column:1/-1}.fpt-ui-footer__copyright{margin-top:26px}}
       @media(max-width:767px){.fpt-ui-footer{margin-top:34px}.fpt-ui-footer__container{padding:30px 22px 22px}.fpt-ui-footer__grid{grid-template-columns:1fr;gap:22px}.fpt-ui-footer__brand{grid-column:auto}.fpt-ui-footer__brand img{width:205px!important}.fpt-ui-footer__copyright{margin-top:24px}}
     `}</style>
@@ -68,13 +82,18 @@ const FptLearnerBanner = () => (
     </div>
     <div className="fpt-learner-banner__visual" aria-hidden="true" />
     <style>{`
-      .fpt-learner-banner{position:relative;overflow:hidden;min-height:170px;border:1px solid #DFE8F2;border-radius:18px;margin-bottom:26px;box-shadow:0 10px 30px rgba(11,59,130,.06);background:linear-gradient(100deg,#fff 0%,#F8FBFF 60%,#EEF6FF 100%)}
+      .fpt-learner-banner{position:relative;overflow:hidden;min-height:170px;border:1px solid #DFE8F2;border-radius:18px;margin-bottom:26px;box-shadow:0 10px 30px rgba(11,59,130,.06);background:linear-gradient(100deg,#fff 0%,#F8FBFF 60%,#EEF6FF 100%);transition:background .2s ease,border-color .2s ease,color .2s ease}
       .fpt-learner-banner__content{max-width:670px;padding:32px 34px;position:relative;z-index:2}
       .fpt-learner-banner__eyebrow{color:#C94E08;font-size:11px;font-weight:850;letter-spacing:.12em;margin-bottom:9px}
-      .fpt-learner-banner__title{color:#0B3B82;font-size:26px;line-height:1.2;font-weight:850;letter-spacing:-.025em;margin-bottom:7px}
+      .fpt-learner-banner__title{color:#0B3B82;font-size:26px;line-height:1.2;font-weight:850;letter-spacing:-.025em;margin-bottom:7px;text-wrap:balance}
       .fpt-learner-banner__text{color:#5D6E82;line-height:1.55}
       .fpt-learner-banner__visual{position:absolute;right:-12px;top:-42px;width:390px;height:260px;transform:rotate(-3deg);border-radius:34px;background:linear-gradient(90deg,rgba(238,246,255,.10),rgba(238,246,255,.05)),url(${getFptAsset('fpt-campus-secondary.jpg')}) center/cover no-repeat;box-shadow:-20px 20px 45px rgba(11,59,130,.08)}
-      @media(max-width:1050px){.fpt-learner-banner__visual{opacity:.16;right:-70px}.fpt-learner-banner__content{max-width:100%}}
+      [data-paragon-theme-variant="dark"] .fpt-learner-banner{border-color:#344255;background:linear-gradient(100deg,#151C26 0%,#121A25 60%,#102032 100%);box-shadow:0 10px 30px rgba(0,0,0,.22)}
+      [data-paragon-theme-variant="dark"] .fpt-learner-banner__eyebrow{color:#FF9B5F}
+      [data-paragon-theme-variant="dark"] .fpt-learner-banner__title{color:#F4F7FB}
+      [data-paragon-theme-variant="dark"] .fpt-learner-banner__text{color:#C4D0DC}
+      [data-paragon-theme-variant="dark"] .fpt-learner-banner__visual{opacity:.34;filter:saturate(.82) brightness(.72);box-shadow:-20px 20px 45px rgba(0,0,0,.20)}
+      @media(max-width:1050px){.fpt-learner-banner__visual{opacity:.16;right:-70px}.fpt-learner-banner__content{max-width:100%}[data-paragon-theme-variant="dark"] .fpt-learner-banner__visual{opacity:.19}}
       @media(max-width:600px){.fpt-learner-banner{min-height:154px}.fpt-learner-banner__content{padding:26px 24px}.fpt-learner-banner__title{font-size:22px}}
     `}</style>
   </div>
