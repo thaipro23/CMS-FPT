@@ -37,24 +37,48 @@ jobs:
       - name: Download, validate and optimize official imagery
         run: python scripts/fpt-ui-refresh-assets.py
 
-      - name: Show resulting assets
+      - name: Show resulting assets and build contact sheet
         run: |
           python - <<'PY'
           from pathlib import Path
-          from PIL import Image
+          from PIL import Image, ImageDraw, ImageFont, ImageOps
 
           root = Path('fpt_indigo_ui/assets')
-          for name in (
+          names = (
               'fpt-polytechnic-logo.png',
               'fpt-students.png',
               'fpt-campus-primary.jpg',
               'fpt-campus-secondary.jpg',
-          ):
+          )
+          for name in names:
               path = root / name
               with Image.open(path) as image:
                   print(f'{name}: {image.width}x{image.height}, {path.stat().st_size} bytes, {image.format}')
+
+          photos = names[1:]
+          card_w, card_h, label_h, gap = 640, 400, 44, 24
+          sheet = Image.new('RGB', (card_w, len(photos) * (card_h + label_h + gap) - gap), 'white')
+          draw = ImageDraw.Draw(sheet)
+          font = ImageFont.load_default(size=20)
+          y = 0
+          for name in photos:
+              with Image.open(root / name) as image:
+                  image = ImageOps.exif_transpose(image).convert('RGB')
+                  preview = ImageOps.fit(image, (card_w, card_h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+                  sheet.paste(preview, (0, y))
+              draw.text((14, y + card_h + 10), name, fill='black', font=font)
+              y += card_h + label_h + gap
+          sheet.save('/tmp/fpt-ui-contact-sheet.jpg', quality=90, optimize=True, progressive=True)
           PY
           cat fpt_indigo_ui/assets/manifest.json
+
+      - name: Upload contact sheet
+        uses: actions/upload-artifact@v4
+        with:
+          name: fpt-ui-contact-sheet
+          path: /tmp/fpt-ui-contact-sheet.jpg
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Commit vendored assets
         run: |
