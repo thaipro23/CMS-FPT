@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "policy": "Official FPT Polytechnic editorial imagery vendored in Git; no runtime/build-time hotlinking.",
+  "assets": [
+    {
+      "key": "students",
+      "target": "fpt-students.png",
+      "role": "Discovery main card / student learning visual",
+      "article": "https://caodang.fpt.edu.vn/ban-tin/uu-dai-laptop-cho-tan-sinh-vien-fpt-polytechnic-2026.html",
+      "source": "https://caodang.fpt.edu.vn/wp-content/uploads/2026/05/a-1.webp",
+      "original_width": 1360,
+      "original_height": 906,
+      "width": 1360,
+      "height": 906,
+      "bytes": 1521206,
+      "sha256": "f7fd1416b8643a9ae86bc92f7da4f3895d92f1679f89b5d998901c1a6a83e566"
+    },
+    {
+      "key": "campus_primary",
+      "target": "fpt-campus-primary.jpg",
+      "role": "Login background / Discovery supporting card",
+      "article": "https://caodang.fpt.edu.vn/tin-tuc-poly/thuc-hanh-livestream-ngay-tai-phong-lab-sinh-vien-fpt-polytechnic-hoc-that-lam-that-len-song-that.html",
+      "source": "https://caodang.fpt.edu.vn/wp-content/uploads/2026/04/1-e1775814263238.jpeg",
+      "original_width": 1920,
+      "original_height": 1655,
+      "width": 1920,
+      "height": 1655,
+      "bytes": 481088,
+      "sha256": "673fb014cd074e0640383b03609524bc63c4ddab0c48ff5f6f4fb04d2cd390be"
+    },
+    {
+      "key": "campus_secondary",
+      "target": "fpt-campus-secondary.jpg",
+      "role": "Learner banner / Discovery supporting card",
+      "article": "https://caodang.fpt.edu.vn/tin-tuc-poly/tim-hieu-he-thong-phong-thuc-hanh-hien-dai-cho-sinh-vien-nganh-du-lich-nha-hang-khach-san.html",
+      "source": "https://caodang.fpt.edu.vn/wp-content/uploads/2025/07/FPT-Polytechnic_Ha-Noi-4.png",
+      "original_width": 900,
+      "original_height": 600,
+      "width": 900,
+      "height": 600,
+      "bytes": 135499,
+      "sha256": "23254a40e94115ae7f42ee8893d9ed70d7ac0e86c3d5d166a356b9bfe9e731a1"
+    }
+  ]
+}
