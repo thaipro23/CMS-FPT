@@ -31,12 +31,11 @@ def _read_patch(name: str) -> str:
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-lms-common-settings",
     _jinja_raw(f"""
-MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = False
+MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = True
 MFE_CONFIG["INDIGO_FOOTER_NAV_LINKS"] = []
 MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
-# Authn release/ulmo.3 can switch to a different upstream ImageLayout. Pin it
-# off so the approved/tested FPT DefaultLayout is always the login layout.
+# Keep the approved FPT DefaultLayout on Authn Ulmo.4.
 MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False
 MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
@@ -58,10 +57,14 @@ import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
 # Authn source is copied into /openedx/app after npm install in Tutor MFE 21.x.
-# Apply our files at pre-npm-build so they cannot be overwritten by that copy.
+# Apply the stable layout first, then the Ulmo.4 viewport/theme refinement.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authn",
-    _jinja_raw(_read_patch("authn.patch")),
+    _jinja_raw(
+        _read_patch("authn.patch")
+        + "\n"
+        + _read_patch("authn_polish.patch")
+    ),
 ))
 
 hooks.Filters.ENV_PATCHES.add_item((
@@ -88,14 +91,8 @@ FPT_LOGO_SLOT = (
 """,
 )
 
-FPT_HIDE_THEME_TOGGLE = (
-    "desktop_secondary_menu_slot",
-    "{ op: PLUGIN_OPERATIONS.Hide, widgetId: 'theme_switch_button' },",
-)
-
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
-    PLUGIN_SLOTS.add_item((_mfe, *FPT_HIDE_THEME_TOGGLE))
 
 PLUGIN_SLOTS.add_item((
     "learner-dashboard",
@@ -114,12 +111,14 @@ def _fpt_brand_all_mfes(mfes: dict[str, MFE_ATTRS_TYPE]) -> dict[str, MFE_ATTRS_
 
 
 # Keep the large legacy branding patch stable and compose small, fail-closed
-# accessibility/contact refinements after it. Both render into one Docker hook.
+# refinements after it. The final V9 layer handles balance and theme parity.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
     _jinja_raw(
         _read_patch("openedx.patch")
         + "\n"
         + _read_patch("openedx_polish.patch")
+        + "\n"
+        + _read_patch("openedx_balance.patch")
     ),
 ))
