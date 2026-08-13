@@ -4,10 +4,10 @@ set -Eeuo pipefail
 log() { printf '[fpt-ulmo-upgrade] %s\n' "$*"; }
 fail() { printf '[fpt-ulmo-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 
-TUTOR_VERSION_TARGET="21.0.7"
+TUTOR_VERSION_TARGET="21.0.9"
 TUTOR_MFE_VERSION_TARGET="21.0.1"
-TUTOR_INDIGO_VERSION_TARGET="21.1.3"
-OPENEDX_VERSION_TARGET="release/ulmo.3"
+TUTOR_INDIGO_VERSION_TARGET="21.2.1"
+OPENEDX_VERSION_TARGET="release/ulmo.4"
 
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v python >/dev/null 2>&1 || fail "python is required"
@@ -31,7 +31,7 @@ CONFIG_FILE="$TUTOR_ROOT/config.yml"
 BACKUP_DIR="$HOME/tutor-backups"
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-CONFIG_BACKUP="$BACKUP_DIR/config.yml.before-ulmo3-$STAMP"
+CONFIG_BACKUP="$BACKUP_DIR/config.yml.before-ulmo4-$STAMP"
 cp -a "$CONFIG_FILE" "$CONFIG_BACKUP"
 log "Tutor config backup: $CONFIG_BACKUP"
 
@@ -61,7 +61,7 @@ for package, wanted in expected.items():
     print(f'[fpt-ulmo-upgrade] PASS {package}={actual}')
 PY
 
-log "Saving Ulmo.3 release versions into Tutor config"
+log "Saving Ulmo.4 release versions into Tutor config"
 tutor config save \
   --set "OPENEDX_COMMON_VERSION=${OPENEDX_VERSION_TARGET}" \
   --set "EDX_PLATFORM_VERSION=${OPENEDX_VERSION_TARGET}" \
@@ -79,5 +79,5 @@ log "PASS Tutor runtime: $(tutor --version)"
 log "PASS OPENEDX_COMMON_VERSION=$COMMON_VERSION"
 log "PASS EDX_PLATFORM_VERSION=$EDX_VERSION"
 log "PASS MFE_COMMON_VERSION=$MFE_COMMON_VERSION"
-log "Ulmo.3 runtime upgrade complete; no containers/images were changed by this script."
+log "Ulmo.4 runtime upgrade complete; no containers/images were changed by this script."
 log "Next: FPT_MFE_BUILDER=mfe-builder-6g bash scripts/fpt-ui-build.sh --restart"
