@@ -98,8 +98,8 @@ PLUGIN_SLOTS.add_item((
 
 
 # Keep the large legacy branding patch stable and compose small, fail-closed
-# refinements after it. Native logo replacement is last so the stock header DOM
-# always reads the final FPT logo assets in both light and dark variants.
+# refinements after it. Homepage copies the already-balanced /courses Hero so
+# both legacy entry points stay pixel-identical. Native logo replacement is last.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
     _jinja_raw(
@@ -108,6 +108,8 @@ hooks.Filters.ENV_PATCHES.add_item((
         + _read_patch("openedx_polish.patch")
         + "\n"
         + _read_patch("openedx_balance.patch")
+        + "\n"
+        + _read_patch("homepage_slider.patch")
         + "\n"
         + _read_patch("native_logo.patch")
     ),
