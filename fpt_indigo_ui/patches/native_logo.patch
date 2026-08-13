@@ -1,0 +1,6 @@
+
+# Keep the stock Indigo/Open edX header DOM. Replace only the assets it already
+# requests so every LMS/MFE header renders FPT Polytechnic without logo slots.
+RUN test -s /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png \
+    && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/logo.png \
+    && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/logo-white.png
