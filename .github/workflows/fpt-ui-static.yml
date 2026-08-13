@@ -11,6 +11,7 @@ on:
       - 'fpt_indigo_ui/**'
       - 'scripts/fpt-ui-*.sh'
       - 'scripts/fpt-ui-*.py'
+      - 'scripts/fpt-ulmo-upgrade.sh'
       - '.github/workflows/fpt-ui-static.yml'
 
 permissions:
@@ -38,7 +39,8 @@ jobs:
             scripts/fpt-ui-build.sh \
             scripts/fpt-ui-smoke.sh \
             scripts/fpt-ui-validate-static.sh \
-            scripts/fpt-ui-validate-polish.sh
+            scripts/fpt-ui-validate-polish.sh \
+            scripts/fpt-ulmo-upgrade.sh
 
       - name: Validate vendored image resolution and manifest
         run: |
