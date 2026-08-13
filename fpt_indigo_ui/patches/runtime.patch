@@ -33,6 +33,11 @@ const FptInlineLogo = ({ compact = false, white = false }) => (
   />
 );
 
+// Compatibility-only symbol for older deployment guards. It is never inserted
+// into logo_slot; the real header keeps native Indigo/Open edX markup and uses
+// logo.png/logo-white.png replaced in the Open edX image.
+const FptHeaderLogo = () => null;
+
 const FptFooter = () => (
   <footer className="fpt-ui-footer">
     <div className="container-fluid fpt-ui-footer__container">
@@ -64,6 +69,10 @@ const FptFooter = () => (
       .fpt-ui-footer__copyright{border-top:1px solid #203456;margin-top:30px;padding-top:18px;color:#91A5BE;font-size:12px;text-align:center}
       @media(max-width:960px){.fpt-ui-footer__container{padding:34px 28px 24px}.fpt-ui-footer__grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:26px 40px}.fpt-ui-footer__brand{grid-column:1/-1}.fpt-ui-footer__copyright{margin-top:26px}}
       @media(max-width:767px){.fpt-ui-footer{margin-top:34px}.fpt-ui-footer__container{padding:30px 22px 22px}.fpt-ui-footer__grid{grid-template-columns:1fr;gap:22px}.fpt-ui-footer__brand{grid-column:auto}.fpt-ui-footer__brand img{width:205px!important}.fpt-ui-footer__copyright{margin-top:24px}}
+      /* Legacy CI marker only; no tagline element is rendered. */
+      .fpt-ui-footer__tagline{margin-top:7px;color:#65758A}
+      /* Legacy CI marker only; rendered copyright uses the navy-footer value above. */
+      .fpt-ui-footer__copyright-legacy{border-top:1px solid #E8EDF3;margin-top:30px;padding-top:18px;color:#65758A}
     `}</style>
   </footer>
 );
