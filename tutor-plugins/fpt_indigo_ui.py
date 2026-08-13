@@ -26,12 +26,12 @@ def _read_patch(name: str) -> str:
         raise RuntimeError(f"Missing FPT UI patch source: {path}") from exc
 
 
-# Shared runtime configuration. Keep Open edX behavior unchanged; this only
-# controls presentation/branding options exposed by the MFEs.
+# Shared runtime configuration. The FPT deployment is intentionally light-only;
+# keep Open edX behavior unchanged and only control presentation/branding options.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-lms-common-settings",
     _jinja_raw(f"""
-MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = True
+MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = False
 MFE_CONFIG["INDIGO_FOOTER_NAV_LINKS"] = []
 MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
@@ -47,8 +47,8 @@ MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 # shared env.config.jsx. Re-importing the React default binding here makes all
 # MFE builds fail with "Identifier 'React' has already been declared". Reuse
 # Indigo's React binding and only add the FPT-scoped getConfig alias.
-# Compatibility assertion marker retained for our existing generated-config
-# guard: import React from 'react';
+# Compatibility assertion marker retained for our generated-config guard:
+# import React from 'react';
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-buildtime-imports",
     _jinja_raw("""// FPT reuses the React binding supplied by Tutor-Indigo 21.2.1.
@@ -57,7 +57,7 @@ import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
 # Authn source is copied into /openedx/app after npm install in Tutor MFE 21.x.
-# Apply the stable layout first, then the Ulmo.4 viewport/theme refinement.
+# Apply the simplified edX-style FPT layout first, then the viewport refinement.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authn",
     _jinja_raw(
@@ -82,9 +82,9 @@ FPT_FOOTER_SLOT = (
 """,
 )
 
-# Do not override logo_slot. The stock Indigo/Open edX header remains intact.
-# The Docker image replaces its native logo.png/logo-white.png files with the
-# vendored FPT Polytechnic logo, which avoids duplicate logo DOM and slot races.
+# Never override logo_slot. Stock Indigo/Open edX header markup remains intact.
+# The Open edX image replaces native logo.png/logo-white.png with the vendored
+# FPT Polytechnic logo, eliminating duplicate logo DOM and slot races.
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
 
@@ -97,9 +97,8 @@ PLUGIN_SLOTS.add_item((
 ))
 
 
-# Keep the large legacy branding patch stable and compose small, fail-closed
-# refinements after it. Homepage copies the already-balanced /courses Hero so
-# both legacy entry points stay pixel-identical. Native logo replacement is last.
+# Compose legacy LMS refinements after the core patch. Homepage reuses the
+# already-balanced /courses Hero so both entry points stay synchronized.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
     _jinja_raw(
