@@ -37,6 +37,7 @@ jobs:
           shellcheck \
             scripts/fpt-ui-setup.sh \
             scripts/fpt-ui-build.sh \
+            scripts/fpt-ui-openedx-overlay.sh \
             scripts/fpt-ui-smoke.sh \
             scripts/fpt-ui-validate-static.sh \
             scripts/fpt-ui-validate-polish.sh \
