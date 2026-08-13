@@ -10,6 +10,7 @@ on:
       - 'openedx_unit_reset/**'
       - 'fpt_indigo_ui/**'
       - 'scripts/fpt-ui-*.sh'
+      - 'scripts/fpt-ui-*.py'
       - '.github/workflows/fpt-ui-static.yml'
 
 permissions:
@@ -38,6 +39,11 @@ jobs:
             scripts/fpt-ui-smoke.sh \
             scripts/fpt-ui-validate-static.sh \
             scripts/fpt-ui-validate-polish.sh
+
+      - name: Validate vendored image resolution and manifest
+        run: |
+          python -m py_compile scripts/fpt-ui-validate-assets.py scripts/fpt-ui-refresh-assets.py
+          python scripts/fpt-ui-validate-assets.py
 
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
