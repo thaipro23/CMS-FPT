@@ -1,5 +1,5 @@
 
-# Final low-risk legacy LMS balance/theme layer after the core Discovery/footer patches.
+# Final low-risk legacy LMS balance layer after the core Discovery/footer patches.
 RUN python - <<'PY4'
 from pathlib import Path
 
@@ -9,7 +9,6 @@ if courses.exists():
     if 'FPT_DISCOVERY_V8_START' not in text:
         raise RuntimeError('FPT Discovery markup missing before V9 balance patch')
 
-    # Remove forced heading breaks so modern browsers can balance line wrapping.
     heading_replacements = {
         'Học tập chủ động.<br/><em>Phát triển mỗi ngày.</em>': 'Học tập chủ động. <em>Phát triển mỗi ngày.</em>',
         'Học để làm được.<br/><em>Học để đi xa hơn.</em>': 'Học để làm được. <em>Học để đi xa hơn.</em>',
@@ -24,9 +23,12 @@ if courses.exists():
         css = r'''
 <style id="fpt-discovery-v9-balance">
 /* FPT_DISCOVERY_V9_BALANCE */
-.fpt-slide__copy{max-width:610px}
+.fpt-slide__copy{display:flex;flex-direction:column;align-items:flex-start;text-align:left;width:100%;max-width:610px;padding-left:0;margin-left:0}
+.fpt-kicker,.fpt-slide h1,.fpt-slide p,.fpt-slide__cta{margin-left:0;align-self:flex-start}
+.fpt-kicker{padding-left:0}
 .fpt-slide h1{max-width:13ch;text-wrap:balance}
 .fpt-slide p{max-width:560px;text-wrap:pretty}
+.fpt-slide__cta{justify-content:flex-start}
 .fpt-collage{height:330px}
 .fpt-card{border-width:5px;box-shadow:0 20px 42px rgba(27,65,111,.18)}
 .fpt-card--main{left:1%;top:28px;width:64%;height:276px;transform:rotate(-2.2deg);z-index:3}
@@ -35,31 +37,8 @@ if courses.exists():
 .fpt-hero__arrow{width:44px;height:44px;margin-top:-22px;border:1px solid #CBD9E8;background:#fff;color:#0B3B82;box-shadow:0 10px 26px rgba(19,61,115,.18)}
 .fpt-hero__arrow:hover{box-shadow:0 12px 30px rgba(19,61,115,.24)}
 .fpt-hero__arrow--prev{left:14px}.fpt-hero__arrow--next{right:14px}
-
-html[data-paragon-theme-variant="dark"] .fpt-hero,
-body.dark-theme .fpt-hero,
-body[data-theme="dark"] .fpt-hero{background:linear-gradient(135deg,#0C121B 0%,#111B28 58%,#1B1511 100%);border-bottom-color:#263447}
-html[data-paragon-theme-variant="dark"] .fpt-slide h1,
-body.dark-theme .fpt-slide h1,
-body[data-theme="dark"] .fpt-slide h1{color:#F4F7FB}
-html[data-paragon-theme-variant="dark"] .fpt-slide p,
-body.dark-theme .fpt-slide p,
-body[data-theme="dark"] .fpt-slide p{color:#C2CEDB}
-html[data-paragon-theme-variant="dark"] .fpt-card,
-body.dark-theme .fpt-card,
-body[data-theme="dark"] .fpt-card{border-color:#263444;background:#111923;box-shadow:0 20px 46px rgba(0,0,0,.34)}
-html[data-paragon-theme-variant="dark"] .fpt-hero__arrow,
-body.dark-theme .fpt-hero__arrow,
-body[data-theme="dark"] .fpt-hero__arrow{background:#172130;border-color:#40516A;color:#F4F7FB}
-html[data-paragon-theme-variant="dark"] .fpt-dot,
-body.dark-theme .fpt-dot,
-body[data-theme="dark"] .fpt-dot{background:#62748B}
-html[data-paragon-theme-variant="dark"] .fpt-dot.is-active,
-body.dark-theme .fpt-dot.is-active,
-body[data-theme="dark"] .fpt-dot.is-active{background:#F36F21}
-
 @media(max-width:1050px){.fpt-collage{height:296px}.fpt-card--main{height:244px}.fpt-card--top,.fpt-card--bottom{height:128px}}
-@media(max-width:820px){.fpt-slide h1{max-width:16ch}.fpt-collage{height:290px}.fpt-card--main{left:1%;width:64%;height:242px}.fpt-card--top{right:0;width:35%;height:128px}.fpt-card--bottom{right:1%;width:37%;height:128px}}
+@media(max-width:820px){.fpt-slide__copy{max-width:680px}.fpt-slide h1{max-width:16ch}.fpt-collage{height:290px}.fpt-card--main{left:1%;width:64%;height:242px}.fpt-card--top{right:0;width:35%;height:128px}.fpt-card--bottom{right:1%;width:37%;height:128px}}
 @media(max-width:520px){.fpt-slide h1{max-width:none;text-wrap:balance}.fpt-collage{height:250px}.fpt-card--main{left:0;top:22px;width:68%;height:208px}.fpt-card--top{right:0;top:2px;width:37%;height:108px}.fpt-card--bottom{right:0;bottom:3px;width:39%;height:108px}}
 </style>
 '''
@@ -82,21 +61,13 @@ if footer.exists():
         theme_css = r'''
 <style id="fpt-lms-footer-v9-theme">
 /* FPT_LMS_FOOTER_V9_THEME */
-html[data-paragon-theme-variant="dark"] .fpt-lms-footer,
-body.dark-theme .fpt-lms-footer,
-body[data-theme="dark"] .fpt-lms-footer{background:linear-gradient(180deg,#111820,#0C1219);border-top-color:#273444;color:#D8E1EB}
-html[data-paragon-theme-variant="dark"] .fpt-lms-footer__title,
-body.dark-theme .fpt-lms-footer__title,
-body[data-theme="dark"] .fpt-lms-footer__title{color:#8CB8F2}
-html[data-paragon-theme-variant="dark"] .fpt-lms-footer p,
-body.dark-theme .fpt-lms-footer p,
-body[data-theme="dark"] .fpt-lms-footer p{color:#BCC8D5}
-html[data-paragon-theme-variant="dark"] .fpt-lms-footer a,
-body.dark-theme .fpt-lms-footer a,
-body[data-theme="dark"] .fpt-lms-footer a{color:#D6E5F6}
-html[data-paragon-theme-variant="dark"] .fpt-lms-footer__copy,
-body.dark-theme .fpt-lms-footer__copy,
-body[data-theme="dark"] .fpt-lms-footer__copy{border-top-color:#273444;color:#93A4B8}
+.fpt-lms-footer{background:linear-gradient(180deg,#0B1C36,#08162B);border-top-color:#203456;color:#D6E1EF}
+.fpt-lms-footer__logo{filter:brightness(0) invert(1)}
+.fpt-lms-footer__title{color:#9FC1EA}
+.fpt-lms-footer p{color:#C5D2E2}
+.fpt-lms-footer a{color:#E8F1FC}
+.fpt-lms-footer a:hover{color:#fff}
+.fpt-lms-footer__copy{border-top-color:#203456;color:#91A5BE}
 </style>
 '''
         close = '</footer>'
