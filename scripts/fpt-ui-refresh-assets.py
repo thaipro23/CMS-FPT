@@ -80,9 +80,9 @@ SPECS = (
             "https://caodang.fpt.edu.vn/wp-content/uploads/2025/07/FPT-Polytechnic_Ha-Noi-3.png",
             "https://caodang.fpt.edu.vn/wp-content/uploads/2026/03/image1-9.jpg",
         ),
-        min_width=1200,
-        min_height=650,
-        max_width=1920,
+        min_width=900,
+        min_height=550,
+        max_width=1600,
         output_format="JPEG",
     ),
 )
