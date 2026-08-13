@@ -46,6 +46,10 @@ cat > "$FIXTURE/themes/indigo/lms/templates/courseware/courses.html" <<'HTML'
 HTML
 cat > "$FIXTURE/themes/indigo/lms/templates/footer.html" <<'HTML'
 <footer class="fpt-lms-footer">
+<style>
+.fpt-lms-footer__grid{max-width:1340px;margin:0 auto;padding:40px 28px 28px;display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}
+@media(max-width:760px){.fpt-lms-footer{margin-top:34px}.fpt-lms-footer__grid{grid-template-columns:1fr;gap:24px;padding:30px 22px 24px}.fpt-lms-footer__logo{width:205px}.fpt-lms-footer__copy{padding:17px 22px 22px}}
+</style>
 <div><strong class="fpt-lms-footer__title">Trụ sở chính</strong><p>Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br/>Phường Xuân Phương, TP Hà Nội</p></div>
 </footer>
 HTML
@@ -86,24 +90,45 @@ if "root.addEventListener('focusout',start);" in courses:
     raise SystemExit('obsolete focusout autoplay behavior remains after polish')
 
 contact_markers = [
-    'FPT Polytechnic Hà Nội',
-    'Cổng Ong, Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc',
-    'phường Xuân Phương, TP Hà Nội',
+    'ĐỊA CHỈ',
+    'Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc',
+    'phường Xuân Phương',
 ]
 for marker in contact_markers:
     if marker not in footer:
-        raise SystemExit(f'official legacy footer contact marker missing: {marker}')
+        raise SystemExit(f'legacy footer contact marker missing: {marker}')
     if marker not in runtime:
-        raise SystemExit(f'official MFE footer contact marker missing: {marker}')
-if 'Trụ sở chính' in footer or 'Trụ sở chính' in runtime:
-    raise SystemExit('obsolete Trụ sở chính label remains in a rendered FPT footer source')
+        raise SystemExit(f'MFE footer contact marker missing: {marker}')
+
+for obsolete in ('Trụ sở chính', 'Cổng Ong', 'Hà Nội'):
+    if obsolete in footer or obsolete in runtime:
+        raise SystemExit(f'obsolete footer wording remains rendered: {obsolete}')
+
+legacy_layout_markers = [
+    'gap:44px',
+    '@media(max-width:960px)',
+    'grid-template-columns:minmax(0,1fr) minmax(0,1fr)',
+    '.fpt-lms-footer__grid>div:first-child{grid-column:1/-1}',
+]
+for marker in legacy_layout_markers:
+    if marker not in footer:
+        raise SystemExit(f'balanced legacy footer marker missing: {marker}')
+
+runtime_layout_markers = [
+    '@media(max-width:960px)',
+    '.fpt-ui-footer__brand{grid-column:1/-1}',
+    '@media(max-width:1050px)',
+]
+for marker in runtime_layout_markers:
+    if marker not in runtime:
+        raise SystemExit(f'balanced MFE responsive marker missing: {marker}')
 
 if '_read_patch("openedx_polish.patch")' not in plugin:
     raise SystemExit('Tutor plugin is not composing openedx_polish.patch')
 if plugin.find('_read_patch("openedx.patch")') > plugin.find('_read_patch("openedx_polish.patch")'):
     raise SystemExit('polish patch must be composed after the core Open edX patch')
 
-print('[fpt-ui-polish] Accessibility/contact fixture PASS')
+print('[fpt-ui-polish] Accessibility/layout/contact fixture PASS')
 PY
 
 log "ALL POLISH TESTS PASS"
