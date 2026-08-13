@@ -35,9 +35,21 @@ if footer.exists():
     text = footer.read_text(encoding='utf-8')
     text = replace_once(
         text,
+        '.fpt-lms-footer__grid{max-width:1340px;margin:0 auto;padding:40px 28px 28px;display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}',
+        '.fpt-lms-footer__grid{max-width:1340px;margin:0 auto;padding:40px 28px 28px;display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(210px,.88fr) minmax(280px,1.22fr);gap:44px;align-items:start}',
+        'legacy footer desktop proportions',
+    )
+    text = replace_once(
+        text,
+        '@media(max-width:760px){.fpt-lms-footer{margin-top:34px}.fpt-lms-footer__grid{grid-template-columns:1fr;gap:24px;padding:30px 22px 24px}.fpt-lms-footer__logo{width:205px}.fpt-lms-footer__copy{padding:17px 22px 22px}}',
+        '@media(max-width:960px){.fpt-lms-footer__grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:26px 40px;padding:34px 28px 24px}.fpt-lms-footer__grid>div:first-child{grid-column:1/-1}}@media(max-width:760px){.fpt-lms-footer{margin-top:34px}.fpt-lms-footer__grid{grid-template-columns:1fr;gap:22px;padding:30px 22px 24px}.fpt-lms-footer__grid>div:first-child{grid-column:auto}.fpt-lms-footer__logo{width:205px}.fpt-lms-footer__copy{padding:17px 22px 22px}}',
+        'legacy footer tablet/mobile proportions',
+    )
+    text = replace_once(
+        text,
         '<div><strong class="fpt-lms-footer__title">Trụ sở chính</strong><p>Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br/>Phường Xuân Phương, TP Hà Nội</p></div>',
-        '<div><strong class="fpt-lms-footer__title">FPT Polytechnic Hà Nội</strong><p>Cổng Ong, Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc,<br/>phường Xuân Phương, TP Hà Nội</p></div>',
-        'official FPT Polytechnic Hanoi contact wording',
+        '<div><strong class="fpt-lms-footer__title">ĐỊA CHỈ</strong><p>Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc,<br/>phường Xuân Phương</p></div>',
+        'simplified FPT Polytechnic address wording',
     )
     footer.write_text(text, encoding='utf-8')
 PY3
