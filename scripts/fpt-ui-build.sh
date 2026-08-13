@@ -28,8 +28,9 @@ elif [ -n "${1:-}" ]; then
   fail "Unknown argument: $1 (supported: --restart)"
 fi
 
+MFE_BUILDER="${FPT_MFE_BUILDER:-}"
 log "Source commit: $(git -C "$REPO_ROOT" rev-parse HEAD)"
-log "Buildx builder: ${BUILDX_BUILDER:-docker default}"
+log "MFE Buildx builder: ${MFE_BUILDER:-docker default}"
 
 UNIT_RESET_EXPECTED_VERSION="$(python - "$REPO_ROOT/openedx_unit_reset/setup.py" <<'PY'
 from pathlib import Path
@@ -140,8 +141,14 @@ echo "[fpt-ui-build] Open edX image branding markers PASS"
 ls -lh "$base"
 '
 
-log "Building MFE image (no --no-cache)"
-tutor images build mfe
+if [ -n "$MFE_BUILDER" ]; then
+  docker buildx inspect "$MFE_BUILDER" >/dev/null 2>&1 || fail "MFE Buildx builder '$MFE_BUILDER' does not exist"
+  log "Building MFE image with builder '$MFE_BUILDER' (no --no-cache)"
+  BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe
+else
+  log "Building MFE image with Docker default builder (no --no-cache)"
+  tutor images build mfe
+fi
 
 log "Verifying compiled Authn/Learner Dashboard/Learning artifacts in $MFE_IMAGE"
 CID="$(docker create "$MFE_IMAGE")"
