@@ -16,6 +16,7 @@ bash -n scripts/fpt-ui-setup.sh
 bash -n scripts/fpt-ui-build.sh
 bash -n scripts/fpt-ui-smoke.sh
 bash -n scripts/fpt-ui-validate-static.sh
+bash -n scripts/fpt-ulmo-upgrade.sh
 python -m py_compile tutor-plugins/fpt_indigo_ui.py
 python -m py_compile tutor-plugins/openedx_unit_reset.py
 python -m py_compile openedx_unit_reset/setup.py
@@ -183,6 +184,7 @@ openedx = Path('fpt_indigo_ui/patches/openedx.patch').read_text(encoding='utf-8'
 setup = Path('scripts/fpt-ui-setup.sh').read_text(encoding='utf-8')
 build = Path('scripts/fpt-ui-build.sh').read_text(encoding='utf-8')
 smoke = Path('scripts/fpt-ui-smoke.sh').read_text(encoding='utf-8')
+upgrade = Path('scripts/fpt-ulmo-upgrade.sh').read_text(encoding='utf-8')
 
 checks = [
     ('mfe-dockerfile-pre-npm-build-authn' in plugin, 'safe Authn pre-build hook missing'),
@@ -195,15 +197,21 @@ checks = [
     ('useEffect(' not in runtime and 'getConfig()' not in runtime, 'unscoped runtime dependency present'),
     ('getFptConfig()' in runtime, 'runtime scoped config alias unused'),
     (openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') == 4, 'vendored asset COPY count must be four'),
-    ('EXPECTED_COMMON_VERSION="release/ulmo.3"' in setup, 'Ulmo.3 baseline guard missing'),
+    ('EXPECTED_COMMON_VERSION="release/ulmo.4"' in setup, 'Ulmo.4 baseline guard missing'),
+    ('EXPECTED_TUTOR_VERSION="21.0.9"' in setup, 'Tutor 21.0.9 guard missing'),
+    ('EXPECTED_ULMO4_COMMIT="46c543590c78aa1bfa846d47a4f1c5c6ec388490"' in setup, 'Ulmo.4 ancestry guard missing'),
     ('FPT_UI_ALLOW_UNTESTED_BASELINE' in setup, 'explicit compatibility-test override missing'),
     ('git -C "$REPO_ROOT" diff --quiet' in setup, 'dirty tracked source guard missing'),
-    ('frontend-app-authn.git#release/ulmo.3' in setup, 'generated Authn source tag guard missing'),
+    ('frontend-app-authn.git#release/ulmo.4' in setup, 'generated Authn Ulmo.4 source tag guard missing'),
     ('FPT_LEARNING_REPO' in setup and 'mfe-unit-reset' in setup, 'custom Learning baseline guard missing'),
     ('UnitResetButton.jsx' in setup and 'function getLmsBaseUrl()' in setup, 'Unit Reset frontend source marker guard missing'),
     ("item.get('image') == 'mfe'" in setup and "item.get('context') == 'learning-src'" in setup, 'Learning MFE build-mount assertion missing'),
     ('GENERATED_LMS_SETTINGS' in setup and 'Rendered LMS MFE configuration PASS' in setup, 'rendered LMS config assertion missing'),
     ('MFE_ENV_CONFIG' in setup and 'FptLearnerBanner' in setup, 'rendered MFE runtime assertion missing'),
+    ('TUTOR_VERSION_TARGET="21.0.9"' in upgrade, 'Ulmo upgrade helper Tutor target is not latest 21.x'),
+    ('TUTOR_MFE_VERSION_TARGET="21.0.1"' in upgrade, 'Ulmo upgrade helper MFE target mismatch'),
+    ('TUTOR_INDIGO_VERSION_TARGET="21.2.1"' in upgrade, 'Ulmo upgrade helper Indigo target mismatch'),
+    ('OPENEDX_VERSION_TARGET="release/ulmo.4"' in upgrade, 'Ulmo upgrade helper Open edX target mismatch'),
     ('docker info' in build, 'Docker daemon preflight missing'),
     ('metadata.version("openedx-unit-reset")' in build, 'Unit Reset backend package verification missing'),
     ('AI_MFE_REQUEST_RESIZE' in build and 'AI_QUIZ_ACTIVE_SESSION_READY_RELOAD' in build, 'compiled Learning Unit Reset verification missing'),
