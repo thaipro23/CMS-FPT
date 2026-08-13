@@ -5,8 +5,6 @@ log() { printf '[fpt-ui-build] %s\n' "$*"; }
 warn() { printf '[fpt-ui-build] WARN: %s\n' "$*" >&2; }
 fail() {
   printf '[fpt-ui-build] ERROR: %s\n' "$*" >&2
-  # After the deployment transaction is initialized, assertion failures must
-  # use the same rollback path as command/subprocess failures.
   if declare -F rollback_on_error >/dev/null 2>&1; then
     rollback_on_error 1
   fi
@@ -28,9 +26,29 @@ elif [ -n "${1:-}" ]; then
   fail "Unknown argument: $1 (supported: --restart)"
 fi
 
+OPENEDX_BUILDER="${FPT_OPENEDX_BUILDER:-default}"
 MFE_BUILDER="${FPT_MFE_BUILDER:-}"
+MIN_FREE_GB="${FPT_UI_MIN_FREE_GB:-20}"
 log "Source commit: $(git -C "$REPO_ROOT" rev-parse HEAD)"
+log "Open edX Buildx builder: $OPENEDX_BUILDER"
 log "MFE Buildx builder: ${MFE_BUILDER:-docker default}"
+
+# Keep Open edX and MFE builds isolated. A custom MFE builder may contain many
+# gigabytes of Node/MFE cache and must not silently become the Open edX builder.
+docker buildx inspect "$OPENEDX_BUILDER" >/dev/null 2>&1 || fail "Open edX Buildx builder '$OPENEDX_BUILDER' does not exist"
+if [ -n "$MFE_BUILDER" ]; then
+  docker buildx inspect "$MFE_BUILDER" >/dev/null 2>&1 || fail "MFE Buildx builder '$MFE_BUILDER' does not exist"
+fi
+
+# Open edX image export temporarily needs substantial free space. Fail early
+# instead of filling / and leaving BuildKit with partial snapshots.
+FREE_KB="$(df -Pk / | awk 'NR==2 {print $4}')"
+MIN_FREE_KB="$((MIN_FREE_GB * 1024 * 1024))"
+if [ "$FREE_KB" -lt "$MIN_FREE_KB" ]; then
+  FREE_GB="$(awk -v kb="$FREE_KB" 'BEGIN {printf "%.1f", kb/1024/1024}')"
+  fail "Only ${FREE_GB} GiB free on /. Need at least ${MIN_FREE_GB} GiB before Open edX build. Keep caches intact and free non-cache disk first, or intentionally override FPT_UI_MIN_FREE_GB."
+fi
+log "Disk preflight PASS: at least ${MIN_FREE_GB} GiB free on /"
 
 UNIT_RESET_EXPECTED_VERSION="$(python - "$REPO_ROOT/openedx_unit_reset/setup.py" <<'PY'
 from pathlib import Path
@@ -46,8 +64,6 @@ PY
 [ -n "$UNIT_RESET_EXPECTED_VERSION" ] || fail "Could not resolve Unit Reset package version"
 log "Expected Unit Reset backend version: $UNIT_RESET_EXPECTED_VERSION"
 
-# Static/fixture validation is intentionally CI-only. Production/UAT hosts do
-# not need Node.js just to launch a Docker-based Open edX/MFE build.
 log "Preflight/setup"
 bash "$REPO_ROOT/scripts/fpt-ui-setup.sh"
 
@@ -56,10 +72,6 @@ MFE_IMAGE="$(tutor config printvalue MFE_DOCKER_IMAGE 2>/dev/null || true)"
 [ -n "$OPENEDX_IMAGE" ] || fail "Could not resolve DOCKER_IMAGE_OPENEDX"
 [ -n "$MFE_IMAGE" ] || fail "Could not resolve MFE_DOCKER_IMAGE"
 
-# Treat the two shared image tags as one deploy transaction. If a later build,
-# verification, restart or smoke check fails, restore the exact image IDs that
-# were tagged before this run. Running containers are only restarted during
-# rollback if this script already touched the deployment.
 PREV_OPENEDX_ID="$(docker image inspect --format '{{.Id}}' "$OPENEDX_IMAGE" 2>/dev/null || true)"
 PREV_MFE_ID="$(docker image inspect --format '{{.Id}}' "$MFE_IMAGE" 2>/dev/null || true)"
 ROLLBACK_ARMED=0
@@ -104,8 +116,8 @@ rollback_on_error() {
 }
 trap rollback_on_error ERR
 
-log "Building Open edX image (BuildKit cache enabled)"
-tutor images build openedx
+log "Building Open edX image with builder '$OPENEDX_BUILDER' (BuildKit cache enabled)"
+BUILDX_BUILDER="$OPENEDX_BUILDER" tutor images build openedx
 
 log "Verifying FPT assets/templates + Unit Reset backend in $OPENEDX_IMAGE"
 docker run --rm --entrypoint bash -e UNIT_RESET_EXPECTED_VERSION="$UNIT_RESET_EXPECTED_VERSION" "$OPENEDX_IMAGE" -lc '
@@ -122,8 +134,17 @@ done
 
 grep -Fq "FPT_DISCOVERY_V8_START" /openedx/themes/indigo/lms/templates/courseware/courses.html
 grep -Fq "fpt-hero-slider" /openedx/themes/indigo/lms/templates/courseware/courses.html
+grep -Fq "fpt-hero-slider" /openedx/themes/indigo/lms/templates/index.html
+grep -Fq "id=\"discovery-form\"" /openedx/themes/indigo/lms/templates/index.html
 grep -Fq "fpt-lms-footer" /openedx/themes/indigo/lms/templates/footer.html
-grep -Fq "/static/indigo/images/fpt/fpt-polytechnic-logo.png" /openedx/edx-platform/lms/templates/header/navbar-logo-header.html
+
+# Native header branding contract: keep upstream header markup and replace only
+# the logo assets that Indigo/Open edX already requests.
+test -s /openedx/staticfiles/indigo/images/logo.png
+test -s /openedx/staticfiles/indigo/images/logo-white.png
+cmp -s "$base/fpt-polytechnic-logo.png" /openedx/staticfiles/indigo/images/logo.png
+cmp -s "$base/fpt-polytechnic-logo.png" /openedx/staticfiles/indigo/images/logo-white.png
+grep -Fq "branding_api.get_logo_url(is_secure)" /openedx/edx-platform/lms/templates/header/navbar-logo-header.html
 
 python - <<"PY"
 import importlib
@@ -142,12 +163,11 @@ ls -lh "$base"
 '
 
 if [ -n "$MFE_BUILDER" ]; then
-  docker buildx inspect "$MFE_BUILDER" >/dev/null 2>&1 || fail "MFE Buildx builder '$MFE_BUILDER' does not exist"
   log "Building MFE image with builder '$MFE_BUILDER' (no --no-cache)"
   BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe
 else
   log "Building MFE image with Docker default builder (no --no-cache)"
-  tutor images build mfe
+  BUILDX_BUILDER=default tutor images build mfe
 fi
 
 log "Verifying compiled Authn/Learner Dashboard/Learning artifacts in $MFE_IMAGE"
@@ -218,7 +238,6 @@ if [ "$RESTART" -eq 1 ]; then
   bash "$REPO_ROOT/scripts/fpt-ui-smoke.sh" "$LMS_URL" "$MFE_URL"
 fi
 
-# Commit the transaction only after all image and optional live smoke checks pass.
 ROLLBACK_ARMED=0
 trap - ERR
 log "BUILD VERIFIED: openedx + mfe + Unit Reset backend/frontend"
