@@ -1,0 +1,74 @@
+name: Refresh FPT UI Official Assets
+
+on:
+  push:
+    branches:
+      - fpt-indigo-ui
+    paths:
+      - '.github/workflows/fpt-ui-refresh-assets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fpt-ui-official-assets
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout UAT branch
+        uses: actions/checkout@v4
+        with:
+          ref: fpt-indigo-ui
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install image tooling
+        run: python -m pip install --disable-pip-version-check 'Pillow>=10,<12'
+
+      - name: Download, validate and optimize official imagery
+        run: python scripts/fpt-ui-refresh-assets.py
+
+      - name: Show resulting assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          root = Path('fpt_indigo_ui/assets')
+          for name in (
+              'fpt-polytechnic-logo.png',
+              'fpt-students.png',
+              'fpt-campus-primary.jpg',
+              'fpt-campus-secondary.jpg',
+          ):
+              path = root / name
+              with Image.open(path) as image:
+                  print(f'{name}: {image.width}x{image.height}, {path.stat().st_size} bytes, {image.format}')
+          PY
+          cat fpt_indigo_ui/assets/manifest.json
+
+      - name: Commit vendored assets
+        run: |
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            fpt_indigo_ui/assets/fpt-students.png \
+            fpt_indigo_ui/assets/fpt-campus-primary.jpg \
+            fpt_indigo_ui/assets/fpt-campus-secondary.jpg \
+            fpt_indigo_ui/assets/manifest.json
+          if git diff --cached --quiet; then
+            echo 'Official assets already match the curated sources.'
+          else
+            git commit -m 'assets: refresh high-resolution official FPT imagery'
+            git push origin HEAD:fpt-indigo-ui
+          fi
