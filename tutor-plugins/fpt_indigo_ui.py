@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tutor import hooks
-from tutormfe.hooks import MFE_APPS, MFE_ATTRS_TYPE, PLUGIN_SLOTS
+from tutormfe.hooks import PLUGIN_SLOTS
 
 FPT_PRIMARY = "#0B3B82"
 FPT_PRIMARY_DARK = "#072B61"
@@ -82,15 +82,9 @@ FPT_FOOTER_SLOT = (
 """,
 )
 
-FPT_LOGO_SLOT = (
-    "logo_slot",
-    """
-    { op: PLUGIN_OPERATIONS.Hide, widgetId: 'custom_logo' },
-    { op: PLUGIN_OPERATIONS.Hide, widgetId: 'default_contents' },
-    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_logo', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptHeaderLogo } },
-""",
-)
-
+# Do not override logo_slot. The stock Indigo/Open edX header remains intact.
+# The Docker image replaces its native logo.png/logo-white.png files with the
+# vendored FPT Polytechnic logo, which avoids duplicate logo DOM and slot races.
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
 
@@ -101,13 +95,6 @@ PLUGIN_SLOTS.add_item((
     { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_learner_banner', type: DIRECT_PLUGIN, priority: 1, RenderWidget: FptLearnerBanner } },
 """,
 ))
-
-
-@MFE_APPS.add()
-def _fpt_brand_all_mfes(mfes: dict[str, MFE_ATTRS_TYPE]) -> dict[str, MFE_ATTRS_TYPE]:
-    for mfe in mfes:
-        PLUGIN_SLOTS.add_item((str(mfe), *FPT_LOGO_SLOT))
-    return mfes
 
 
 # Keep the large legacy branding patch stable and compose small, fail-closed
