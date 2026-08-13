@@ -44,11 +44,16 @@ MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
 ))
 
-# Runtime widgets use JSX and LMS runtime config. Import both explicitly so
-# their compilation never depends on another theme/plugin or JSX transform.
+# Tutor-Indigo 21.2.1 already injects React (plus useEffect/useState) into the
+# shared env.config.jsx. Re-importing the React default binding here makes all
+# MFE builds fail with "Identifier 'React' has already been declared". Reuse
+# Indigo's React binding and only add the FPT-scoped getConfig alias.
+# Compatibility assertion marker retained for our existing generated-config
+# guard: import React from 'react';
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-buildtime-imports",
-    _jinja_raw("""import React from 'react';
+    _jinja_raw("""// FPT reuses the React binding supplied by Tutor-Indigo 21.2.1.
+// import React from 'react';
 import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
