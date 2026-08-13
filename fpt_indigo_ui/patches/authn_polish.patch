@@ -4,6 +4,21 @@
 RUN node - <<'JS3'
 const fs = require('fs');
 
+const layoutRoot = '/openedx/app/src/base-container/components/default-layout';
+for (const name of ['LargeLayout.jsx', 'MediumLayout.jsx', 'SmallLayout.jsx']) {
+  const path = `${layoutRoot}/${name}`;
+  if (!fs.existsSync(path)) {
+    continue;
+  }
+  let source = fs.readFileSync(path, 'utf8');
+  const plain = '<div className="fpt-auth-panel">';
+  const decorated = `<div className="fpt-auth-panel" style={{ backgroundImage: 'linear-gradient(rgba(5,39,88,.94), rgba(5,39,88,.94)), url(' + getFptAsset('fpt-campus-primary.jpg') + ')' }}>`;
+  if (source.includes(plain)) {
+    source = source.replace(plain, decorated);
+    fs.writeFileSync(path, source, 'utf8');
+  }
+}
+
 const scss = '/openedx/app/src/index.scss';
 if (!fs.existsSync(scss)) {
   throw new Error(`Authn stylesheet not found: ${scss}`);
@@ -17,6 +32,7 @@ if (!current.includes(marker)) {
 /* FPT Polytechnic V9 authn viewport/theme polish */
 html { color-scheme:light; background:#fff; }
 body { background:#fff; }
+.fpt-auth-panel{background-size:cover;background-position:center;background-repeat:no-repeat}
 
 @media (min-width:1200px) {
   html,body,#root { height:100%; min-height:0; overflow:hidden; }
