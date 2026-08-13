@@ -29,6 +29,7 @@ elif [ -n "${1:-}" ]; then
 fi
 
 log "Source commit: $(git -C "$REPO_ROOT" rev-parse HEAD)"
+log "Buildx builder: ${BUILDX_BUILDER:-docker default}"
 
 UNIT_RESET_EXPECTED_VERSION="$(python - "$REPO_ROOT/openedx_unit_reset/setup.py" <<'PY'
 from pathlib import Path
@@ -44,9 +45,8 @@ PY
 [ -n "$UNIT_RESET_EXPECTED_VERSION" ] || fail "Could not resolve Unit Reset package version"
 log "Expected Unit Reset backend version: $UNIT_RESET_EXPECTED_VERSION"
 
-log "Static/fixture validation"
-bash "$REPO_ROOT/scripts/fpt-ui-validate-static.sh"
-
+# Static/fixture validation is intentionally CI-only. Production/UAT hosts do
+# not need Node.js just to launch a Docker-based Open edX/MFE build.
 log "Preflight/setup"
 bash "$REPO_ROOT/scripts/fpt-ui-setup.sh"
 
