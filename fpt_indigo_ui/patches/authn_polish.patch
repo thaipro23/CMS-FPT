@@ -1,6 +1,6 @@
 
-# Ulmo.4 Authn viewport/theme polish layered after the stable FPT V8 layout.
-# Keep this patch idempotent and presentation-only.
+# Final Authn viewport polish: keep the native edX-style FPT composition
+# light-only, full-height on desktop, and free of nested vertical scrolling.
 RUN node - <<'JS3'
 const fs = require('fs');
 
@@ -15,110 +15,35 @@ if (!current.includes(marker)) {
   current += String.raw`
 
 /* FPT Polytechnic V9 authn viewport/theme polish */
-@media (min-width:1200px) {
-  html,body,#root { height:100%; min-height:0; }
-  body { overflow:hidden; }
-  .layout {
-    height:100vh;
-    height:100dvh;
-    min-height:0 !important;
-    max-height:100vh;
-    max-height:100dvh;
-    margin:0 !important;
-    padding:0 !important;
-    overflow:hidden;
-  }
-  .fpt-auth-visual--large {
-    flex:0 0 50%;
-    width:50%;
-    height:100%;
-    min-height:0;
-  }
-  .fpt-auth-visual--large .fpt-auth-visual__content {
-    padding:28px 8.2% 24px 7.2%;
-  }
-  .fpt-auth-visual--large .fpt-auth-logo { width:176px; }
-  .fpt-auth-visual--large .fpt-auth-copy {
-    margin:auto 0 0;
-    max-width:570px;
-    padding-bottom:16px;
-  }
-  .fpt-auth-visual--large .fpt-auth-copy h1 {
-    font-size:clamp(34px,3.05vw,50px);
-    line-height:1.04;
-    text-wrap:balance;
-  }
-  .fpt-auth-visual--large .fpt-auth-copy p {
-    margin-top:14px;
-    max-width:530px;
-    font-size:15px;
-    line-height:1.55;
-  }
-  .fpt-auth-visual--large .fpt-auth-features {
-    gap:10px;
-    padding-top:20px;
-  }
-  .fpt-auth-visual--large .fpt-auth-feature {
-    grid-template-columns:34px 1fr;
-    gap:8px;
-    font-size:11px;
-    line-height:1.35;
-  }
-  .fpt-auth-visual--large .fpt-auth-feature__icon {
-    width:34px;
-    height:34px;
-    border-radius:10px;
-    font-size:14px;
-  }
-  .layout > .content {
-    flex:0 0 50%;
-    width:50% !important;
-    height:100%;
-    min-height:0;
-    overflow-y:auto;
-    padding:clamp(22px,3vh,34px) clamp(30px,4vw,64px) clamp(22px,3vh,34px) clamp(96px,7vw,118px);
-  }
-  #main-content { position:relative; width:min(430px,100%); }
-}
+html { color-scheme:light; background:#fff; }
+body { background:#fff; }
 
-/* The custom Authn composition must follow the active Paragon theme instead
-   of forcing a light surface when a user has selected dark mode. */
-[data-paragon-theme-variant="dark"] body { background:#0B1017; }
-[data-paragon-theme-variant="dark"] .layout > .content {
-  background:radial-gradient(circle at 88% 10%,rgba(43,104,177,.14),transparent 31%),linear-gradient(155deg,#101722,#0B1017 72%);
+@media (min-width:1200px) {
+  html,body,#root { height:100%; min-height:0; overflow:hidden; }
+  .layout { height:100vh; height:100dvh; min-height:0!important; max-height:100dvh; overflow:hidden; }
+  .fpt-auth-visual--large,.fpt-auth-visual--large .fpt-auth-panel,.fpt-auth-visual--large .fpt-auth-wedge { height:100%; min-height:0; }
+  .layout > .content { height:100%; min-height:0; overflow:hidden; }
+  #main-content { max-height:calc(100dvh - 64px); overflow:visible; }
 }
-[data-paragon-theme-variant="dark"] #main-content {
-  background:#151C26;
-  border-color:#2A3645;
-  box-shadow:0 22px 60px rgba(0,0,0,.28);
-  color:#F2F6FA;
-}
-[data-paragon-theme-variant="dark"] #main-content h1,
-[data-paragon-theme-variant="dark"] #main-content h2,
-[data-paragon-theme-variant="dark"] #main-content h3 { color:#F4F7FB; }
-[data-paragon-theme-variant="dark"] #main-content .form-control {
-  background:#0F1620;
-  border-color:#415065;
-  color:#F3F6FA;
-}
-[data-paragon-theme-variant="dark"] #main-content .form-control:focus {
-  border-color:#7EA6D6;
-  box-shadow:0 0 0 3px rgba(126,166,214,.16);
-}
-[data-paragon-theme-variant="dark"] #main-content .btn-link { color:#D6E0EA !important; }
 
 @media (min-width:768px) and (max-width:1199.98px) {
   body { overflow:auto; }
-  .fpt-auth-visual--medium { min-height:245px; }
-  .fpt-auth-visual--medium .fpt-auth-visual__content { padding-top:24px; padding-bottom:28px; }
-  .fpt-auth-visual--medium .fpt-auth-copy h1 { text-wrap:balance; }
 }
 
 @media (max-width:767.98px) {
   body { overflow:auto; }
-  .fpt-auth-visual--small { min-height:176px; }
-  .fpt-auth-visual--small .fpt-auth-visual__content { padding-top:18px; padding-bottom:22px; }
 }
+
+/* Dark mode is intentionally disabled for the FPT deployment. These guards
+   prevent a stale persisted variant from painting the custom Authn shell dark
+   before runtime configuration normalizes the document back to light. */
+html[data-paragon-theme-variant="dark"],
+html[data-paragon-theme-variant="dark"] body,
+html[data-paragon-theme-variant="dark"] #root,
+html[data-paragon-theme-variant="dark"] .layout,
+html[data-paragon-theme-variant="dark"] .layout > .content { background:#fff!important; color:#172B45!important; }
+html[data-paragon-theme-variant="dark"] #main-content,
+html[data-paragon-theme-variant="dark"] #main-content .form-control { background:#fff!important; color:#172B45!important; border-color:#C7D3E0!important; }
 `;
   fs.writeFileSync(scss, current, 'utf8');
 }
