@@ -169,8 +169,11 @@ grep -Fq "FPT_DISCOVERY_V9_BALANCE" "$home"
 grep -Fq "id=\"discovery-form\"" "$home"
 grep -Fq "fpt-lms-footer" "$footer"
 
+test -s "$assets/fpt/fpt-polytechnic-logo.png"
+test -s "$assets/fpt/fpt-polytechnic-logo-white.png"
 cmp -s "$assets/fpt/fpt-polytechnic-logo.png" "$assets/logo.png"
-cmp -s "$assets/fpt/fpt-polytechnic-logo.png" "$assets/logo-white.png"
+cmp -s "$assets/fpt/fpt-polytechnic-logo-white.png" "$assets/logo-white.png"
+! cmp -s "$assets/logo.png" "$assets/logo-white.png"
 
 python - <<"PY"
 import importlib.metadata as metadata
@@ -182,7 +185,7 @@ if actual != expected:
 print(f"Unit Reset backend PASS {actual}")
 PY
 
-echo "Open edX FPT homepage/courses/logo verification PASS"
+echo "Open edX FPT homepage/courses/colour+white native logo verification PASS"
 '
 
 if [ "$RESTART" -eq 1 ]; then
