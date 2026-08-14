@@ -20,13 +20,19 @@ elif [ -n "${1:-}" ]; then
   fail "Unknown argument: $1 (supported: --restart)"
 fi
 
-# This path is intentionally Open-edX-only. It never prunes or rebuilds the
-# dedicated MFE builder/cache and never removes Docker volumes/database data.
+# Open edX is rebuilt with the Docker default builder. MFE is rebuilt with the
+# dedicated cached builder, but that builder/cache is never pruned by this path.
+# Docker volumes/database data are never removed.
 MFE_BUILDER="${FPT_MFE_BUILDER:-mfe-builder-6g}"
 MIN_FREE_MIB="${FPT_OPENEDX_CLEAN_MIN_FREE_MIB:-15360}"
+MFE_MIN_FREE_MIB="${FPT_MFE_BUILD_MIN_FREE_MIB:-3072}"
 OLD_OPENEDX_IMAGE="${FPT_OLD_OPENEDX_IMAGE:-docker.io/overhangio/openedx:21.0.6-indigo}"
 TARGET_IMAGE="$(tutor config printvalue DOCKER_IMAGE_OPENEDX)"
+TARGET_MFE_IMAGE="$(tutor config printvalue MFE_DOCKER_IMAGE 2>/dev/null || true)"
 [ -n "$TARGET_IMAGE" ] || fail "Could not resolve DOCKER_IMAGE_OPENEDX"
+[ -n "$TARGET_MFE_IMAGE" ] || fail "Could not resolve MFE_DOCKER_IMAGE"
+docker buildx inspect default >/dev/null 2>&1 || fail "Docker default Buildx builder is unavailable"
+docker buildx inspect "$MFE_BUILDER" >/dev/null 2>&1 || fail "MFE Buildx builder '$MFE_BUILDER' is unavailable"
 
 free_mib() {
   df -Pm / | awk 'NR==2 {print $4}'
@@ -38,12 +44,8 @@ show_disk() {
 }
 
 show_mfe_cache() {
-  if docker buildx inspect "$MFE_BUILDER" >/dev/null 2>&1; then
-    log "MFE builder '$MFE_BUILDER' cache (read-only check; preserved)"
-    docker buildx du --builder "$MFE_BUILDER" | tail -10 || true
-  else
-    warn "MFE builder '$MFE_BUILDER' not found; no MFE cleanup will be attempted"
-  fi
+  log "MFE builder '$MFE_BUILDER' cache (read-only check; never pruned by this script)"
+  docker buildx du --builder "$MFE_BUILDER" | tail -10 || true
 }
 
 remove_tutor_openedx_containers_using_image() {
@@ -78,10 +80,25 @@ remove_image_if_present() {
   fi
 }
 
+verify_service_image() {
+  local service="$1"
+  local expected_image_id="$2"
+  local cid actual
+  cid="$(tutor local dc ps -q "$service" 2>/dev/null | head -n1)"
+  [ -n "$cid" ] || fail "No container found for $service after restart"
+  actual="$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null || true)"
+  [ -n "$actual" ] || fail "Could not resolve image ID for $service"
+  [ "$actual" = "$expected_image_id" ] || fail "$service is using $actual, expected $expected_image_id"
+  log "PASS $service -> $actual"
+}
+
 log "Source commit: $(git -C "$REPO_ROOT" rev-parse HEAD)"
-log "Target image: $TARGET_IMAGE"
-log "Old image candidate: $OLD_OPENEDX_IMAGE"
+log "Open edX target image: $TARGET_IMAGE"
+log "MFE target image: $TARGET_MFE_IMAGE"
+log "MFE Buildx builder: $MFE_BUILDER (cache preserved/reused)"
+log "Old Open edX image candidate: $OLD_OPENEDX_IMAGE"
 log "Required free space before full Open edX rebuild: ${MIN_FREE_MIB} MiB"
+log "Required free space before cached MFE rebuild: ${MFE_MIN_FREE_MIB} MiB"
 
 if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
   git -C "$REPO_ROOT" status --short
@@ -93,7 +110,7 @@ show_disk
 show_mfe_cache
 
 # Remove only the four Open edX application containers. Database, Redis,
-# MongoDB, Caddy and MFE containers/volumes stay untouched.
+# MongoDB, Caddy and the current MFE container/volumes stay untouched here.
 log "Removing current LMS/CMS application containers only"
 tutor local dc rm -sf lms cms lms-worker cms-worker >/dev/null 2>&1 || true
 
@@ -105,8 +122,8 @@ remove_image_if_present "$OLD_OPENEDX_IMAGE"
 log "Removing dangling images only"
 docker image prune -f || true
 
-# Host package/log caches are unrelated to Open edX build caches. Clean them
-# only when passwordless sudo is already available; otherwise skip safely.
+# Host package/log caches are unrelated to Open edX/MFE BuildKit caches. Clean
+# them only when passwordless sudo is already available; otherwise skip safely.
 if sudo -n true >/dev/null 2>&1; then
   log "Cleaning host APT package cache"
   sudo -n apt-get clean || true
@@ -133,13 +150,13 @@ fi
 show_disk
 show_mfe_cache
 
-[ "$FREE_NOW" -ge "$MIN_FREE_MIB" ] || fail "Only ${FREE_NOW} MiB free after safe cleanup; need at least ${MIN_FREE_MIB} MiB. MFE cache and volumes were preserved."
+[ "$FREE_NOW" -ge "$MIN_FREE_MIB" ] || fail "Only ${FREE_NOW} MiB free after safe cleanup; need at least ${MIN_FREE_MIB} MiB. MFE cache and Docker volumes were preserved."
 
 log "Rendering Tutor/FPT build configuration"
 bash "$REPO_ROOT/scripts/fpt-ui-setup.sh"
 
 # The default Docker builder is deliberately isolated from mfe-builder-6g.
-log "Building Open edX from source with Docker default builder (MFE untouched)"
+log "Building Open edX from source with Docker default builder"
 BUILDX_BUILDER=default tutor images build openedx
 
 UNIT_RESET_EXPECTED_VERSION="$(python - "$REPO_ROOT/openedx_unit_reset/setup.py" <<'PY'
@@ -188,21 +205,54 @@ PY
 echo "Open edX FPT homepage/courses/colour+white native logo verification PASS"
 '
 
-if [ "$RESTART" -eq 1 ]; then
-  log "Starting/recreating LMS/CMS application services on rebuilt image"
-  tutor local dc up -d --no-deps --force-recreate lms cms lms-worker cms-worker
+FREE_BEFORE_MFE="$(free_mib)"
+log "Free space before MFE build: ${FREE_BEFORE_MFE} MiB"
+[ "$FREE_BEFORE_MFE" -ge "$MFE_MIN_FREE_MIB" ] || fail "Open edX rebuild PASS, but only ${FREE_BEFORE_MFE} MiB remains. Need at least ${MFE_MIN_FREE_MIB} MiB before MFE build; MFE cache was not pruned."
 
-  EXPECTED_ID="$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")"
+# Reuse the dedicated MFE BuildKit cache. This is a normal cached build: no
+# --no-cache and no prune, so Learning/Authn/Learner Dashboard rebuild cheaply.
+log "Building MFE image with dedicated cached builder '$MFE_BUILDER'"
+BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe
+
+log "Verifying compiled Authn/Learner Dashboard/Learning artifacts"
+MFE_VERIFY_CID="$(docker create "$TARGET_MFE_IMAGE")"
+MFE_VERIFY_DIR="$(mktemp -d)"
+cleanup_mfe_verify() {
+  docker rm -f "$MFE_VERIFY_CID" >/dev/null 2>&1 || true
+  rm -rf "$MFE_VERIFY_DIR"
+}
+trap cleanup_mfe_verify EXIT
+
+docker cp "$MFE_VERIFY_CID:/openedx/dist/authn" "$MFE_VERIFY_DIR/authn" >/dev/null
+docker cp "$MFE_VERIFY_CID:/openedx/dist/learner-dashboard" "$MFE_VERIFY_DIR/learner-dashboard" >/dev/null
+docker cp "$MFE_VERIFY_CID:/openedx/dist/learning" "$MFE_VERIFY_DIR/learning" >/dev/null
+
+grep -R -Fq "Start learning" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing 'Start learning'"
+grep -R -Fq "with CMS" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing 'with CMS'"
+grep -R -Fq "fpt-polytechnic-logo-white.png" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing the real white FPT logo asset"
+grep -R -Fq "selected-paragon-theme-variant" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing the light-only theme contract"
+grep -R -Fq "Tiếp tục hành trình học tập" "$MFE_VERIFY_DIR/learner-dashboard" || fail "Compiled Learner Dashboard is missing the FPT learner banner"
+grep -R -Fq "fpt-polytechnic-logo-white.png" "$MFE_VERIFY_DIR/learner-dashboard" || fail "Compiled Learner Dashboard is missing the white FPT footer logo"
+grep -R -Fq "AI_MFE_REQUEST_RESIZE" "$MFE_VERIFY_DIR/learning" || fail "Compiled Learning is missing Unit Reset resize marker"
+grep -R -Fq "AI_QUIZ_ACTIVE_SESSION_READY_RELOAD" "$MFE_VERIFY_DIR/learning" || fail "Compiled Learning is missing Unit Reset active-session reload marker"
+
+cleanup_mfe_verify
+trap - EXIT
+log "Compiled MFE Authn/FPT branding/Unit Reset verification PASS"
+
+if [ "$RESTART" -eq 1 ]; then
+  log "Starting/recreating LMS/CMS/workers + MFE on rebuilt images"
+  tutor local dc up -d --no-deps --force-recreate lms cms lms-worker cms-worker mfe
+
+  EXPECTED_OPENEDX_ID="$(docker image inspect --format '{{.Id}}' "$TARGET_IMAGE")"
+  EXPECTED_MFE_ID="$(docker image inspect --format '{{.Id}}' "$TARGET_MFE_IMAGE")"
   for service in lms cms lms-worker cms-worker; do
-    cid="$(tutor local dc ps -q "$service" 2>/dev/null | head -n1)"
-    [ -n "$cid" ] || fail "No container found for $service after restart"
-    actual="$(docker inspect --format '{{.Image}}' "$cid")"
-    [ "$actual" = "$EXPECTED_ID" ] || fail "$service is using $actual, expected $EXPECTED_ID"
-    log "PASS $service -> $actual"
+    verify_service_image "$service" "$EXPECTED_OPENEDX_ID"
   done
+  verify_service_image mfe "$EXPECTED_MFE_ID"
 fi
 
 log "Final storage"
 show_disk
 show_mfe_cache
-log "CLEAN OPENEDX REBUILD VERIFIED; MFE builder/cache and Docker volumes were preserved"
+log "CLEAN OPENEDX + MFE REBUILD VERIFIED; MFE cache was reused/not pruned and Docker volumes were preserved"
