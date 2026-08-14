@@ -125,6 +125,7 @@ set -euo pipefail
 base=/openedx/staticfiles/indigo/images/fpt
 for f in \
   fpt-polytechnic-logo.png \
+  fpt-polytechnic-logo-white.png \
   fpt-students.png \
   fpt-campus-primary.jpg \
   fpt-campus-secondary.jpg
@@ -139,11 +140,13 @@ grep -Fq "id=\"discovery-form\"" /openedx/themes/indigo/lms/templates/index.html
 grep -Fq "fpt-lms-footer" /openedx/themes/indigo/lms/templates/footer.html
 
 # Native header branding contract: keep upstream header markup and replace only
-# the logo assets that Indigo/Open edX already requests.
+# the logo assets that Indigo/Open edX already requests. Colour and white assets
+# are intentionally distinct source files.
 test -s /openedx/staticfiles/indigo/images/logo.png
 test -s /openedx/staticfiles/indigo/images/logo-white.png
 cmp -s "$base/fpt-polytechnic-logo.png" /openedx/staticfiles/indigo/images/logo.png
-cmp -s "$base/fpt-polytechnic-logo.png" /openedx/staticfiles/indigo/images/logo-white.png
+cmp -s "$base/fpt-polytechnic-logo-white.png" /openedx/staticfiles/indigo/images/logo-white.png
+! cmp -s /openedx/staticfiles/indigo/images/logo.png /openedx/staticfiles/indigo/images/logo-white.png
 grep -Fq "branding_api.get_logo_url(is_secure)" /openedx/edx-platform/lms/templates/header/navbar-logo-header.html
 
 python - <<"PY"
@@ -185,6 +188,7 @@ docker cp "$CID:/openedx/dist/learning" "$TMP_DIR/learning" >/dev/null
 
 grep -R -Fq "FPT Polytechnic" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain FPT Polytechnic branding"
 grep -R -Fq "fpt-auth-wedge" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain the approved wedge CSS"
+grep -R -Fq "fpt-polytechnic-logo-white.png" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not reference the real white FPT logo"
 grep -R -Fq "Tiếp tục hành trình học tập" "$TMP_DIR/learner-dashboard" || fail "Compiled Learner Dashboard bundle does not contain FPT learner banner"
 grep -R -Fq "AI_MFE_REQUEST_RESIZE" "$TMP_DIR/learning" || fail "Compiled Learning bundle does not contain the custom Unit Reset frontend marker"
 grep -R -Fq "AI_QUIZ_ACTIVE_SESSION_READY_RELOAD" "$TMP_DIR/learning" || fail "Compiled Learning bundle is missing the Unit Reset active-session reload contract"
