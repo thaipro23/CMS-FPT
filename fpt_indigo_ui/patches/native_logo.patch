@@ -1,6 +1,11 @@
 
 # Keep the stock Indigo/Open edX header DOM. Replace only the assets it already
 # requests so every LMS/MFE header renders FPT Polytechnic without logo slots.
+# The light header uses the official colour logo; dark/native-white consumers
+# and Authn use the real white artwork supplied by FPT, never CSS inversion.
+COPY --from=edx-platform ./fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png
 RUN test -s /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png \
+    && test -s /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png \
     && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/logo.png \
-    && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/logo-white.png
+    && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/logo-white.png \
+    && ! cmp -s /openedx/staticfiles/indigo/images/logo.png /openedx/staticfiles/indigo/images/logo-white.png
