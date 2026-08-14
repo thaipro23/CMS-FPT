@@ -11,12 +11,22 @@ for (const name of ['LargeLayout.jsx', 'MediumLayout.jsx', 'SmallLayout.jsx']) {
     continue;
   }
   let source = fs.readFileSync(path, 'utf8');
+
+  // Use the real FPT white artwork supplied for navy/dark surfaces. Do not
+  // derive white branding from the colour logo with CSS filters.
+  source = source.replaceAll(
+    "getFptAsset('fpt-polytechnic-logo.png')",
+    "getFptAsset('fpt-polytechnic-logo-white.png')",
+  );
+
+  // Keep the reference edX login composition simple while adding only a very
+  // subtle FPT campus texture beneath the navy overlay.
   const plain = '<div className="fpt-auth-panel">';
   const decorated = `<div className="fpt-auth-panel" style={{ backgroundImage: 'linear-gradient(rgba(5,39,88,.94), rgba(5,39,88,.94)), url(' + getFptAsset('fpt-campus-primary.jpg') + ')' }}>`;
   if (source.includes(plain)) {
     source = source.replace(plain, decorated);
-    fs.writeFileSync(path, source, 'utf8');
   }
+  fs.writeFileSync(path, source, 'utf8');
 }
 
 const scss = '/openedx/app/src/index.scss';
@@ -33,6 +43,7 @@ if (!current.includes(marker)) {
 html { color-scheme:light; background:#fff; }
 body { background:#fff; }
 .fpt-auth-panel{background-size:cover;background-position:center;background-repeat:no-repeat}
+.fpt-auth-logo--white{filter:none!important}
 
 @media (min-width:1200px) {
   html,body,#root { height:100%; min-height:0; overflow:hidden; }
