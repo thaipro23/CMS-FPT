@@ -1,6 +1,6 @@
 
-# Final Authn viewport polish: keep the native edX-style FPT composition
-# light-only, full-height on desktop, and free of nested vertical scrolling.
+# Final Authn viewport polish: keep the reference edX composition edge-to-edge,
+# light-only, solid navy on the left, and free of nested vertical scrolling.
 RUN node - <<'JS3'
 const fs = require('fs');
 
@@ -11,21 +11,11 @@ for (const name of ['LargeLayout.jsx', 'MediumLayout.jsx', 'SmallLayout.jsx']) {
     continue;
   }
   let source = fs.readFileSync(path, 'utf8');
-
-  // Use the real FPT white artwork supplied for navy/dark surfaces. Do not
-  // derive white branding from the colour logo with CSS filters.
   source = source.replaceAll(
     "getFptAsset('fpt-polytechnic-logo.png')",
     "getFptAsset('fpt-polytechnic-logo-white.png')",
   );
-
-  // Keep the reference edX login composition simple while adding only a very
-  // subtle FPT campus texture beneath the navy overlay.
-  const plain = '<div className="fpt-auth-panel">';
-  const decorated = `<div className="fpt-auth-panel" style={{ backgroundImage: 'linear-gradient(rgba(5,39,88,.94), rgba(5,39,88,.94)), url(' + getFptAsset('fpt-campus-primary.jpg') + ')' }}>`;
-  if (source.includes(plain)) {
-    source = source.replace(plain, decorated);
-  }
+  source = source.replace(/ style=\{\{ backgroundImage:[^>]+\}\}/g, '');
   fs.writeFileSync(path, source, 'utf8');
 }
 
@@ -34,43 +24,38 @@ if (!fs.existsSync(scss)) {
   throw new Error(`Authn stylesheet not found: ${scss}`);
 }
 
-const marker = 'FPT Polytechnic V9 authn viewport/theme polish';
+const marker = 'FPT Polytechnic V11 authn edge-to-edge lock';
 let current = fs.readFileSync(scss, 'utf8');
 if (!current.includes(marker)) {
   current += String.raw`
 
-/* FPT Polytechnic V9 authn viewport/theme polish */
-html { color-scheme:light; background:#fff; }
-body { background:#fff; }
-.fpt-auth-panel{background-size:cover;background-position:center;background-repeat:no-repeat}
+/* FPT Polytechnic V11 authn edge-to-edge lock */
+html,body,#root{width:100%!important;margin:0!important;padding:0!important;background:#fff!important;color-scheme:light!important}
+body{background-image:none!important}
+.layout{width:100vw!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;background:#fff!important}
+.fpt-auth-visual,.fpt-auth-panel,.fpt-auth-wedge,.layout>.content{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
+.fpt-auth-panel{background:#0B3B82!important;background-image:none!important}
 .fpt-auth-logo--white{filter:none!important}
+.layout>.content{background:#fff!important}
+#main-content{background:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important}
 
-@media (min-width:1200px) {
-  html,body,#root { height:100%; min-height:0; overflow:hidden; }
-  .layout { height:100vh; height:100dvh; min-height:0!important; max-height:100dvh; overflow:hidden; }
-  .fpt-auth-visual--large,.fpt-auth-visual--large .fpt-auth-panel,.fpt-auth-visual--large .fpt-auth-wedge { height:100%; min-height:0; }
-  .layout > .content { height:100%; min-height:0; overflow:hidden; }
-  #main-content { max-height:calc(100dvh - 64px); overflow:visible; }
+@media (min-width:1200px){
+  html,body,#root{height:100%!important;min-height:0!important;overflow:hidden!important}
+  .layout{height:100vh!important;height:100dvh!important;min-height:100vh!important;min-height:100dvh!important;max-height:100dvh!important;overflow:hidden!important}
+  .fpt-auth-visual--large,.fpt-auth-visual--large .fpt-auth-panel,.fpt-auth-visual--large .fpt-auth-wedge,.layout>.content{height:100%!important;min-height:0!important}
+  .layout>.content{overflow:hidden!important}
+  #main-content{max-height:calc(100dvh - 72px);overflow:visible}
 }
 
-@media (min-width:768px) and (max-width:1199.98px) {
-  body { overflow:auto; }
-}
+@media (max-width:1199.98px){body{overflow:auto!important}}
 
-@media (max-width:767.98px) {
-  body { overflow:auto; }
-}
-
-/* Dark mode is intentionally disabled for the FPT deployment. These guards
-   prevent a stale persisted variant from painting the custom Authn shell dark
-   before runtime configuration normalizes the document back to light. */
 html[data-paragon-theme-variant="dark"],
 html[data-paragon-theme-variant="dark"] body,
 html[data-paragon-theme-variant="dark"] #root,
 html[data-paragon-theme-variant="dark"] .layout,
-html[data-paragon-theme-variant="dark"] .layout > .content { background:#fff!important; color:#172B45!important; }
+html[data-paragon-theme-variant="dark"] .layout>.content,
 html[data-paragon-theme-variant="dark"] #main-content,
-html[data-paragon-theme-variant="dark"] #main-content .form-control { background:#fff!important; color:#172B45!important; border-color:#C7D3E0!important; }
+html[data-paragon-theme-variant="dark"] #main-content .form-control{background:#fff!important;color:#172B45!important}
 `;
   fs.writeFileSync(scss, current, 'utf8');
 }
