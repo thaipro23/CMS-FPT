@@ -20,7 +20,7 @@ enforceFptLightTheme();
 
 const FptInlineLogo = ({ compact = false, white = false }) => (
   <img
-    src={getFptAsset('fpt-polytechnic-logo.png')}
+    src={getFptAsset(white ? 'fpt-polytechnic-logo-white.png' : 'fpt-polytechnic-logo.png')}
     alt="FPT Polytechnic"
     style={{
       display: 'block',
@@ -28,7 +28,6 @@ const FptInlineLogo = ({ compact = false, white = false }) => (
       height: compact ? 46 : 62,
       objectFit: 'contain',
       objectPosition: 'left center',
-      filter: white ? 'brightness(0) invert(1)' : 'none',
     }}
   />
 );
