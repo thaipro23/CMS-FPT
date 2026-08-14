@@ -5,13 +5,25 @@ const enforceFptLightTheme = () => {
   if (typeof document === 'undefined') {
     return;
   }
-  document.documentElement.setAttribute('data-paragon-theme-variant', 'light');
-  document.documentElement.style.colorScheme = 'light';
+  const themeKey = 'selected-paragon-theme-variant';
+  const lock = () => {
+    document.documentElement.setAttribute('data-paragon-theme-variant', 'light');
+    document.documentElement.style.colorScheme = 'light';
+    if (document.body) {
+      document.body.classList.remove('indigo-dark-theme', 'dark-theme');
+      document.body.setAttribute('data-theme', 'light');
+    }
+  };
+  lock();
   if (typeof window !== 'undefined') {
     try {
-      window.localStorage.setItem('selected-paragon-theme-variant', 'light');
+      window.localStorage.setItem(themeKey, 'light');
+      document.cookie = `${themeKey}=light; path=/; max-age=31536000; SameSite=Lax`;
     } catch (error) {
-      // Storage may be unavailable in private/restricted browser contexts.
+      // Storage/cookies may be unavailable in private or restricted contexts.
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', lock, { once: true });
     }
   }
 };
@@ -57,22 +69,17 @@ const FptFooter = () => (
     </div>
     <style>{`
       html{color-scheme:light!important}
-      .theme-toggle-button{display:none!important}
-      .fpt-ui-footer{border-top:1px solid #203456;background:linear-gradient(180deg,#0B1C36,#08162B);margin-top:52px;color:#D6E1EF}
+      .theme-toggle-button,.light-theme-icon,.dark-theme-icon,.toggle-switch{display:none!important}
+      .fpt-ui-footer{border-top:1px solid #2F4765;background:#071A33;margin-top:52px;color:#F3F7FC}
       .fpt-ui-footer__container{max-width:1340px;padding:40px 28px 26px}
       .fpt-ui-footer__grid{display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(210px,.88fr) minmax(280px,1.22fr);gap:44px;align-items:start}
-      .fpt-ui-footer__brand img{width:228px!important;height:64px!important}
-      .fpt-ui-footer__title{color:#9FC1EA;font-size:14px;font-weight:850;margin:6px 0 12px;letter-spacing:.01em}
-      .fpt-ui-footer a{color:#E8F1FC;text-decoration:none}.fpt-ui-footer a:hover{color:#fff;text-decoration:underline}
-      .fpt-ui-footer__address{color:#C5D2E2;line-height:1.7}
-      .fpt-ui-footer__copyright{border-top:1px solid #203456;margin-top:30px;padding-top:18px;color:#91A5BE;font-size:12px;text-align:center}
+      .fpt-ui-footer__brand img{width:228px!important;height:64px!important;opacity:1!important}
+      .fpt-ui-footer__title{color:#FFFFFF;font-size:14px;font-weight:850;margin:6px 0 12px;letter-spacing:.01em}
+      .fpt-ui-footer a{color:#8ED0FF;text-decoration:none;font-weight:650}.fpt-ui-footer a:hover,.fpt-ui-footer a:focus{color:#FFFFFF;text-decoration:underline}
+      .fpt-ui-footer__address{color:#E3ECF6;line-height:1.7}
+      .fpt-ui-footer__copyright{border-top:1px solid #2F4765;margin-top:30px;padding-top:18px;color:#C7D5E5;font-size:12px;text-align:center}
       @media(max-width:960px){.fpt-ui-footer__container{padding:34px 28px 24px}.fpt-ui-footer__grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:26px 40px}.fpt-ui-footer__brand{grid-column:1/-1}.fpt-ui-footer__copyright{margin-top:26px}}
       @media(max-width:767px){.fpt-ui-footer{margin-top:34px}.fpt-ui-footer__container{padding:30px 22px 22px}.fpt-ui-footer__grid{grid-template-columns:1fr;gap:22px}.fpt-ui-footer__brand{grid-column:auto}.fpt-ui-footer__brand img{width:205px!important}.fpt-ui-footer__copyright{margin-top:24px}}
-      /* Legacy CI marker only; no tagline element is rendered. */
-      .fpt-ui-footer__tagline{margin-top:7px;color:#65758A}
-      /* Legacy CI marker only; this exact old rule is comment text, not CSS:
-      .fpt-ui-footer__copyright{border-top:1px solid #E8EDF3;margin-top:30px;padding-top:18px;color:#65758A
-      */
     `}</style>
   </footer>
 );
