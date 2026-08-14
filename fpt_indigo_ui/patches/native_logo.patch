@@ -1,11 +1,35 @@
 
-# Keep the stock Indigo/Open edX header DOM. Replace only the assets it already
-# requests so every LMS/MFE header renders FPT Polytechnic without logo slots.
-# The light header uses the official colour logo; dark/native-white consumers
-# and Authn use the real white artwork supplied by FPT, never CSS inversion.
+# Keep the stock Indigo/Open edX header DOM. Replace the exact native assets
+# Indigo already requests. Legacy LMS uses Django hashed static filenames, so
+# patch both theme source files and all collected/hash variants.
 COPY --from=edx-platform ./fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png
-RUN test -s /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png \
-    && test -s /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png \
-    && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/logo.png \
-    && install -m 0644 /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/logo-white.png \
-    && ! cmp -s /openedx/staticfiles/indigo/images/logo.png /openedx/staticfiles/indigo/images/logo-white.png
+RUN set -eu; \
+    color=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png; \
+    white=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png; \
+    test -s "$color"; \
+    test -s "$white"; \
+    theme_images=/openedx/themes/indigo/lms/static/images; \
+    if [ -d "$theme_images" ]; then \
+      install -m 0644 "$color" "$theme_images/logo.png"; \
+      install -m 0644 "$white" "$theme_images/logo-white.png"; \
+    fi; \
+    static_images=/openedx/staticfiles/indigo/images; \
+    install -m 0644 "$color" "$static_images/logo.png"; \
+    install -m 0644 "$white" "$static_images/logo-white.png"; \
+    color_count=0; \
+    for f in "$static_images"/logo_*.png "$static_images"/logo.*.png; do \
+      [ -f "$f" ] || continue; \
+      case "$(basename "$f")" in logo-white*) continue ;; esac; \
+      install -m 0644 "$color" "$f"; \
+      color_count=$((color_count + 1)); \
+    done; \
+    white_count=0; \
+    for f in "$static_images"/logo-white_*.png "$static_images"/logo-white.*.png; do \
+      [ -f "$f" ] || continue; \
+      install -m 0644 "$white" "$f"; \
+      white_count=$((white_count + 1)); \
+    done; \
+    cmp -s "$color" "$static_images/logo.png"; \
+    cmp -s "$white" "$static_images/logo-white.png"; \
+    ! cmp -s "$static_images/logo.png" "$static_images/logo-white.png"; \
+    echo "[fpt-native-logo] patched collected hashes: colour=$color_count white=$white_count"
