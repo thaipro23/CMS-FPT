@@ -49,6 +49,11 @@ jobs:
           python -m py_compile scripts/fpt-ui-validate-assets.py scripts/fpt-ui-refresh-assets.py
           python scripts/fpt-ui-validate-assets.py
 
+      - name: Validate MySQL replica contract
+        run: |
+          python -m py_compile scripts/fpt-ui-validate-db-replica.py
+          python scripts/fpt-ui-validate-db-replica.py
+
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
 
