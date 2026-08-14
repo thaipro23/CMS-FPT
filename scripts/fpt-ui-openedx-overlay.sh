@@ -23,6 +23,7 @@ HOMEPAGE_PATCH="$REPO_ROOT/fpt_indigo_ui/patches/homepage_slider.patch"
 NATIVE_LOGO_PATCH="$REPO_ROOT/fpt_indigo_ui/patches/native_logo.patch"
 [ -s "$HOMEPAGE_PATCH" ] || fail "Missing $HOMEPAGE_PATCH"
 [ -s "$NATIVE_LOGO_PATCH" ] || fail "Missing $NATIVE_LOGO_PATCH"
+[ -s "$REPO_ROOT/fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png" ] || fail "Missing real white FPT logo asset"
 
 OPENEDX_IMAGE="$(tutor config printvalue DOCKER_IMAGE_OPENEDX)"
 [ -n "$OPENEDX_IMAGE" ] || fail "Could not resolve DOCKER_IMAGE_OPENEDX"
@@ -40,7 +41,7 @@ log "Base image: $OPENEDX_IMAGE -> $PREV_ID"
 
 # This fast path is intentionally only for a previously built FPT Ulmo.4 image.
 # It must already contain the complete Discovery V8/V9 hero and vendored FPT logo;
-# the overlay merely reuses that final hero on index.html and swaps native logo files.
+# the overlay reuses that final hero on index.html and refreshes native logo files.
 docker run --rm --entrypoint bash "$PREV_ID" -lc '
 set -euo pipefail
 test -s /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png
@@ -92,6 +93,7 @@ BUILDX_BUILDER=default docker buildx build \
   --load \
   --tag "$OPENEDX_IMAGE" \
   --file "$TMP_DIR/Dockerfile" \
+  --build-context "edx-platform=$REPO_ROOT" \
   "$TMP_DIR"
 
 NEW_ID="$(docker image inspect --format '{{.Id}}' "$OPENEDX_IMAGE")"
@@ -103,7 +105,8 @@ docker run --rm --entrypoint bash "$NEW_ID" -lc '
 set -euo pipefail
 courses=/openedx/themes/indigo/lms/templates/courseware/courses.html
 home=/openedx/themes/indigo/lms/templates/index.html
-logo=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png
+colour=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png
+white=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png
 native=/openedx/staticfiles/indigo/images/logo.png
 native_white=/openedx/staticfiles/indigo/images/logo-white.png
 
@@ -112,8 +115,9 @@ grep -Fq "FPT_DISCOVERY_V9_BALANCE" "$courses"
 grep -Fq "FPT_HOMEPAGE_SHARED_SLIDER_START" "$home"
 grep -Fq "fpt-hero-slider" "$home"
 grep -Fq "id=\"discovery-form\"" "$home"
-cmp -s "$logo" "$native"
-cmp -s "$logo" "$native_white"
+cmp -s "$colour" "$native"
+cmp -s "$white" "$native_white"
+! cmp -s "$native" "$native_white"
 
 python - <<"PY"
 from pathlib import Path
@@ -127,7 +131,7 @@ if course_hero != home_hero:
     raise SystemExit("homepage/course Discovery hero mismatch")
 if home.count("id=\"fpt-hero-slider\"") != 1:
     raise SystemExit("homepage must contain exactly one FPT hero")
-print("[fpt-ui-overlay] Homepage shared slider + native logo PASS")
+print("[fpt-ui-overlay] Homepage shared slider + colour/white native logo PASS")
 PY
 '
 
