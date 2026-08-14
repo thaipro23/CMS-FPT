@@ -261,8 +261,10 @@ MFE_DOCKERFILE="$TUTOR_ROOT/env/plugins/mfe/build/mfe/Dockerfile"
 MFE_ENV_CONFIG="$TUTOR_ROOT/env/plugins/mfe/build/mfe/env.config.jsx"
 [ -f "$MFE_DOCKERFILE" ] || fail "Generated MFE Dockerfile not found: $MFE_DOCKERFILE"
 [ -f "$MFE_ENV_CONFIG" ] || fail "Generated MFE env.config.jsx not found: $MFE_ENV_CONFIG"
-grep -Fq 'FPT Polytechnic V8 production branding overlay' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn patch"
+grep -Fq 'FPT Polytechnic V10 edX full-screen authn' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V10 layout patch"
+grep -Fq 'FPT Polytechnic V11 authn edge-to-edge lock' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V11 edge-to-edge patch"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
+grep -Fq "RUN node - <<'JS3'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn polish patch is not using Node.js"
 grep -Fq "import React from 'react';" "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing explicit React import"
 grep -Fq 'getConfig as getFptConfig' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT getConfig alias"
 grep -Fq 'const FptHeaderLogo' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT header runtime"
@@ -281,13 +283,14 @@ import sys
 text = Path(sys.argv[1]).read_text(encoding='utf-8')
 common = text.find('######## authn (common)')
 source_copy = text.find('COPY --from=authn-src / /openedx/app', common)
-marker = text.find('FPT Polytechnic V8 production branding overlay', common)
+layout_marker = text.find('FPT Polytechnic V10 edX full-screen authn', common)
+polish_marker = text.find('FPT Polytechnic V11 authn edge-to-edge lock', common)
 dev = text.find('######## authn (dev)', common)
-if min(common, source_copy, marker, dev) < 0:
-    raise SystemExit('could not resolve Authn stage/patch markers in generated MFE Dockerfile')
-if not (common < source_copy < marker < dev):
-    raise SystemExit('Authn patch ordering is unsafe: FPT patch must be after authn-src COPY and before authn build')
-print('[fpt-ui] Generated Authn patch ordering PASS')
+if min(common, source_copy, layout_marker, polish_marker, dev) < 0:
+    raise SystemExit('could not resolve Authn stage/V10/V11 patch markers in generated MFE Dockerfile')
+if not (common < source_copy < layout_marker < polish_marker < dev):
+    raise SystemExit('Authn patch ordering is unsafe: source COPY -> V10 layout -> V11 edge-to-edge -> authn build is required')
+print('[fpt-ui] Generated Authn V10/V11 patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
