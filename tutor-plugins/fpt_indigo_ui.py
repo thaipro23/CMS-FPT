@@ -13,6 +13,33 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PATCH_DIR = _REPO_ROOT / "fpt_indigo_ui" / "patches"
 
 
+# Tutor core exposes only MYSQL_HOST for the primary database. Open edX itself
+# already ships the read_replica alias and LMS ReadReplicaRouter, so expose the
+# replica endpoint as first-class Tutor configuration without changing Open edX
+# routing semantics. Falling back to the primary keeps non-HA deployments safe.
+hooks.Filters.CONFIG_DEFAULTS.add_items([
+    ("MYSQL_REPLICA_HOST", "{{ MYSQL_HOST }}"),
+    ("MYSQL_REPLICA_PORT", "{{ MYSQL_PORT }}"),
+])
+
+# FPT_MYSQL_READ_REPLICA_V1
+# Keep read_replica valid in both LMS and CMS settings. LMS automatically routes
+# eligible reads through edx_django_utils.db.read_replica.ReadReplicaRouter;
+# CMS does not register that router, but explicit .using("read_replica") helpers
+# remain safe. Replica credentials/database/options intentionally mirror default.
+hooks.Filters.ENV_PATCHES.add_item((
+    "openedx-common-settings",
+    """
+# FPT_MYSQL_READ_REPLICA_V1
+_fpt_read_replica = DATABASES["default"].copy()
+_fpt_read_replica.pop("ATOMIC_REQUESTS", None)
+_fpt_read_replica["HOST"] = "{{ MYSQL_REPLICA_HOST }}"
+_fpt_read_replica["PORT"] = "{{ MYSQL_REPLICA_PORT }}"
+DATABASES["read_replica"] = _fpt_read_replica
+""",
+))
+
+
 def _jinja_raw(text: str) -> str:
     """Protect JSX/CSS braces from Tutor/Jinja patch rendering."""
     return "{% raw %}\n" + text + "\n{% endraw %}"
