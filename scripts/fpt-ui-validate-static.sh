@@ -204,6 +204,10 @@ if 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' not in plugin:
     raise SystemExit('Authn DefaultLayout pin missing')
 if 'EXPECTED_COMMON_VERSION="release/ulmo.4"' not in setup or 'EXPECTED_TUTOR_VERSION="21.0.9"' not in setup:
     raise SystemExit('Ulmo.4/Tutor baseline guards missing')
+if 'FPT Polytechnic V10 edX full-screen authn' not in setup or 'FPT Polytechnic V11 authn edge-to-edge lock' not in setup:
+    raise SystemExit('generated MFE Authn guard is not synchronized to V10/V11')
+if 'FPT Polytechnic V8 production branding overlay' in setup:
+    raise SystemExit('stale generated MFE Authn V8 guard remains in setup')
 if 'BUILDX_BUILDER=default tutor images build openedx' not in build:
     raise SystemExit('Open edX default-builder isolation missing')
 if 'BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe' not in build:
