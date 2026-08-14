@@ -26,6 +26,15 @@ if courses.exists():
                 text = text.replace(variant, final, 1)
                 break
 
+    expected_headlines = (
+        '<span class="fpt-headline-line">Học tập chủ động.</span><em class="fpt-headline-line">Phát triển mỗi ngày.</em>',
+        '<span class="fpt-headline-line">Học để làm được.</span><em class="fpt-headline-line">Học để đi xa hơn.</em>',
+        '<span class="fpt-headline-line">Một hành trình học tập.</span><em class="fpt-headline-line">Một trải nghiệm thống nhất.</em>',
+    )
+    for expected in expected_headlines:
+        if text.count(expected) != 1:
+            raise RuntimeError(f'FPT Hero explicit two-line headline contract failed: {expected}')
+
     marker = 'FPT_DISCOVERY_V9_BALANCE'
     if marker not in text:
         css = r'''
