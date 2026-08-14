@@ -14,11 +14,16 @@ ASSET_DIR = ROOT / "fpt_indigo_ui" / "assets"
 
 MINIMUMS = {
     "fpt-polytechnic-logo.png": (300, 100),
+    "fpt-polytechnic-logo-white.png": (400, 140),
     "fpt-students.png": (1000, 600),
     "fpt-campus-primary.jpg": (1200, 650),
     "fpt-campus-secondary.jpg": (900, 550),
 }
-PHOTO_NAMES = set(MINIMUMS) - {"fpt-polytechnic-logo.png"}
+LOGO_NAMES = {
+    "fpt-polytechnic-logo.png",
+    "fpt-polytechnic-logo-white.png",
+}
+PHOTO_NAMES = set(MINIMUMS) - LOGO_NAMES
 JPEG_SOF = {
     0xC0, 0xC1, 0xC2, 0xC3,
     0xC5, 0xC6, 0xC7,
@@ -84,6 +89,13 @@ def main() -> None:
                 f"minimum={min_width}x{min_height}"
             )
         print(f"[fpt-ui-assets] {name}: {width}x{height}, {path.stat().st_size} bytes")
+
+    # The two logos are intentionally distinct files: a colour logo for light
+    # headers and FPT-provided white artwork for navy/dark surfaces.
+    colour_logo = ASSET_DIR / "fpt-polytechnic-logo.png"
+    white_logo = ASSET_DIR / "fpt-polytechnic-logo-white.png"
+    if digest(colour_logo) == digest(white_logo):
+        raise SystemExit("colour and white FPT logo assets must not be identical")
 
     manifest_path = ASSET_DIR / "manifest.json"
     if not manifest_path.is_file():
