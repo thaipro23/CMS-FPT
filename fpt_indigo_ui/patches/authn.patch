@@ -16,11 +16,11 @@ const LargeLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--large" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
       <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
-        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo.png')} />
+        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} />
       </Hyperlink>
       <div className="fpt-auth-copy">
         <span className="fpt-auth-slash" aria-hidden="true" />
-        <h1>Start learning<span>with CMS</span></h1>
+        <h1><span>Start learning</span><em>with CMS</em></h1>
       </div>
     </div>
     <div className="fpt-auth-wedge" aria-hidden="true" />
@@ -41,11 +41,11 @@ const MediumLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--medium" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
       <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
-        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo.png')} />
+        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} />
       </Hyperlink>
       <div className="fpt-auth-copy">
         <span className="fpt-auth-slash" aria-hidden="true" />
-        <h1>Start learning<span>with CMS</span></h1>
+        <h1><span>Start learning</span><em>with CMS</em></h1>
       </div>
     </div>
   </aside>
@@ -65,10 +65,10 @@ const SmallLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--small" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
       <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
-        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo.png')} />
+        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} />
       </Hyperlink>
       <div className="fpt-auth-copy">
-        <h1>Start learning<span>with CMS</span></h1>
+        <h1><span>Start learning</span><em>with CMS</em></h1>
       </div>
     </div>
   </aside>
@@ -79,98 +79,195 @@ export default SmallLayout;
 
 const scss = '/openedx/app/src/index.scss';
 if (fs.existsSync(scss)) {
-  const marker = 'FPT Polytechnic V8 production branding overlay';
+  const marker = 'FPT Polytechnic V10 edX full-screen authn';
   let current = fs.readFileSync(scss, 'utf8');
   if (!current.includes(marker)) {
     current += String.raw`
 
-/* FPT Polytechnic V8 production branding overlay */
+/* FPT Polytechnic V10 edX full-screen authn */
 :root {
   --fpt-primary:#0B3B82;
   --fpt-primary-dark:#072B61;
   --fpt-accent:#F36F21;
-  --fpt-line:#DCE5EF;
-  /* Compatibility-only values retained for deployment guards. */
-  --fpt-auth-slant:clamp(72px,6.4vw,96px);
-  --fpt-auth-wedge-top:4px;
-  --fpt-auth-wedge-bottom:clamp(17px,1.45vw,22px);
+  --fpt-auth-left:50%;
 }
 
-html,body,#root { min-height:100%; background:#fff; }
-body { margin:0; background:#fff; }
+html,body,#root {
+  width:100%;
+  min-height:100%;
+  margin:0!important;
+  padding:0!important;
+  background:#fff!important;
+  color-scheme:light;
+}
+body { overflow-x:hidden; }
 .layout,.layout * { box-sizing:border-box; }
-.extra-large-screen-top-stripe,.medium-screen-top-stripe,.small-screen-top-stripe { display:none !important; }
-.bg-primary-400,.bg-primary-500 { background-color:var(--fpt-primary) !important; }
-.text-accent-a { color:var(--fpt-accent) !important; }
-.btn-primary { background:var(--fpt-primary) !important; border-color:var(--fpt-primary) !important; }
-.btn-primary:hover,.btn-primary:focus { background:var(--fpt-primary-dark) !important; border-color:var(--fpt-primary-dark) !important; }
-
-.fpt-auth-visual { position:relative; overflow:hidden; background:#fff; }
-.fpt-auth-panel { position:relative; display:flex; flex-direction:column; background:var(--fpt-primary); color:#fff; }
-.fpt-auth-logo-link { position:absolute; top:30px; left:32px; z-index:3; display:inline-flex; width:max-content; text-decoration:none!important; }
-.fpt-auth-logo { display:block; width:184px; height:auto; object-fit:contain; object-position:left center; }
-.fpt-auth-logo--white { filter:brightness(0) invert(1); }
-.fpt-auth-copy { display:flex; align-items:center; gap:28px; margin:auto; width:min(520px,82%); }
-.fpt-auth-slash { flex:0 0 auto; width:0; height:150px; border-left:6px solid var(--fpt-accent); transform:skewX(-12deg); border-radius:999px; }
-.fpt-auth-copy h1 { margin:0; color:#fff; font-size:clamp(44px,4.15vw,66px); line-height:.98; letter-spacing:-.045em; font-weight:760; }
-.fpt-auth-copy h1 span { display:block; margin-top:8px; color:#FF8B45; font-weight:850; }
-
-.fpt-auth-wedge { position:relative; overflow:hidden; background:#fff; }
-.fpt-auth-wedge::before { content:''; position:absolute; inset:0; background:var(--fpt-primary); clip-path:polygon(0 0,100% 0,68% 100%,0 100%); }
-
-/* Non-rendering compatibility class for the previous V8 geometry assertions. */
-.fpt-auth-geometry-compat {
-  display:none;
-  right:calc(0px - var(--fpt-auth-slant));
-  clip-path:polygon(0 0,100% 0,calc(100% - var(--fpt-auth-slant)) 100%,0 100%);
-  flex:0 0 53%;
+.layout {
+  width:100vw!important;
+  max-width:none!important;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:#fff!important;
 }
-.fpt-auth-geometry-compat::before {
+.extra-large-screen-top-stripe,.medium-screen-top-stripe,.small-screen-top-stripe { display:none!important; }
+.bg-primary-400,.bg-primary-500 { background-color:var(--fpt-primary)!important; }
+.text-accent-a { color:var(--fpt-accent)!important; }
+.btn-primary { background:var(--fpt-primary)!important; border-color:var(--fpt-primary)!important; }
+.btn-primary:hover,.btn-primary:focus { background:var(--fpt-primary-dark)!important; border-color:var(--fpt-primary-dark)!important; }
+
+.fpt-auth-visual {
+  position:relative;
+  overflow:hidden;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:#fff;
+}
+.fpt-auth-panel {
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  margin:0;
+  background:var(--fpt-primary)!important;
+  background-image:none!important;
+  color:#fff;
+}
+.fpt-auth-logo-link {
+  position:absolute;
+  top:30px;
+  left:38px;
+  z-index:3;
+  display:inline-flex;
+  width:max-content;
+  text-decoration:none!important;
+}
+.fpt-auth-logo {
+  display:block;
+  width:210px;
+  height:auto;
+  object-fit:contain;
+  object-position:left center;
+  filter:none!important;
+}
+.fpt-auth-copy {
+  display:flex;
+  align-items:center;
+  gap:34px;
+  margin:auto;
+  width:min(570px,82%);
+}
+.fpt-auth-slash {
+  flex:0 0 auto;
+  width:0;
+  height:190px;
+  border-left:6px solid var(--fpt-accent);
+  transform:skewX(-12deg);
+  border-radius:999px;
+}
+.fpt-auth-copy h1 {
+  margin:0;
+  color:#fff;
+  font-size:clamp(48px,4.15vw,70px);
+  line-height:.98;
+  letter-spacing:-.05em;
+  font-weight:780;
+}
+.fpt-auth-copy h1 span,.fpt-auth-copy h1 em { display:block; white-space:nowrap; }
+.fpt-auth-copy h1 em {
+  margin-top:10px;
+  color:#FF9A5C;
+  font-style:normal;
+  font-weight:850;
+}
+
+.fpt-auth-wedge { position:relative; overflow:hidden; margin:0; background:#fff; }
+.fpt-auth-wedge::before {
   content:'';
-  background:var(--fpt-accent);
-  clip-path:polygon(calc(100% - var(--fpt-auth-wedge-top)) 0,100% 0,calc(100% - var(--fpt-auth-slant)) 100%,calc(100% - var(--fpt-auth-slant) - var(--fpt-auth-wedge-bottom)) 100%);
+  position:absolute;
+  inset:0;
+  background:var(--fpt-primary);
+  clip-path:polygon(0 0,100% 0,0 100%);
 }
 
-.layout > .content { position:relative; z-index:1; background:#fff; }
-#main-content { width:min(420px,100%); background:transparent; border:0; border-radius:0; box-shadow:none; padding:0; }
+.layout > .content {
+  position:relative;
+  z-index:1;
+  margin:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:#fff!important;
+}
+#main-content {
+  width:min(500px,100%);
+  max-width:500px;
+  margin:0;
+  background:transparent!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  padding:0!important;
+}
 #main-content h1,#main-content h2,#main-content h3 { color:#173B68; letter-spacing:-.02em; }
-#main-content .form-control { min-height:48px; border-radius:8px; border-color:#C7D3E0; background:#fff; color:#172B45; }
-#main-content .form-control:focus { border-color:#6F91BA; box-shadow:0 0 0 3px rgba(11,59,130,.08); }
-#main-content .btn { min-height:47px; border-radius:8px; font-weight:750; }
+#main-content .form-control { min-height:48px; border-radius:5px; border-color:#9DA8B5; background:#fff; color:#172B45; }
+#main-content .form-control:focus { border-color:#5B7FA9; box-shadow:0 0 0 3px rgba(11,59,130,.08); }
+#main-content .btn { min-height:47px; border-radius:24px; font-weight:750; }
 
 @media (min-width:1200px) {
-  html,body,#root { height:100%; min-height:0; }
-  body { overflow:hidden; }
-  .layout { height:100vh; height:100dvh; min-height:0; display:flex; flex-direction:row; align-items:stretch; justify-content:space-between; overflow:hidden; background:#fff; }
-  .fpt-auth-visual--large { flex:0 0 50%; width:50%; height:100%; display:flex; }
-  .fpt-auth-visual--large .fpt-auth-panel { width:75%; height:100%; }
-  .fpt-auth-visual--large .fpt-auth-wedge { width:25%; height:100%; }
-  .layout > .content { flex:0 0 50%; width:50vw!important; height:100%; min-height:0; margin-top:0!important; display:flex; align-items:center; justify-content:center; overflow:hidden; padding:32px clamp(44px,6vw,96px); }
+  html,body,#root { height:100%; min-height:0; overflow:hidden; }
+  .layout {
+    height:100vh!important;
+    height:100dvh!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    display:grid!important;
+    grid-template-columns:var(--fpt-auth-left) calc(100% - var(--fpt-auth-left));
+    align-items:stretch!important;
+    overflow:hidden!important;
+  }
+  .fpt-auth-visual--large { width:100%!important; height:100%!important; display:flex!important; }
+  .fpt-auth-visual--large .fpt-auth-panel { width:82%; height:100%; }
+  .fpt-auth-visual--large .fpt-auth-wedge { width:18%; height:100%; }
+  .layout > .content {
+    width:100%!important;
+    height:100%!important;
+    min-height:0!important;
+    display:flex!important;
+    align-items:center!important;
+    justify-content:center!important;
+    overflow:hidden!important;
+    padding:44px clamp(56px,7vw,126px)!important;
+  }
 }
 
 @media (min-width:768px) and (max-width:1199.98px) {
-  .layout { min-height:100vh; display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start!important; background:#fff; }
+  .layout { min-height:100vh!important; display:flex!important; flex-direction:column!important; align-items:stretch!important; }
   .fpt-auth-visual--medium { width:100%; min-height:230px; }
   .fpt-auth-visual--medium .fpt-auth-panel { min-height:230px; width:100%; }
   .fpt-auth-visual--medium .fpt-auth-logo-link { top:24px; left:32px; }
-  .fpt-auth-visual--medium .fpt-auth-logo { width:166px; }
+  .fpt-auth-visual--medium .fpt-auth-logo { width:176px; }
   .fpt-auth-visual--medium .fpt-auth-copy { gap:20px; width:min(650px,84%); padding-top:54px; }
   .fpt-auth-visual--medium .fpt-auth-slash { height:88px; border-left-width:5px; }
   .fpt-auth-visual--medium .fpt-auth-copy h1 { font-size:38px; line-height:1; }
-  .layout > .content { width:100%!important; margin-top:0!important; padding:34px 24px 46px; display:flex; justify-content:center; }
-  #main-content { width:min(500px,100%); }
+  .layout > .content { width:100%!important; padding:38px 24px 50px!important; display:flex!important; justify-content:center!important; }
 }
 
 @media (max-width:767.98px) {
-  .layout { min-height:100vh; display:flex; flex-direction:column; align-items:stretch; justify-content:flex-start!important; background:#fff; }
-  .fpt-auth-visual--small { width:100%; min-height:164px; }
-  .fpt-auth-visual--small .fpt-auth-panel { min-height:164px; width:100%; }
+  .layout { min-height:100vh!important; display:flex!important; flex-direction:column!important; align-items:stretch!important; }
+  .fpt-auth-visual--small { width:100%; min-height:168px; }
+  .fpt-auth-visual--small .fpt-auth-panel { min-height:168px; width:100%; }
   .fpt-auth-visual--small .fpt-auth-logo-link { top:18px; left:22px; }
-  .fpt-auth-visual--small .fpt-auth-logo { width:142px; }
-  .fpt-auth-visual--small .fpt-auth-copy { width:auto; margin:auto 22px 24px; padding-top:56px; }
+  .fpt-auth-visual--small .fpt-auth-logo { width:150px; }
+  .fpt-auth-visual--small .fpt-auth-copy { width:auto; margin:auto 22px 24px; padding-top:58px; }
   .fpt-auth-visual--small .fpt-auth-copy h1 { font-size:30px; line-height:1; }
-  .layout > .content { width:100%!important; margin-top:0!important; padding:24px 18px 34px; display:flex; justify-content:center; background:#fff; }
-  #main-content { width:100%; max-width:470px; padding:0; }
+  .fpt-auth-copy h1 span,.fpt-auth-copy h1 em { white-space:normal; }
+  .layout > .content { width:100%!important; padding:26px 18px 36px!important; display:flex!important; justify-content:center!important; }
+  #main-content { width:100%; max-width:470px; }
 }
 `;
     fs.writeFileSync(scss, current, 'utf8');
