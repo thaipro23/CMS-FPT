@@ -39,6 +39,10 @@ def main() -> None:
         '{{ LMS_HOST }}',
         '{{ CMS_HOST }}',
         '{{ MFE_HOST }}',
+        '_make_haproxy_aware_wait_for_deployment_ready',
+        'from tutor.commands import k8s as tutor_k8s',
+        'name == "caddy" and config.get("FPT_HAPROXY_INGRESS_ENABLED")',
+        'tutor_k8s.wait_for_deployment_ready = wait_for_deployment_ready',
     ):
         require(plugin, token, PLUGIN)
 
