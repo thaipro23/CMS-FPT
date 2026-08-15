@@ -122,3 +122,23 @@ spec:
 {% endif %}
 """,
 ))
+
+
+def _make_haproxy_aware_wait_for_deployment_ready():
+    """Do not make Tutor init/do wait for a Caddy deployment that we removed."""
+    from tutor.commands import k8s as tutor_k8s
+
+    original_wait = tutor_k8s.wait_for_deployment_ready
+    if getattr(original_wait, "_fpt_haproxy_aware", False):
+        return
+
+    def wait_for_deployment_ready(config, name):
+        if name == "caddy" and config.get("FPT_HAPROXY_INGRESS_ENABLED"):
+            return
+        return original_wait(config, name)
+
+    wait_for_deployment_ready._fpt_haproxy_aware = True
+    tutor_k8s.wait_for_deployment_ready = wait_for_deployment_ready
+
+
+_make_haproxy_aware_wait_for_deployment_ready()
