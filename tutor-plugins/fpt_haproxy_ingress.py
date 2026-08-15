@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from tutor import hooks
+
+
+# Kubernetes-native ingress for the FPT Open edX deployment.
+#
+# This plugin intentionally removes Tutor's edge Caddy Deployment/Service from
+# the rendered Kubernetes resources and routes public traffic directly from
+# HAProxy Ingress to the LMS/CMS/MFE ClusterIP services.
+#
+# HAProxy Ingress Controller, MetalLB and cert-manager are cluster-level
+# infrastructure and are provisioned outside Tutor.
+hooks.Filters.CONFIG_DEFAULTS.add_items([
+    ("FPT_HAPROXY_INGRESS_ENABLED", False),
+    ("FPT_HAPROXY_INGRESS_CLASS", "haproxy"),
+    ("FPT_HAPROXY_CLUSTER_ISSUER", "letsencrypt-prod"),
+    ("FPT_HAPROXY_TLS_SECRET", "openedx-web-tls"),
+])
+
+
+# Tutor-mfe 21.0.1 renders Service/mfe as NodePort. In the target architecture
+# every application backend is private ClusterIP and only HAProxy Ingress owns
+# the external LoadBalancer/VIP.
+#
+# The Caddy Deployment and Service are deleted with strategic-merge patches.
+# ENABLE_WEB_PROXY=false (set by the setup helper) also prevents Tutor from
+# rendering the Caddy PVC.
+hooks.Filters.ENV_PATCHES.add_item((
+    "k8s-override",
+    """
+{% if FPT_HAPROXY_INGRESS_ENABLED %}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caddy
+$patch: delete
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: caddy
+$patch: delete
+{% if MFE_HOST is defined and MFE_HOST %}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mfe
+spec:
+  type: ClusterIP
+{% endif %}
+{% endif %}
+""",
+))
+
+
+# Public routing terminates TLS at HAProxy and forwards clear HTTP inside the
+# cluster to the application services. ENABLE_HTTPS must remain true so Open
+# edX generates canonical https:// URLs even though TLS is terminated before
+# LMS/CMS/MFE.
+hooks.Filters.ENV_PATCHES.add_item((
+    "k8s-services",
+    """
+{% if FPT_HAPROXY_INGRESS_ENABLED %}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openedx-web
+  annotations:
+    cert-manager.io/cluster-issuer: "{{ FPT_HAPROXY_CLUSTER_ISSUER }}"
+    haproxy.org/ssl-redirect: "true"
+    haproxy.org/ssl-redirect-code: "301"
+    haproxy.org/request-set-header: |
+      X-Forwarded-Proto https
+      X-Forwarded-Port 443
+spec:
+  ingressClassName: "{{ FPT_HAPROXY_INGRESS_CLASS }}"
+  tls:
+    - secretName: "{{ FPT_HAPROXY_TLS_SECRET }}"
+      hosts:
+        - "{{ LMS_HOST }}"
+        - "{{ CMS_HOST }}"
+{% if MFE_HOST is defined and MFE_HOST %}
+        - "{{ MFE_HOST }}"
+{% endif %}
+  rules:
+    - host: "{{ LMS_HOST }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lms
+                port:
+                  number: 8000
+    - host: "{{ CMS_HOST }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cms
+                port:
+                  number: 8000
+{% if MFE_HOST is defined and MFE_HOST %}
+    - host: "{{ MFE_HOST }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mfe
+                port:
+                  number: 8002
+{% endif %}
+{% endif %}
+""",
+))
