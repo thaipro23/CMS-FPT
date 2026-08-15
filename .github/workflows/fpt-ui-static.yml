@@ -7,10 +7,12 @@ on:
   pull_request:
     paths:
       - 'tutor-plugins/fpt_indigo_ui.py'
+      - 'tutor-plugins/fpt_haproxy_ingress.py'
       - 'openedx_unit_reset/**'
       - 'fpt_indigo_ui/**'
       - 'scripts/fpt-ui-*.sh'
       - 'scripts/fpt-ui-*.py'
+      - 'scripts/fpt-haproxy-ingress-setup.sh'
       - 'scripts/fpt-ulmo-upgrade.sh'
       - '.github/workflows/fpt-ui-static.yml'
 
@@ -42,6 +44,7 @@ jobs:
             scripts/fpt-ui-smoke.sh \
             scripts/fpt-ui-validate-static.sh \
             scripts/fpt-ui-validate-polish.sh \
+            scripts/fpt-haproxy-ingress-setup.sh \
             scripts/fpt-ulmo-upgrade.sh
 
       - name: Validate vendored image resolution and manifest
@@ -53,6 +56,11 @@ jobs:
         run: |
           python -m py_compile scripts/fpt-ui-validate-db-replica.py
           python scripts/fpt-ui-validate-db-replica.py
+
+      - name: Validate HAProxy ingress contract
+        run: |
+          python -m py_compile tutor-plugins/fpt_haproxy_ingress.py scripts/fpt-ui-validate-haproxy-ingress.py
+          python scripts/fpt-ui-validate-haproxy-ingress.py
 
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
