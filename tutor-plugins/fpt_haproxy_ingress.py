@@ -3,19 +3,28 @@ from __future__ import annotations
 from tutor import hooks
 
 
-# Kubernetes-native ingress for the FPT Open edX deployment.
+# Kubernetes-native ingress for FPT Open edX.
 #
-# This plugin intentionally removes Tutor's edge Caddy Deployment/Service from
-# the rendered Kubernetes resources and routes public traffic directly from
-# HAProxy Ingress to the LMS/CMS/MFE ClusterIP services.
+# Public topology:
 #
-# HAProxy Ingress Controller, MetalLB and cert-manager are cluster-level
-# infrastructure and are provisioned outside Tutor.
+# Internet
+#   -> HAProxy Ingress :80/:443
+#
+# HAProxy terminates TLS for LMS/CMS/MFE/Meilisearch.
+#
+# MinIO is different:
+# s3.fpl.edu.vn uses TLS passthrough so the existing MinIO certificate
+# terminates directly on the external MinIO server.
 hooks.Filters.CONFIG_DEFAULTS.add_items([
     ("FPT_HAPROXY_INGRESS_ENABLED", False),
     ("FPT_HAPROXY_INGRESS_CLASS", "haproxy"),
     ("FPT_HAPROXY_CLUSTER_ISSUER", "letsencrypt-prod"),
     ("FPT_HAPROXY_TLS_SECRET", "openedx-web-tls"),
+
+    # External MinIO S3 origin.
+    ("FPT_MINIO_PUBLIC_HOST", "s3.fpl.edu.vn"),
+    ("FPT_MINIO_ORIGIN_IP", "10.205.194.48"),
+    ("FPT_MINIO_ORIGIN_PORT", 443),
 ])
 
 
@@ -38,13 +47,9 @@ redir @fpt_unknown_mfe_path {% if ENABLE_HTTPS %}https://{% else %}http://{% end
 ))
 
 
-# Tutor-mfe 21.0.1 renders Service/mfe as NodePort. In the target architecture
-# every application backend is private ClusterIP and only HAProxy Ingress owns
-# the external LoadBalancer/VIP.
-#
-# The Caddy Deployment and Service are deleted with strategic-merge patches.
-# ENABLE_WEB_PROXY=false (set by the setup helper) also prevents Tutor from
-# rendering the Caddy PVC.
+
+# Remove Tutor edge Caddy.
+# MFE remains internal ClusterIP behind HAProxy.
 hooks.Filters.ENV_PATCHES.add_item((
     "k8s-override",
     """
@@ -75,14 +80,51 @@ spec:
 ))
 
 
-# Public routing terminates TLS at HAProxy and forwards clear HTTP inside the
-# cluster to the application services. ENABLE_HTTPS must remain true so Open
-# edX generates canonical https:// URLs even though TLS is terminated before
-# LMS/CMS/MFE.
 hooks.Filters.ENV_PATCHES.add_item((
     "k8s-services",
     """
 {% if FPT_HAPROXY_INGRESS_ENABLED %}
+
+{% if FPT_MINIO_ENABLED %}
+# External MinIO origin.
+#
+# No selector is used because MinIO runs outside Kubernetes.
+# EndpointSlice supplies the external origin address directly.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-external
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      protocol: TCP
+      port: {{ FPT_MINIO_ORIGIN_PORT }}
+      targetPort: {{ FPT_MINIO_ORIGIN_PORT }}
+
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: minio-external
+  labels:
+    kubernetes.io/service-name: minio-external
+addressType: IPv4
+ports:
+  - name: https
+    protocol: TCP
+    port: {{ FPT_MINIO_ORIGIN_PORT }}
+endpoints:
+  - addresses:
+      - "{{ FPT_MINIO_ORIGIN_IP }}"
+    conditions:
+      ready: true
+{% endif %}
+
+
+# LMS / CMS / MFE / Meilisearch:
+# TLS terminates directly on HAProxy using cert-manager certificate.
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -97,6 +139,7 @@ metadata:
       X-Forwarded-Port 443
 spec:
   ingressClassName: "{{ FPT_HAPROXY_INGRESS_CLASS }}"
+
   tls:
     - secretName: "{{ FPT_HAPROXY_TLS_SECRET }}"
       hosts:
@@ -105,6 +148,10 @@ spec:
 {% if MFE_HOST is defined and MFE_HOST %}
         - "{{ MFE_HOST }}"
 {% endif %}
+{% if RUN_MEILISEARCH and MEILISEARCH_HOST %}
+        - "{{ MEILISEARCH_HOST }}"
+{% endif %}
+
   rules:
     - host: "{{ LMS_HOST }}"
       http:
@@ -116,6 +163,7 @@ spec:
                 name: lms
                 port:
                   number: 8000
+
     - host: "{{ CMS_HOST }}"
       http:
         paths:
@@ -126,6 +174,7 @@ spec:
                 name: cms
                 port:
                   number: 8000
+
 {% if MFE_HOST is defined and MFE_HOST %}
     - host: "{{ MFE_HOST }}"
       http:
@@ -138,16 +187,62 @@ spec:
                 port:
                   number: 8002
 {% endif %}
+
+{% if RUN_MEILISEARCH and MEILISEARCH_HOST %}
+    - host: "{{ MEILISEARCH_HOST }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: meilisearch
+                port:
+                  number: 7700
+{% endif %}
+
+
+{% if FPT_MINIO_ENABLED %}
+# MinIO already owns a valid TLS certificate.
+#
+# Do NOT terminate/re-encrypt MinIO TLS at HAProxy.
+# Preserve TLS end-to-end and route by SNI to the external MinIO origin.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: minio-s3
+  annotations:
+    haproxy.org/ssl-passthrough: "true"
+    haproxy.org/ssl-redirect: "true"
+    haproxy.org/ssl-redirect-code: "301"
+spec:
+  ingressClassName: "{{ FPT_HAPROXY_INGRESS_CLASS }}"
+
+  rules:
+    - host: "{{ FPT_MINIO_PUBLIC_HOST }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: minio-external
+                port:
+                  number: {{ FPT_MINIO_ORIGIN_PORT }}
+{% endif %}
+
 {% endif %}
 """,
 ))
 
 
 def _make_haproxy_aware_wait_for_deployment_ready():
-    """Do not make Tutor init/do wait for a Caddy deployment that we removed."""
+    """Do not wait for Tutor edge Caddy when HAProxy ingress is enabled."""
     from tutor.commands import k8s as tutor_k8s
 
     original_wait = tutor_k8s.wait_for_deployment_ready
+
     if getattr(original_wait, "_fpt_haproxy_aware", False):
         return
 
