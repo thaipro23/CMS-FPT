@@ -157,6 +157,10 @@ for marker in (
     '.fpt-headline-line{display:block;white-space:nowrap',
     '.fpt-kicker:before{display:none!important}',
     'align-items:flex-start;text-align:left',
+    'FPT_DISCOVERY_V10_MOBILE_STACK',
+    '.fpt-slide{grid-template-columns:minmax(0,1fr);gap:18px;',
+    '.fpt-slide__copy{width:100%;min-width:0;max-width:680px}',
+    '.fpt-collage{width:100%;max-width:390px;min-width:0;',
 ):
     if marker not in balance:
         raise SystemExit(f'Hero alignment marker missing: {marker}')

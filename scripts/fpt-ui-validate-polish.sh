@@ -61,9 +61,32 @@ for marker in (
     'color:#C7D5E5!important',
     'FPT_LIGHT_ONLY_THEME_TOGGLE_DISABLED',
     '.fpt-headline-line{display:block;white-space:nowrap',
+    'FPT_DISCOVERY_V10_MOBILE_STACK',
+    '@media(max-width:820px){',
+    '.fpt-slide{grid-template-columns:minmax(0,1fr);gap:18px;',
+    '.fpt-slide__copy{width:100%;min-width:0;max-width:680px}',
+    '@media(max-width:520px){',
+    '.fpt-collage{width:100%;max-width:390px;min-width:0;',
 ):
     if marker not in balance:
         raise SystemExit(f'final legacy balance/contrast contract missing: {marker}')
+
+desktop_grid = balance.index(
+    '.fpt-slide{grid-template-columns:minmax(0,.98fr) minmax(500px,1.02fr);'
+)
+tablet_media = balance.index('@media(max-width:820px){')
+tablet_grid = balance.index(
+    '.fpt-slide{grid-template-columns:minmax(0,1fr);gap:18px;',
+    tablet_media,
+)
+mobile_media = balance.index('@media(max-width:520px){')
+mobile_grid = balance.index(
+    '.fpt-slide{grid-template-columns:minmax(0,1fr);gap:16px;',
+    mobile_media,
+)
+compact_media = balance.index('@media(max-width:380px){')
+if not desktop_grid < tablet_media < tablet_grid < mobile_media < mobile_grid < compact_media:
+    raise SystemExit('final mobile one-column Hero rules do not win the CSS cascade')
 
 for marker in (
     'ĐỊA CHỈ',
