@@ -1,0 +1,1 @@
+"""FPT Auth management commands."""

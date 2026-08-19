@@ -53,7 +53,6 @@ def apply_settings(django_settings):
         'social_core.pipeline.social_auth.social_uid',
         'social_core.pipeline.social_auth.auth_allowed',
         'social_core.pipeline.social_auth.social_user',
-        'common.djangoapps.third_party_auth.feid_pipeline.associate_by_username_only',
         'common.djangoapps.third_party_auth.pipeline.associate_by_email_if_login_api',
         'common.djangoapps.third_party_auth.pipeline.associate_by_email_if_saml',
         'common.djangoapps.third_party_auth.pipeline.associate_by_email_if_oauth',
