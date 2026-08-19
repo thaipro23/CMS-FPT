@@ -265,8 +265,10 @@ if 'BUILDX_BUILDER=default tutor images build openedx' not in build:
 if 'BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe' not in build:
     raise SystemExit('dedicated cached MFE build missing')
 for data, name in ((build, 'clean rebuild'), (standard_build, 'standard build')):
-    if 'FPT Polytechnic V12 white-logo dark-surface contract' not in data:
-        raise SystemExit(f'{name} does not verify the compiled Authn V12 contract')
+    if 'grep -R -Fq -- "--fpt-auth-brand-surface"' not in data:
+        raise SystemExit(f'{name} does not verify the durable compiled Authn V12 surface token')
+    if 'grep -R -Fq "FPT Polytechnic V12 white-logo dark-surface contract"' in data:
+        raise SystemExit(f'{name} incorrectly expects a source comment to survive CSS minimization')
 if 'docker buildx prune' in build or 'docker system prune' in build or 'docker volume prune' in build:
     raise SystemExit('destructive prune command found in clean build path')
 
