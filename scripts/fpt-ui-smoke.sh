@@ -119,7 +119,9 @@ for name in "${ASSETS[@]}"; do
   log "PASS asset $name (${bytes} bytes, $content_type)"
 done
 
-[ -n "$COLOUR_LOGO_BODY" ] && [ -n "$WHITE_LOGO_BODY" ] || fail "Logo smoke files were not captured"
+if [ -z "$COLOUR_LOGO_BODY" ] || [ -z "$WHITE_LOGO_BODY" ]; then
+  fail "Logo smoke files were not captured"
+fi
 if cmp -s "$COLOUR_LOGO_BODY" "$WHITE_LOGO_BODY"; then
   fail "Colour and white logo endpoints returned identical artwork"
 fi
