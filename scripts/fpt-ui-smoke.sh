@@ -16,11 +16,14 @@ MFE_URL="${MFE_URL%/}"
 CURL_COMMON=(--silent --show-error --location --connect-timeout 5 --max-time 20)
 ASSETS=(
   fpt-polytechnic-logo.png
+  fpt-polytechnic-logo-white.png
   fpt-students.png
   fpt-campus-primary.jpg
   fpt-campus-secondary.jpg
 )
 TMP_FILES=()
+COLOUR_LOGO_BODY=""
+WHITE_LOGO_BODY=""
 cleanup() {
   if [ "${#TMP_FILES[@]}" -gt 0 ]; then
     rm -f "${TMP_FILES[@]}" 2>/dev/null || true
@@ -89,8 +92,18 @@ for name in "${ASSETS[@]}"; do
     image/*) ;;
     *) fail "$name content-type is '${content_type:-unknown}', expected image/*" ;;
   esac
+  case "$name" in
+    fpt-polytechnic-logo.png) COLOUR_LOGO_BODY="$body" ;;
+    fpt-polytechnic-logo-white.png) WHITE_LOGO_BODY="$body" ;;
+  esac
   log "PASS asset $name (${bytes} bytes, $content_type)"
 done
+
+[ -n "$COLOUR_LOGO_BODY" ] && [ -n "$WHITE_LOGO_BODY" ] || fail "Logo smoke files were not captured"
+if cmp -s "$COLOUR_LOGO_BODY" "$WHITE_LOGO_BODY"; then
+  fail "Colour and white logo endpoints returned identical artwork"
+fi
+log "PASS distinct colour/white logo artwork"
 
 courses_tmp="$(new_tmp)"
 courses_status="$(curl "${CURL_COMMON[@]}" --output "$courses_tmp" --write-out '%{http_code}' "$LMS_URL/courses" 2>/dev/null || printf '000')"

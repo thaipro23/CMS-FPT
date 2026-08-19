@@ -93,6 +93,7 @@ node "$TMP_DIR/authn-polish-fixture.js"
 
 python - "$FIXTURE_APP" <<'PY'
 from pathlib import Path
+import re
 import sys
 app = Path(sys.argv[1])
 layout = app / 'src/base-container/components/default-layout'
@@ -104,6 +105,14 @@ for name in ('LargeLayout.jsx', 'MediumLayout.jsx', 'SmallLayout.jsx'):
         raise SystemExit(f'{name} still contains a login background image')
     if 'Start learning' not in text or 'with CMS' not in text:
         raise SystemExit(f'{name} login copy is incomplete')
+    if text.count('<img className="fpt-auth-logo fpt-auth-logo--white"') != 1:
+        raise SystemExit(f'{name} must render exactly one native white FPT logo')
+    if '<Image ' in text or '<Hyperlink ' in text:
+        raise SystemExit(f'{name} still relies on wrapper components for the critical logo')
+    if 'getConfig().LMS_BASE_URL || window.location.origin' not in text:
+        raise SystemExit(f'{name} white logo URL has no runtime fallback')
+    if 'getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl()' not in text:
+        raise SystemExit(f'{name} logo home link has no safe fallback')
 large = (layout / 'LargeLayout.jsx').read_text(encoding='utf-8')
 if large.count('className="fpt-auth-wedge"') != 1:
     raise SystemExit('LargeLayout must contain exactly one diagonal wedge')
@@ -112,6 +121,11 @@ scss = (app / 'src/index.scss').read_text(encoding='utf-8')
 required = [
     'FPT Polytechnic V10 edX full-screen authn',
     'FPT Polytechnic V11 authn edge-to-edge lock',
+    'FPT Polytechnic V12 white-logo dark-surface contract',
+    '--fpt-auth-brand-surface:#0B3B82',
+    '--fpt-auth-form-surface:#FFFFFF',
+    '.fpt-auth-logo-link{display:inline-flex!important;visibility:visible!important;opacity:1!important;',
+    '.fpt-auth-logo,.fpt-auth-logo--white{display:block!important;height:auto!important;filter:none!important;visibility:visible!important;opacity:1!important}',
     'width:100vw!important',
     'max-width:none!important',
     'border-radius:0!important',
@@ -127,7 +141,25 @@ if scss.count('FPT Polytechnic V10 edX full-screen authn') != 1:
     raise SystemExit('Authn V10 CSS is not idempotent')
 if scss.count('FPT Polytechnic V11 authn edge-to-edge lock') != 1:
     raise SystemExit('Authn V11 CSS is not idempotent')
-print('[fpt-ui-static] Authn edge-to-edge/no-image contract PASS')
+if scss.count('FPT Polytechnic V12 white-logo dark-surface contract') != 1:
+    raise SystemExit('Authn V12 CSS is not idempotent')
+
+surface_match = re.search(r'--fpt-auth-brand-surface:(#[0-9A-Fa-f]{6})', scss)
+if not surface_match:
+    raise SystemExit('Authn brand surface colour is not explicit')
+
+def luminance(hex_colour):
+    channels = [int(hex_colour[index:index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+surface_luminance = luminance(surface_match.group(1))
+white_luminance = luminance('#FFFFFF')
+contrast = (white_luminance + 0.05) / (surface_luminance + 0.05)
+if contrast < 7:
+    raise SystemExit(f'white Authn logo contrast regression: {contrast:.2f}:1')
+
+print(f'[fpt-ui-static] Authn edge-to-edge/white-logo contract PASS contrast={contrast:.2f}:1')
 PY
 
 log "Checking final Hero/header/footer/theme source contracts"
@@ -135,12 +167,24 @@ python - <<'PY'
 from pathlib import Path
 
 openedx = Path('fpt_indigo_ui/patches/openedx.patch').read_text(encoding='utf-8')
+authn_polish = Path('fpt_indigo_ui/patches/authn_polish.patch').read_text(encoding='utf-8')
 balance = Path('fpt_indigo_ui/patches/openedx_balance.patch').read_text(encoding='utf-8')
 native = Path('fpt_indigo_ui/patches/native_logo.patch').read_text(encoding='utf-8')
 runtime = Path('fpt_indigo_ui/patches/runtime.patch').read_text(encoding='utf-8')
 plugin = Path('tutor-plugins/fpt_indigo_ui.py').read_text(encoding='utf-8')
 setup = Path('scripts/fpt-ui-setup.sh').read_text(encoding='utf-8')
 build = Path('scripts/fpt-ui-clean-openedx-rebuild.sh').read_text(encoding='utf-8')
+standard_build = Path('scripts/fpt-ui-build.sh').read_text(encoding='utf-8')
+smoke = Path('scripts/fpt-ui-smoke.sh').read_text(encoding='utf-8')
+
+if openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') != 5:
+    raise SystemExit('Open edX must vendor exactly five FPT UI assets')
+if '/fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png' not in openedx:
+    raise SystemExit('Open edX does not explicitly vendor the Authn white logo')
+if 'FPT Polytechnic V12 white-logo dark-surface contract' not in authn_polish:
+    raise SystemExit('Authn V12 white-logo/dark-surface patch is missing')
+if '  fpt-polytechnic-logo-white.png\n' not in smoke:
+    raise SystemExit('deployed static smoke test does not request the white logo')
 
 pairs = [
     ('Học tập chủ động.', 'Phát triển mỗi ngày.'),
@@ -208,14 +252,21 @@ if 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' not in plugin:
     raise SystemExit('Authn DefaultLayout pin missing')
 if 'EXPECTED_COMMON_VERSION="release/ulmo.4"' not in setup or 'EXPECTED_TUTOR_VERSION="21.0.9"' not in setup:
     raise SystemExit('Ulmo.4/Tutor baseline guards missing')
-if 'FPT Polytechnic V10 edX full-screen authn' not in setup or 'FPT Polytechnic V11 authn edge-to-edge lock' not in setup:
-    raise SystemExit('generated MFE Authn guard is not synchronized to V10/V11')
+if any(marker not in setup for marker in (
+    'FPT Polytechnic V10 edX full-screen authn',
+    'FPT Polytechnic V11 authn edge-to-edge lock',
+    'FPT Polytechnic V12 white-logo dark-surface contract',
+)):
+    raise SystemExit('generated MFE Authn guard is not synchronized to V10/V11/V12')
 if 'FPT Polytechnic V8 production branding overlay' in setup:
     raise SystemExit('stale generated MFE Authn V8 guard remains in setup')
 if 'BUILDX_BUILDER=default tutor images build openedx' not in build:
     raise SystemExit('Open edX default-builder isolation missing')
 if 'BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe' not in build:
     raise SystemExit('dedicated cached MFE build missing')
+for data, name in ((build, 'clean rebuild'), (standard_build, 'standard build')):
+    if 'FPT Polytechnic V12 white-logo dark-surface contract' not in data:
+        raise SystemExit(f'{name} does not verify the compiled Authn V12 contract')
 if 'docker buildx prune' in build or 'docker system prune' in build or 'docker volume prune' in build:
     raise SystemExit('destructive prune command found in clean build path')
 

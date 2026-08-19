@@ -2,6 +2,7 @@
 # All FPT assets are vendored in Git. No runtime/build-time hotlinking.
 RUN mkdir -p /openedx/staticfiles/indigo/images/fpt
 COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-polytechnic-logo.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png
 COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-students.png /openedx/staticfiles/indigo/images/fpt/fpt-students.png
 COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-campus-primary.jpg /openedx/staticfiles/indigo/images/fpt/fpt-campus-primary.jpg
 COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-campus-secondary.jpg /openedx/staticfiles/indigo/images/fpt/fpt-campus-secondary.jpg

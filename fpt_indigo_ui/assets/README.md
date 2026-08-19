@@ -4,9 +4,10 @@ Các asset runtime của lớp FPT Polytechnic UI được vendor cùng source �
 
 ## Bộ asset production
 
-- `fpt-polytechnic-logo.png` — logo header/login/footer; 360×122.
+- `fpt-polytechnic-logo.png` — logo màu cho header/nền sáng; 360×122.
+- `fpt-polytechnic-logo-white.png` — artwork âm bản thật cho Login/footer trên nền xanh đậm; 426×146; không dùng CSS invert.
 - `fpt-students.png` — sinh viên FPT Polytechnic áo cam; 1360×906; dùng làm visual chính ở Course Discovery.
-- `fpt-campus-primary.jpg` — sinh viên học/thực hành với thiết bị quay; 1920×1655; dùng cho Login background và supporting card.
+- `fpt-campus-primary.jpg` — sinh viên học/thực hành với thiết bị quay; 1920×1655; dùng cho Discovery supporting card.
 - `fpt-campus-secondary.jpg` — không gian thực hành F&B; 900×600; dùng cho Learner Dashboard banner và supporting card.
 - `manifest.json` — nguồn, vai trò, kích thước, dung lượng và SHA-256 của ba ảnh nội dung.
 

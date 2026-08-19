@@ -71,6 +71,7 @@ fi
 
 EXPECTED_ASSETS=(
   fpt-polytechnic-logo.png
+  fpt-polytechnic-logo-white.png
   fpt-students.png
   fpt-campus-primary.jpg
   fpt-campus-secondary.jpg
@@ -96,17 +97,18 @@ fi
 
 PATCH_DIR="$REPO_ROOT/fpt_indigo_ui/patches"
 AUTHN_PATCH="$PATCH_DIR/authn.patch"
+AUTHN_POLISH_PATCH="$PATCH_DIR/authn_polish.patch"
 OPENEDX_PATCH="$PATCH_DIR/openedx.patch"
 RUNTIME_PATCH="$PATCH_DIR/runtime.patch"
-for patch in "$AUTHN_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH"; do
+for patch in "$AUTHN_PATCH" "$AUTHN_POLISH_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH"; do
   [ -s "$patch" ] || fail "Missing FPT UI patch source: $patch"
 done
 
-python - "$FPT_PLUGIN" "$AUTHN_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH" <<'PYGUARD'
+python - "$FPT_PLUGIN" "$AUTHN_PATCH" "$AUTHN_POLISH_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH" <<'PYGUARD'
 from pathlib import Path
 import sys
 
-plugin, authn, openedx, runtime = [Path(x).read_text(encoding='utf-8') for x in sys.argv[1:]]
+plugin, authn, authn_polish, openedx, runtime = [Path(x).read_text(encoding='utf-8') for x in sys.argv[1:]]
 if '_read_patch("authn.patch")' not in plugin or '_read_patch("openedx.patch")' not in plugin:
     raise SystemExit('Tutor plugin is not loading modular FPT patch sources')
 if 'mfe-dockerfile-pre-npm-build-authn' not in plugin:
@@ -123,6 +125,12 @@ if "RUN python - <<'PY2'" in authn:
     raise SystemExit('Authn patch still contains Python heredoc')
 if authn.count("import React from 'react';") != 3:
     raise SystemExit('all three Ulmo Authn layouts must preserve an explicit React import')
+if authn.count('<img className="fpt-auth-logo fpt-auth-logo--white"') != 3:
+    raise SystemExit('all three Ulmo Authn layouts must render exactly one native white logo')
+if 'getConfig().LMS_BASE_URL || window.location.origin' not in authn:
+    raise SystemExit('Authn white logo URL is missing the same-origin fallback')
+if 'FPT Polytechnic V12 white-logo dark-surface contract' not in authn_polish:
+    raise SystemExit('Authn white-logo dark-surface contract is missing')
 if authn.count('<div className="fpt-auth-wedge"') != 1:
     raise SystemExit('Authn must contain exactly one orange wedge element')
 if '.fpt-auth-wedge' not in authn or 'clip-path:polygon' not in authn:
@@ -131,11 +139,11 @@ if 'useEffect(' in runtime or 'getConfig()' in runtime:
     raise SystemExit('runtime patch contains unscoped React/getConfig dependency')
 if 'getFptConfig()' not in runtime:
     raise SystemExit('runtime patch is not using the FPT-scoped getConfig alias')
-if openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') != 4:
-    raise SystemExit('expected exactly four vendored FPT asset COPY statements')
+if openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') != 5:
+    raise SystemExit('expected exactly five vendored FPT asset COPY statements')
 if 'FptHeaderLogo' not in runtime or 'FptFooter' not in runtime:
     raise SystemExit('MFE runtime branding definitions are incomplete')
-if any('curl ' in data.lower() for data in (plugin, authn, openedx, runtime)):
+if any('curl ' in data.lower() for data in (plugin, authn, authn_polish, openedx, runtime)):
     raise SystemExit('FPT UI source must not download assets during build')
 print('[fpt-ui] Source guardrails PASS')
 PYGUARD
@@ -251,7 +259,7 @@ GENERATED_OPENEDX="$TUTOR_ROOT/env/build/openedx/Dockerfile"
 [ -f "$GENERATED_OPENEDX" ] || fail "Generated Open edX Dockerfile not found: $GENERATED_OPENEDX"
 
 COPY_COUNT="$(grep -Fc 'COPY --from=edx-platform /fpt_indigo_ui/assets/' "$GENERATED_OPENEDX" || true)"
-[ "$COPY_COUNT" -eq 4 ] || fail "Expected 4 vendored FPT asset COPY statements, found $COPY_COUNT"
+[ "$COPY_COUNT" -eq 5 ] || fail "Expected 5 vendored FPT asset COPY statements, found $COPY_COUNT"
 
 if grep -Eq 'curl .*(caodang\.fpt\.edu\.vn|seeklogo\.com|wikimedia\.org|chungta\.vn)' "$GENERATED_OPENEDX"; then
   fail "Generated Open edX Dockerfile downloads FPT assets from the Internet"
@@ -263,6 +271,7 @@ MFE_ENV_CONFIG="$TUTOR_ROOT/env/plugins/mfe/build/mfe/env.config.jsx"
 [ -f "$MFE_ENV_CONFIG" ] || fail "Generated MFE env.config.jsx not found: $MFE_ENV_CONFIG"
 grep -Fq 'FPT Polytechnic V10 edX full-screen authn' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V10 layout patch"
 grep -Fq 'FPT Polytechnic V11 authn edge-to-edge lock' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V11 edge-to-edge patch"
+grep -Fq 'FPT Polytechnic V12 white-logo dark-surface contract' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V12 logo/surface contract"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
 grep -Fq "RUN node - <<'JS3'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn polish patch is not using Node.js"
 grep -Fq "import React from 'react';" "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing explicit React import"
@@ -285,12 +294,13 @@ common = text.find('######## authn (common)')
 source_copy = text.find('COPY --from=authn-src / /openedx/app', common)
 layout_marker = text.find('FPT Polytechnic V10 edX full-screen authn', common)
 polish_marker = text.find('FPT Polytechnic V11 authn edge-to-edge lock', common)
+brand_marker = text.find('FPT Polytechnic V12 white-logo dark-surface contract', common)
 dev = text.find('######## authn (dev)', common)
-if min(common, source_copy, layout_marker, polish_marker, dev) < 0:
-    raise SystemExit('could not resolve Authn stage/V10/V11 patch markers in generated MFE Dockerfile')
-if not (common < source_copy < layout_marker < polish_marker < dev):
-    raise SystemExit('Authn patch ordering is unsafe: source COPY -> V10 layout -> V11 edge-to-edge -> authn build is required')
-print('[fpt-ui] Generated Authn V10/V11 patch ordering PASS')
+if min(common, source_copy, layout_marker, polish_marker, brand_marker, dev) < 0:
+    raise SystemExit('could not resolve Authn stage/V10/V11/V12 patch markers in generated MFE Dockerfile')
+if not (common < source_copy < layout_marker < polish_marker < brand_marker < dev):
+    raise SystemExit('Authn patch ordering is unsafe: source COPY -> V10 layout -> V11 edge-to-edge -> V12 logo/surface -> authn build is required')
+print('[fpt-ui] Generated Authn V10/V11/V12 patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"

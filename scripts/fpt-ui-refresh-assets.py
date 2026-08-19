@@ -58,7 +58,7 @@ SPECS = (
     AssetSpec(
         key="campus_primary",
         target="fpt-campus-primary.jpg",
-        role="Login background / Discovery supporting card",
+        role="Discovery supporting card",
         article="https://caodang.fpt.edu.vn/tin-tuc-poly/thuc-hanh-livestream-ngay-tai-phong-lab-sinh-vien-fpt-polytechnic-hoc-that-lam-that-len-song-that.html",
         candidates=(
             "https://caodang.fpt.edu.vn/wp-content/uploads/2026/04/1-e1775814263238.jpeg",

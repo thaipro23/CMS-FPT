@@ -189,6 +189,7 @@ docker cp "$CID:/openedx/dist/learning" "$TMP_DIR/learning" >/dev/null
 grep -R -Fq "FPT Polytechnic" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain FPT Polytechnic branding"
 grep -R -Fq "fpt-auth-wedge" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain the approved wedge CSS"
 grep -R -Fq "fpt-polytechnic-logo-white.png" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not reference the real white FPT logo"
+grep -R -Fq "FPT Polytechnic V12 white-logo dark-surface contract" "$TMP_DIR/authn" || fail "Compiled Authn bundle does not contain the V12 white-logo/dark-surface contract"
 grep -R -Fq "Tiếp tục hành trình học tập" "$TMP_DIR/learner-dashboard" || fail "Compiled Learner Dashboard bundle does not contain FPT learner banner"
 grep -R -Fq "AI_MFE_REQUEST_RESIZE" "$TMP_DIR/learning" || fail "Compiled Learning bundle does not contain the custom Unit Reset frontend marker"
 grep -R -Fq "AI_QUIZ_ACTIVE_SESSION_READY_RELOAD" "$TMP_DIR/learning" || fail "Compiled Learning bundle is missing the Unit Reset active-session reload contract"

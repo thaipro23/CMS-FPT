@@ -24,13 +24,14 @@ if (!fs.existsSync(scss)) {
   throw new Error(`Authn stylesheet not found: ${scss}`);
 }
 
-const marker = 'FPT Polytechnic V11 authn edge-to-edge lock';
+const edgeMarker = 'FPT Polytechnic V11 authn edge-to-edge lock';
 let current = fs.readFileSync(scss, 'utf8');
-if (!current.includes(marker)) {
+let changed = false;
+if (!current.includes(edgeMarker)) {
   current += String.raw`
 
 /* FPT Polytechnic V11 authn edge-to-edge lock */
-html,body,#root{width:100%!important;margin:0!important;padding:0!important;background:#fff!important;color-scheme:light!important}
+html,body,#root{width:100%!important;margin:0!important;padding:0!important;background:#0B3B82!important;color-scheme:light!important}
 body{background-image:none!important}
 .layout{width:100vw!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;background:#fff!important}
 .fpt-auth-visual,.fpt-auth-panel,.fpt-auth-wedge,.layout>.content{margin:0!important;border:0!important;border-radius:0!important;box-shadow:none!important}
@@ -51,12 +52,47 @@ body{background-image:none!important}
 
 html[data-paragon-theme-variant="dark"],
 html[data-paragon-theme-variant="dark"] body,
-html[data-paragon-theme-variant="dark"] #root,
+html[data-paragon-theme-variant="dark"] #root{background:#0B3B82!important;color:#fff!important}
 html[data-paragon-theme-variant="dark"] .layout,
 html[data-paragon-theme-variant="dark"] .layout>.content,
 html[data-paragon-theme-variant="dark"] #main-content,
 html[data-paragon-theme-variant="dark"] #main-content .form-control{background:#fff!important;color:#172B45!important}
 `;
+  changed = true;
+}
+
+const brandMarker = 'FPT Polytechnic V12 white-logo dark-surface contract';
+if (!current.includes(brandMarker)) {
+  current += String.raw`
+
+/* FPT Polytechnic V12 white-logo dark-surface contract */
+:root{--fpt-auth-brand-surface:#0B3B82;--fpt-auth-form-surface:#FFFFFF}
+html,body,#root{background-color:var(--fpt-auth-brand-surface)!important;background-image:none!important}
+.layout{background:var(--fpt-auth-form-surface)!important}
+.fpt-auth-visual,.fpt-auth-panel{background-color:var(--fpt-auth-brand-surface)!important;background-image:none!important}
+.fpt-auth-wedge,.layout>.content{background-color:var(--fpt-auth-form-surface)!important;background-image:none!important}
+.fpt-auth-logo-link{display:inline-flex!important;visibility:visible!important;opacity:1!important;isolation:isolate}
+.fpt-auth-logo-link:focus-visible{outline:3px solid #FFFFFF;outline-offset:6px;border-radius:2px}
+.fpt-auth-logo,.fpt-auth-logo--white{display:block!important;height:auto!important;filter:none!important;visibility:visible!important;opacity:1!important}
+
+@media (max-width:767.98px){
+  .layout{width:100%!important;min-height:100vh!important;min-height:100dvh!important;background:var(--fpt-auth-form-surface)!important}
+  .fpt-auth-visual--small,.fpt-auth-visual--small .fpt-auth-panel{min-height:208px!important;background:var(--fpt-auth-brand-surface)!important}
+  .layout>.content{flex:1 0 auto;background:var(--fpt-auth-form-surface)!important}
+}
+
+html[data-paragon-theme-variant="dark"],
+html[data-paragon-theme-variant="dark"] body,
+html[data-paragon-theme-variant="dark"] #root{background:var(--fpt-auth-brand-surface)!important;color:#FFFFFF!important}
+html[data-paragon-theme-variant="dark"] .layout,
+html[data-paragon-theme-variant="dark"] .layout>.content,
+html[data-paragon-theme-variant="dark"] #main-content,
+html[data-paragon-theme-variant="dark"] #main-content .form-control{background:var(--fpt-auth-form-surface)!important;color:#172B45!important}
+`;
+  changed = true;
+}
+
+if (changed) {
   fs.writeFileSync(scss, current, 'utf8');
 }
 JS3

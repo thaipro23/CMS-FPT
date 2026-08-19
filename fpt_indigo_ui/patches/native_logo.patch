@@ -1,8 +1,8 @@
 
 # Keep the stock Indigo/Open edX header DOM. Replace the exact native assets
 # Indigo already requests. Legacy LMS uses Django hashed static filenames, so
-# patch both theme source files and all collected/hash variants.
-COPY --from=edx-platform ./fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png /openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png
+# patch both theme source files and all collected/hash variants. Both source
+# logo variants were already vendored by openedx.patch before this step.
 RUN set -eu; \
     color=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo.png; \
     white=/openedx/staticfiles/indigo/images/fpt/fpt-polytechnic-logo-white.png; \

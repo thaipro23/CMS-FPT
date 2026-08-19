@@ -8,16 +8,17 @@ const write = (name, value) => fs.writeFileSync(`${root}/${name}`, value, 'utf8'
 write('LargeLayout.jsx', String.raw`import React from 'react';
 
 import { getConfig } from '@edx/frontend-platform';
-import { Hyperlink, Image } from '@openedx/paragon';
 
-const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
+const getFptBaseUrl = () => getConfig().LMS_BASE_URL || window.location.origin;
+const getFptAsset = (name) => new URL('/static/indigo/images/fpt/' + name, getFptBaseUrl()).toString();
+const getFptHome = () => getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl();
 
 const LargeLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--large" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
-      <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
-        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} />
-      </Hyperlink>
+      <a href={getFptHome()} className="fpt-auth-logo-link" aria-label="FPT Polytechnic">
+        <img className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} width={426} height={146} loading="eager" decoding="async" />
+      </a>
       <div className="fpt-auth-copy">
         <span className="fpt-auth-slash" aria-hidden="true" />
         <h1><span>Start learning</span><em>with CMS</em></h1>
@@ -33,16 +34,17 @@ export default LargeLayout;
 write('MediumLayout.jsx', String.raw`import React from 'react';
 
 import { getConfig } from '@edx/frontend-platform';
-import { Hyperlink, Image } from '@openedx/paragon';
 
-const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
+const getFptBaseUrl = () => getConfig().LMS_BASE_URL || window.location.origin;
+const getFptAsset = (name) => new URL('/static/indigo/images/fpt/' + name, getFptBaseUrl()).toString();
+const getFptHome = () => getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl();
 
 const MediumLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--medium" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
-      <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
-        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} />
-      </Hyperlink>
+      <a href={getFptHome()} className="fpt-auth-logo-link" aria-label="FPT Polytechnic">
+        <img className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} width={426} height={146} loading="eager" decoding="async" />
+      </a>
       <div className="fpt-auth-copy">
         <span className="fpt-auth-slash" aria-hidden="true" />
         <h1><span>Start learning</span><em>with CMS</em></h1>
@@ -57,16 +59,17 @@ export default MediumLayout;
 write('SmallLayout.jsx', String.raw`import React from 'react';
 
 import { getConfig } from '@edx/frontend-platform';
-import { Hyperlink, Image } from '@openedx/paragon';
 
-const getFptAsset = (name) => getConfig().LMS_BASE_URL + '/static/indigo/images/fpt/' + name;
+const getFptBaseUrl = () => getConfig().LMS_BASE_URL || window.location.origin;
+const getFptAsset = (name) => new URL('/static/indigo/images/fpt/' + name, getFptBaseUrl()).toString();
+const getFptHome = () => getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl();
 
 const SmallLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--small" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
-      <Hyperlink destination={getConfig().MARKETING_SITE_BASE_URL} className="fpt-auth-logo-link">
-        <Image className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} />
-      </Hyperlink>
+      <a href={getFptHome()} className="fpt-auth-logo-link" aria-label="FPT Polytechnic">
+        <img className="fpt-auth-logo fpt-auth-logo--white" alt="FPT Polytechnic" src={getFptAsset('fpt-polytechnic-logo-white.png')} width={426} height={146} loading="eager" decoding="async" />
+      </a>
       <div className="fpt-auth-copy">
         <h1><span>Start learning</span><em>with CMS</em></h1>
       </div>
@@ -89,7 +92,7 @@ if (fs.existsSync(scss)) {
   --fpt-primary:#0B3B82;
   --fpt-primary-dark:#072B61;
   --fpt-accent:#F36F21;
-  --fpt-auth-left:50%;
+  --fpt-auth-left:53%;
 }
 
 html,body,#root {
@@ -97,7 +100,7 @@ html,body,#root {
   min-height:100%;
   margin:0!important;
   padding:0!important;
-  background:#fff!important;
+  background:var(--fpt-primary)!important;
   color-scheme:light;
 }
 body { overflow-x:hidden; }
@@ -126,7 +129,7 @@ body { overflow-x:hidden; }
   border:0!important;
   border-radius:0!important;
   box-shadow:none!important;
-  background:#fff;
+  background:var(--fpt-primary);
 }
 .fpt-auth-panel {
   position:relative;
@@ -139,20 +142,27 @@ body { overflow-x:hidden; }
 }
 .fpt-auth-logo-link {
   position:absolute;
-  top:30px;
-  left:38px;
+  top:clamp(32px,3vw,48px);
+  left:clamp(36px,3.5vw,56px);
   z-index:3;
   display:inline-flex;
   width:max-content;
+  max-width:calc(100% - 72px);
+  visibility:visible!important;
+  opacity:1!important;
   text-decoration:none!important;
 }
 .fpt-auth-logo {
   display:block;
-  width:210px;
+  width:220px;
+  max-width:100%!important;
+  max-height:none!important;
   height:auto;
   object-fit:contain;
   object-position:left center;
   filter:none!important;
+  visibility:visible!important;
+  opacity:1!important;
 }
 .fpt-auth-copy {
   display:flex;
@@ -259,11 +269,11 @@ body { overflow-x:hidden; }
 
 @media (max-width:767.98px) {
   .layout { min-height:100vh!important; display:flex!important; flex-direction:column!important; align-items:stretch!important; }
-  .fpt-auth-visual--small { width:100%; min-height:168px; }
-  .fpt-auth-visual--small .fpt-auth-panel { min-height:168px; width:100%; }
-  .fpt-auth-visual--small .fpt-auth-logo-link { top:18px; left:22px; }
-  .fpt-auth-visual--small .fpt-auth-logo { width:150px; }
-  .fpt-auth-visual--small .fpt-auth-copy { width:auto; margin:auto 22px 24px; padding-top:58px; }
+  .fpt-auth-visual--small { width:100%; min-height:208px; }
+  .fpt-auth-visual--small .fpt-auth-panel { min-height:208px; width:100%; }
+  .fpt-auth-visual--small .fpt-auth-logo-link { top:20px; left:24px; max-width:calc(100% - 48px); }
+  .fpt-auth-visual--small .fpt-auth-logo { width:164px; }
+  .fpt-auth-visual--small .fpt-auth-copy { width:auto; margin:auto 24px 24px; padding-top:82px; }
   .fpt-auth-visual--small .fpt-auth-copy h1 { font-size:30px; line-height:1; }
   .fpt-auth-copy h1 span,.fpt-auth-copy h1 em { white-space:normal; }
   .layout > .content { width:100%!important; padding:26px 18px 36px!important; display:flex!important; justify-content:center!important; }
