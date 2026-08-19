@@ -230,7 +230,7 @@ docker cp "$MFE_VERIFY_CID:/openedx/dist/learning" "$MFE_VERIFY_DIR/learning" >/
 grep -R -Fq "Start learning" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing 'Start learning'"
 grep -R -Fq "with CMS" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing 'with CMS'"
 grep -R -Fq "fpt-polytechnic-logo-white.png" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing the real white FPT logo asset"
-grep -R -Fq -- "--fpt-auth-brand-surface" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing the V12 dark brand surface"
+grep -R -Fq -- "--fpt-auth-visual-surface" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing the V13 solid-navy visual surface"
 grep -R -Fq "selected-paragon-theme-variant" "$MFE_VERIFY_DIR/authn" || fail "Compiled Authn is missing the light-only theme contract"
 grep -R -Fq "Tiếp tục hành trình học tập" "$MFE_VERIFY_DIR/learner-dashboard" || fail "Compiled Learner Dashboard is missing the FPT learner banner"
 grep -R -Fq "fpt-polytechnic-logo-white.png" "$MFE_VERIFY_DIR/learner-dashboard" || fail "Compiled Learner Dashboard is missing the white FPT footer logo"

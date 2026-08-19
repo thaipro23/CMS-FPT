@@ -92,6 +92,24 @@ html[data-paragon-theme-variant="dark"] #main-content .form-control{background:v
   changed = true;
 }
 
+const seamlessMarker = 'FPT Polytechnic V13 solid-navy seamless wedge contract';
+if (!current.includes(seamlessMarker)) {
+  current += String.raw`
+
+/* FPT Polytechnic V13 solid-navy seamless wedge contract */
+:root{--fpt-auth-visual-surface:#071A33}
+.fpt-auth-visual,.fpt-auth-panel{background:var(--fpt-auth-visual-surface)!important;background-image:none!important}
+.fpt-auth-visual::before,.fpt-auth-visual::after,.fpt-auth-panel::before,.fpt-auth-panel::after{content:none!important;display:none!important;background:none!important}
+.fpt-auth-wedge{background:var(--fpt-auth-form-surface)!important;background-image:none!important;border:0!important}
+.fpt-auth-wedge::before{inset:0 0 0 -2px!important;background:var(--fpt-auth-visual-surface)!important;background-image:none!important}
+
+@media (min-width:1200px){
+  .fpt-auth-visual--large .fpt-auth-wedge{width:calc(18% + 2px)!important;margin-left:-2px!important}
+}
+`;
+  changed = true;
+}
+
 if (changed) {
   fs.writeFileSync(scss, current, 'utf8');
 }

@@ -131,8 +131,12 @@ if 'getConfig().LMS_BASE_URL || window.location.origin' not in authn:
     raise SystemExit('Authn white logo URL is missing the same-origin fallback')
 if 'FPT Polytechnic V12 white-logo dark-surface contract' not in authn_polish:
     raise SystemExit('Authn white-logo dark-surface contract is missing')
+if 'FPT Polytechnic V13 solid-navy seamless wedge contract' not in authn_polish:
+    raise SystemExit('Authn solid-navy seamless wedge contract is missing')
+if '--fpt-auth-visual-surface:#071A33' not in authn_polish:
+    raise SystemExit('Authn solid-navy surface token is missing')
 if authn.count('<div className="fpt-auth-wedge"') != 1:
-    raise SystemExit('Authn must contain exactly one orange wedge element')
+    raise SystemExit('Authn must contain exactly one diagonal wedge element')
 if '.fpt-auth-wedge' not in authn or 'clip-path:polygon' not in authn:
     raise SystemExit('approved single-wedge CSS is missing')
 if 'useEffect(' in runtime or 'getConfig()' in runtime:
@@ -272,6 +276,7 @@ MFE_ENV_CONFIG="$TUTOR_ROOT/env/plugins/mfe/build/mfe/env.config.jsx"
 grep -Fq 'FPT Polytechnic V10 edX full-screen authn' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V10 layout patch"
 grep -Fq 'FPT Polytechnic V11 authn edge-to-edge lock' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V11 edge-to-edge patch"
 grep -Fq 'FPT Polytechnic V12 white-logo dark-surface contract' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V12 logo/surface contract"
+grep -Fq 'FPT Polytechnic V13 solid-navy seamless wedge contract' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V13 solid/seamless contract"
 grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
 grep -Fq "RUN node - <<'JS3'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn polish patch is not using Node.js"
 grep -Fq "import React from 'react';" "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing explicit React import"
@@ -295,12 +300,13 @@ source_copy = text.find('COPY --from=authn-src / /openedx/app', common)
 layout_marker = text.find('FPT Polytechnic V10 edX full-screen authn', common)
 polish_marker = text.find('FPT Polytechnic V11 authn edge-to-edge lock', common)
 brand_marker = text.find('FPT Polytechnic V12 white-logo dark-surface contract', common)
+seamless_marker = text.find('FPT Polytechnic V13 solid-navy seamless wedge contract', common)
 dev = text.find('######## authn (dev)', common)
-if min(common, source_copy, layout_marker, polish_marker, brand_marker, dev) < 0:
-    raise SystemExit('could not resolve Authn stage/V10/V11/V12 patch markers in generated MFE Dockerfile')
-if not (common < source_copy < layout_marker < polish_marker < brand_marker < dev):
-    raise SystemExit('Authn patch ordering is unsafe: source COPY -> V10 layout -> V11 edge-to-edge -> V12 logo/surface -> authn build is required')
-print('[fpt-ui] Generated Authn V10/V11/V12 patch ordering PASS')
+if min(common, source_copy, layout_marker, polish_marker, brand_marker, seamless_marker, dev) < 0:
+    raise SystemExit('could not resolve Authn stage/V10/V11/V12/V13 patch markers in generated MFE Dockerfile')
+if not (common < source_copy < layout_marker < polish_marker < brand_marker < seamless_marker < dev):
+    raise SystemExit('Authn patch ordering is unsafe: source COPY -> V10 layout -> V11 edge-to-edge -> V12 logo/surface -> V13 solid/seamless -> authn build is required')
+print('[fpt-ui] Generated Authn V10/V11/V12/V13 patch ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"

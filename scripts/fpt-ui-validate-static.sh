@@ -122,10 +122,14 @@ required = [
     'FPT Polytechnic V10 edX full-screen authn',
     'FPT Polytechnic V11 authn edge-to-edge lock',
     'FPT Polytechnic V12 white-logo dark-surface contract',
+    'FPT Polytechnic V13 solid-navy seamless wedge contract',
     '--fpt-auth-brand-surface:#0B3B82',
     '--fpt-auth-form-surface:#FFFFFF',
+    '--fpt-auth-visual-surface:#071A33',
     '.fpt-auth-logo-link{display:inline-flex!important;visibility:visible!important;opacity:1!important;',
     '.fpt-auth-logo,.fpt-auth-logo--white{display:block!important;height:auto!important;filter:none!important;visibility:visible!important;opacity:1!important}',
+    '.fpt-auth-wedge::before{inset:0 0 0 -2px!important;background:var(--fpt-auth-visual-surface)!important;',
+    'width:calc(18% + 2px)!important;margin-left:-2px!important',
     'width:100vw!important',
     'max-width:none!important',
     'border-radius:0!important',
@@ -143,10 +147,12 @@ if scss.count('FPT Polytechnic V11 authn edge-to-edge lock') != 1:
     raise SystemExit('Authn V11 CSS is not idempotent')
 if scss.count('FPT Polytechnic V12 white-logo dark-surface contract') != 1:
     raise SystemExit('Authn V12 CSS is not idempotent')
+if scss.count('FPT Polytechnic V13 solid-navy seamless wedge contract') != 1:
+    raise SystemExit('Authn V13 CSS is not idempotent')
 
-surface_match = re.search(r'--fpt-auth-brand-surface:(#[0-9A-Fa-f]{6})', scss)
+surface_match = re.search(r'--fpt-auth-visual-surface:(#[0-9A-Fa-f]{6})', scss)
 if not surface_match:
-    raise SystemExit('Authn brand surface colour is not explicit')
+    raise SystemExit('Authn solid-navy visual surface colour is not explicit')
 
 def luminance(hex_colour):
     channels = [int(hex_colour[index:index + 2], 16) / 255 for index in (1, 3, 5)]
@@ -159,7 +165,7 @@ contrast = (white_luminance + 0.05) / (surface_luminance + 0.05)
 if contrast < 7:
     raise SystemExit(f'white Authn logo contrast regression: {contrast:.2f}:1')
 
-print(f'[fpt-ui-static] Authn edge-to-edge/white-logo contract PASS contrast={contrast:.2f}:1')
+print(f'[fpt-ui-static] Authn solid-navy/seamless white-logo contract PASS contrast={contrast:.2f}:1')
 PY
 
 log "Checking final Hero/header/footer/theme source contracts"
@@ -183,6 +189,8 @@ if '/fpt_indigo_ui/assets/fpt-polytechnic-logo-white.png /openedx/staticfiles/in
     raise SystemExit('Open edX does not explicitly vendor the Authn white logo')
 if 'FPT Polytechnic V12 white-logo dark-surface contract' not in authn_polish:
     raise SystemExit('Authn V12 white-logo/dark-surface patch is missing')
+if 'FPT Polytechnic V13 solid-navy seamless wedge contract' not in authn_polish:
+    raise SystemExit('Authn V13 solid-navy/seamless patch is missing')
 if '  fpt-polytechnic-logo-white.png\n' not in smoke:
     raise SystemExit('deployed static smoke test does not request the white logo')
 
@@ -256,8 +264,9 @@ if any(marker not in setup for marker in (
     'FPT Polytechnic V10 edX full-screen authn',
     'FPT Polytechnic V11 authn edge-to-edge lock',
     'FPT Polytechnic V12 white-logo dark-surface contract',
+    'FPT Polytechnic V13 solid-navy seamless wedge contract',
 )):
-    raise SystemExit('generated MFE Authn guard is not synchronized to V10/V11/V12')
+    raise SystemExit('generated MFE Authn guard is not synchronized to V10/V11/V12/V13')
 if 'FPT Polytechnic V8 production branding overlay' in setup:
     raise SystemExit('stale generated MFE Authn V8 guard remains in setup')
 if 'BUILDX_BUILDER=default tutor images build openedx' not in build:
@@ -265,9 +274,9 @@ if 'BUILDX_BUILDER=default tutor images build openedx' not in build:
 if 'BUILDX_BUILDER="$MFE_BUILDER" tutor images build mfe' not in build:
     raise SystemExit('dedicated cached MFE build missing')
 for data, name in ((build, 'clean rebuild'), (standard_build, 'standard build')):
-    if 'grep -R -Fq -- "--fpt-auth-brand-surface"' not in data:
-        raise SystemExit(f'{name} does not verify the durable compiled Authn V12 surface token')
-    if 'grep -R -Fq "FPT Polytechnic V12 white-logo dark-surface contract"' in data:
+    if 'grep -R -Fq -- "--fpt-auth-visual-surface"' not in data:
+        raise SystemExit(f'{name} does not verify the durable compiled Authn V13 surface token')
+    if 'grep -R -Fq "FPT Polytechnic V13 solid-navy seamless wedge contract"' in data:
         raise SystemExit(f'{name} incorrectly expects a source comment to survive CSS minimization')
 if 'docker buildx prune' in build or 'docker system prune' in build or 'docker volume prune' in build:
     raise SystemExit('destructive prune command found in clean build path')
