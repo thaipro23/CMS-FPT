@@ -76,6 +76,26 @@ check_html_route() {
   log "PASS $label (${bytes} bytes, $content_type)"
 }
 
+check_mfe_fallback_route() {
+  local label="$1"
+  local url="$2"
+  local headers status location
+  headers="$(new_tmp)"
+  status="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+    --output /dev/null --dump-header "$headers" --write-out '%{http_code}' \
+    "$url" 2>/dev/null || printf '000')"
+  case "$status" in
+    30[12378]) ;;
+    *) fail "$label returned HTTP $status instead of a redirect: $url" ;;
+  esac
+  location="$(awk 'BEGIN{IGNORECASE=1}/^location:/{sub(/^[^:]*:[[:space:]]*/,"");gsub("\r","");value=$0}END{print value}' "$headers")"
+  case "$location" in
+    "$LMS_URL"|"$LMS_URL/") ;;
+    *) fail "$label redirected to '${location:-missing}', expected $LMS_URL/" ;;
+  esac
+  log "PASS $label (HTTP $status -> $location)"
+}
+
 log "LMS target: $LMS_URL"
 wait_http_ready "LMS login route" "$LMS_URL/login"
 
@@ -130,6 +150,20 @@ if [ -n "$MFE_URL" ]; then
   wait_http_ready "Authn MFE" "$MFE_URL/authn/"
   check_html_route "Authn MFE shell" "$MFE_URL/authn/"
   check_html_route "Learner Dashboard MFE shell" "$MFE_URL/learner-dashboard/"
+
+  haproxy_ingress_enabled="${FPT_HAPROXY_INGRESS_ENABLED:-}"
+  if [ -z "$haproxy_ingress_enabled" ] && command -v tutor >/dev/null 2>&1; then
+    haproxy_ingress_enabled="$(tutor config printvalue FPT_HAPROXY_INGRESS_ENABLED 2>/dev/null || true)"
+  fi
+  case "$haproxy_ingress_enabled" in
+    1|true|TRUE|True)
+      check_mfe_fallback_route "MFE root fallback" "$MFE_URL/"
+      check_mfe_fallback_route "MFE unknown-path fallback" "$MFE_URL/__fpt_route_not_found__"
+      ;;
+    *)
+      warn "HAProxy ingress mode is not enabled; unknown MFE route fallback checks skipped"
+      ;;
+  esac
 else
   warn "MFE_URL not provided; direct Authn/Learner Dashboard route checks skipped"
 fi

@@ -19,6 +19,25 @@ hooks.Filters.CONFIG_DEFAULTS.add_items([
 ])
 
 
+# HAProxy sends every path on MFE_HOST directly to the internal MFE Caddy.
+# Tutor's public edge Caddy normally redirects the bare MFE host to the LMS,
+# but that edge service is deliberately removed in this deployment. Preserve
+# all configured MFE routes (plus the MFE config API and legacy authoring
+# alias), and redirect every path not owned by an MFE to the LMS instead of
+# allowing internal Caddy to return an empty HTTP 200 response.
+hooks.Filters.ENV_PATCHES.add_item((
+    "mfe-caddyfile",
+    """
+{% if FPT_HAPROXY_INGRESS_ENABLED %}
+@fpt_unknown_mfe_path {
+    not path /api/mfe_config/v1*{% if is_mfe_enabled("authoring") %} /course-authoring/*{% endif %}{% for app_name, app in iter_mfes() %} /{{ app_name }} /{{ app_name }}/*{% endfor %}
+}
+redir @fpt_unknown_mfe_path {% if ENABLE_HTTPS %}https://{% else %}http://{% endif %}{{ LMS_HOST }} 302
+{% endif %}
+""",
+))
+
+
 # Tutor-mfe 21.0.1 renders Service/mfe as NodePort. In the target architecture
 # every application backend is private ClusterIP and only HAProxy Ingress owns
 # the external LoadBalancer/VIP.
