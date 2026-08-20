@@ -1,0 +1,626 @@
+# FPT Polytechnic Authn SSO-only layer.
+#
+# Applied after authn.patch/authn_polish.patch to the Ulmo Authn MFE source.
+# This patch deliberately keeps the backend-provided provider loginUrl values,
+# but owns presentation for FEID and Google so Django provider iconClass/iconImage
+# cannot distort the production login UI.
+RUN node - <<'JS4'
+const fs = require('fs');
+
+const loginPagePath = '/openedx/app/src/login/LoginPage.jsx';
+const thirdPartyAuthPath = '/openedx/app/src/common-components/ThirdPartyAuth.jsx';
+const socialAuthProvidersPath = '/openedx/app/src/common-components/SocialAuthProviders.jsx';
+const scssPath = '/openedx/app/src/index.scss';
+
+const required = [loginPagePath, thirdPartyAuthPath, socialAuthProvidersPath, scssPath];
+for (const path of required) {
+  if (!fs.existsSync(path)) {
+    throw new Error(`FPT SSO patch target not found: ${path}`);
+  }
+}
+
+const assertCompatible = (path, expected, marker) => {
+  const source = fs.readFileSync(path, 'utf8');
+  if (!source.includes(expected) && !source.includes(marker)) {
+    throw new Error(`FPT SSO patch does not recognize upstream source: ${path}`);
+  }
+};
+
+assertCompatible(loginPagePath, '<Form id="sign-in-form" name="sign-in-form">', 'FPT_SSO_ONLY_LOGIN_V1');
+assertCompatible(thirdPartyAuthPath, 'const ThirdPartyAuth = (props) => {', 'FPT_SSO_ONLY_TPA_V1');
+assertCompatible(socialAuthProvidersPath, 'const SocialAuthProviders = (props) => {', 'FPT_SSO_ONLY_PROVIDERS_V1');
+
+fs.writeFileSync(loginPagePath, String.raw`// FPT_SSO_ONLY_LOGIN_V1
+import {
+  useCallback, useEffect, useMemo, useState,
+} from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+
+import { getConfig } from '@edx/frontend-platform';
+import { useIntl } from '@edx/frontend-platform/i18n';
+import PropTypes from 'prop-types';
+import { Helmet } from 'react-helmet';
+import Skeleton from 'react-loading-skeleton';
+
+import {
+  InstitutionLogistration,
+  RedirectLogistration,
+  ThirdPartyAuthAlert,
+} from '../common-components';
+import LoginFailureMessage from './LoginFailure';
+import messages from './messages';
+import { getThirdPartyAuthContext } from '../common-components/data/actions';
+import { thirdPartyAuthContextSelector } from '../common-components/data/selectors';
+import EnterpriseSSO from '../common-components/EnterpriseSSO';
+import ThirdPartyAuth from '../common-components/ThirdPartyAuth';
+import { PENDING_STATE } from '../data/constants';
+import {
+  getAllPossibleQueryParams,
+  getTpaHint,
+  getTpaProvider,
+} from '../data/utils';
+import { removeCookie } from '../data/utils/cookies';
+import { TPA_AUTHENTICATION_FAILURE } from './data/constants';
+import {
+  trackLoginPageViewed,
+  trackLoginSuccess,
+} from '../tracking/trackers/login';
+
+const LoginPage = ({
+  institutionLogin,
+  handleInstitutionLogin,
+}) => {
+  const dispatch = useDispatch();
+  const getTPADataFromBackend = useCallback(
+    (urlParams) => dispatch(getThirdPartyAuthContext(urlParams)),
+    [dispatch],
+  );
+  const {
+    loginResult,
+    thirdPartyAuthContext,
+    thirdPartyAuthApiStatus,
+  } = useSelector((state) => ({
+    loginResult: state.login.loginResult,
+    thirdPartyAuthContext: thirdPartyAuthContextSelector(state),
+    thirdPartyAuthApiStatus: state.commonComponents.thirdPartyAuthApiStatus,
+  }));
+  const {
+    providers,
+    currentProvider,
+    secondaryProviders,
+    finishAuthUrl,
+    platformName,
+    errorMessage: thirdPartyErrorMessage,
+  } = thirdPartyAuthContext;
+  const { formatMessage } = useIntl();
+  const queryParams = useMemo(() => getAllPossibleQueryParams(), []);
+  const tpaHint = getTpaHint();
+  const [errorCode, setErrorCode] = useState({
+    type: '',
+    count: 0,
+    context: {},
+  });
+
+  useEffect(() => {
+    trackLoginPageViewed();
+  }, []);
+
+  useEffect(() => {
+    const payload = { ...queryParams };
+    if (tpaHint) {
+      payload.tpa_hint = tpaHint;
+    }
+    getTPADataFromBackend(payload);
+  }, [queryParams, tpaHint, getTPADataFromBackend]);
+
+  useEffect(() => {
+    if (thirdPartyErrorMessage) {
+      setErrorCode((previous) => ({
+        type: TPA_AUTHENTICATION_FAILURE,
+        count: previous.count + 1,
+        context: { errorMessage: thirdPartyErrorMessage },
+      }));
+    }
+  }, [thirdPartyErrorMessage]);
+
+  useEffect(() => {
+    if (loginResult.success) {
+      trackLoginSuccess();
+      removeCookie('ssoPipelineRedirectionDone');
+    }
+  }, [loginResult]);
+
+  const {
+    provider,
+    skipHintedLogin,
+  } = getTpaProvider(tpaHint, providers, secondaryProviders);
+
+  if (tpaHint) {
+    if (thirdPartyAuthApiStatus === PENDING_STATE) {
+      return <Skeleton height={58} count={2} />;
+    }
+
+    if (skipHintedLogin) {
+      const lmsBaseUrl = getConfig().LMS_BASE_URL;
+      window.location.href = `${lmsBaseUrl}${provider.loginUrl}`;
+      return null;
+    }
+
+    if (provider) {
+      return <EnterpriseSSO provider={provider} />;
+    }
+  }
+
+  if (institutionLogin) {
+    return (
+      <InstitutionLogistration
+        secondaryProviders={secondaryProviders}
+        headingTitle={formatMessage(messages['institution.login.page.title'])}
+      />
+    );
+  }
+
+  return (
+    <>
+      <Helmet>
+        <title>{formatMessage(messages['login.page.title'], { siteName: getConfig().SITE_NAME })}</title>
+      </Helmet>
+      <RedirectLogistration
+        success={loginResult.success}
+        redirectUrl={loginResult.redirectUrl}
+        finishAuthUrl={finishAuthUrl}
+        currectProvider={currentProvider}
+      />
+      <section className="fpt-sso-login" aria-label="Sign in with FEID or Google">
+        <LoginFailureMessage
+          errorCode={errorCode.type}
+          errorCount={errorCode.count}
+          context={errorCode.context}
+        />
+        <ThirdPartyAuthAlert
+          currentProvider={currentProvider}
+          platformName={platformName}
+        />
+        <ThirdPartyAuth
+          currentProvider={currentProvider}
+          providers={providers}
+          secondaryProviders={secondaryProviders}
+          handleInstitutionLogin={handleInstitutionLogin}
+          thirdPartyAuthApiStatus={thirdPartyAuthApiStatus}
+          isLoginPage
+        />
+      </section>
+    </>
+  );
+};
+
+LoginPage.propTypes = {
+  institutionLogin: PropTypes.bool.isRequired,
+  handleInstitutionLogin: PropTypes.func.isRequired,
+};
+
+export default LoginPage;
+`, 'utf8');
+
+fs.writeFileSync(thirdPartyAuthPath, String.raw`// FPT_SSO_ONLY_TPA_V1
+import * as React from 'react';
+
+import PropTypes from 'prop-types';
+import Skeleton from 'react-loading-skeleton';
+
+import SocialAuthProviders from './SocialAuthProviders';
+import { LOGIN_PAGE, PENDING_STATE, REGISTER_PAGE } from '../data/constants';
+
+const providerKey = (provider) => `${provider?.name || ''} ${provider?.id || ''}`.trim().toLowerCase();
+const isAllowedProvider = (provider) => {
+  const key = providerKey(provider);
+  return key.includes('feid') || key.includes('google');
+};
+const providerRank = (provider) => (providerKey(provider).includes('feid') ? 0 : 1);
+
+const ThirdPartyAuth = (props) => {
+  const {
+    providers,
+    secondaryProviders,
+    thirdPartyAuthApiStatus,
+    isLoginPage,
+  } = props;
+
+  const uniqueProviders = [...providers, ...secondaryProviders]
+    .filter(isAllowedProvider)
+    .filter((provider, index, all) => (
+      all.findIndex((candidate) => (
+        (candidate.id && candidate.id === provider.id)
+        || providerKey(candidate) === providerKey(provider)
+      )) === index
+    ))
+    .sort((left, right) => providerRank(left) - providerRank(right));
+
+  const isPending = thirdPartyAuthApiStatus === PENDING_STATE;
+
+  return (
+    <div className="fpt-sso-auth">
+      <h1 className="fpt-sso-auth__title">
+        {isLoginPage ? 'Sign in with:' : 'Create account with:'}
+      </h1>
+
+      {isPending ? (
+        <div className="fpt-sso-auth__skeleton" aria-label="Loading sign in providers">
+          <Skeleton height={60} count={2} />
+        </div>
+      ) : (
+        <div className="fpt-sso-auth__providers">
+          <SocialAuthProviders
+            socialAuthProviders={uniqueProviders}
+            referrer={isLoginPage ? LOGIN_PAGE : REGISTER_PAGE}
+          />
+          {uniqueProviders.length === 0 && (
+            <div className="fpt-sso-auth__empty" role="alert">
+              FEID and Google sign-in are temporarily unavailable.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+ThirdPartyAuth.defaultProps = {
+  currentProvider: null,
+  providers: [],
+  secondaryProviders: [],
+  thirdPartyAuthApiStatus: PENDING_STATE,
+  isLoginPage: false,
+};
+
+ThirdPartyAuth.propTypes = {
+  currentProvider: PropTypes.string,
+  handleInstitutionLogin: PropTypes.func.isRequired,
+  providers: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    iconClass: PropTypes.string,
+    iconImage: PropTypes.string,
+    loginUrl: PropTypes.string,
+    registerUrl: PropTypes.string,
+  })),
+  secondaryProviders: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    iconClass: PropTypes.string,
+    iconImage: PropTypes.string,
+    loginUrl: PropTypes.string,
+    registerUrl: PropTypes.string,
+  })),
+  thirdPartyAuthApiStatus: PropTypes.string,
+  isLoginPage: PropTypes.bool,
+};
+
+export default ThirdPartyAuth;
+`, 'utf8');
+
+fs.writeFileSync(socialAuthProvidersPath, String.raw`// FPT_SSO_ONLY_PROVIDERS_V1
+import * as React from 'react';
+import { useSelector } from 'react-redux';
+
+import { getConfig } from '@edx/frontend-platform';
+import PropTypes from 'prop-types';
+
+import { ELEMENT_TYPES, PAGE_TYPES } from '../cohesion/constants';
+import trackCohesionEvent from '../cohesion/trackers';
+import { LOGIN_PAGE, REGISTER_PAGE } from '../data/constants';
+import { setCookie } from '../data/utils';
+import { redirectWithDelay } from '../data/utils/dataUtils';
+
+const providerKey = (provider) => `${provider?.name || ''} ${provider?.id || ''}`.trim().toLowerCase();
+const providerType = (provider) => (providerKey(provider).includes('google') ? 'google' : 'feid');
+
+const FeidIcon = () => (
+  <svg viewBox="0 0 28 28" role="img" aria-label="FEID" focusable="false">
+    <rect x="1" y="1" width="26" height="26" rx="8" fill="#FFFFFF" />
+    <path d="M7.2 6.8h12.4v4H11.4v3.2h6.7v3.8h-6.7v4.9H7.2V6.8Z" fill="#0B3B82" />
+    <path d="M20.6 6.8h2.2v15.9h-2.2V6.8Z" fill="#F36F21" />
+  </svg>
+);
+
+const GoogleIcon = () => (
+  <svg viewBox="0 0 24 24" role="img" aria-label="Google" focusable="false">
+    <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.06H12v3.9h5.39a4.61 4.61 0 0 1-2 3.02v2.53h3.24c1.89-1.74 2.97-4.3 2.97-7.39Z" />
+    <path fill="#34A853" d="M12 22c2.7 0 4.96-.89 6.62-2.41l-3.24-2.53c-.9.6-2.05.96-3.38.96-2.6 0-4.8-1.76-5.59-4.13H3.07v2.6A10 10 0 0 0 12 22Z" />
+    <path fill="#FBBC05" d="M6.41 13.89A6.02 6.02 0 0 1 6.1 12c0-.66.11-1.3.31-1.89v-2.6H3.07A10 10 0 0 0 2 12c0 1.61.38 3.14 1.07 4.49l3.34-2.6Z" />
+    <path fill="#EA4335" d="M12 5.98c1.47 0 2.79.5 3.83 1.5l2.86-2.87A9.65 9.65 0 0 0 12 2a10 10 0 0 0-8.93 5.51l3.34 2.6C7.2 7.74 9.4 5.98 12 5.98Z" />
+  </svg>
+);
+
+const ArrowIcon = () => (
+  <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+    <path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const SocialAuthProviders = (props) => {
+  const { referrer, socialAuthProviders } = props;
+  const registrationFields = useSelector(state => state.register.registrationFormData);
+
+  function handleSubmit(event, provider) {
+    event.preventDefault();
+    const type = providerType(provider);
+    const providerName = type === 'google' ? 'Google' : 'FEID';
+    const eventData = {
+      pageType: referrer === LOGIN_PAGE ? PAGE_TYPES.SIGN_IN : PAGE_TYPES.ACCOUNT_CREATION,
+      elementType: ELEMENT_TYPES.BUTTON,
+      webElementText: providerName,
+      webElementName: providerName.toLowerCase(),
+    };
+    trackCohesionEvent(eventData);
+
+    if (referrer === REGISTER_PAGE) {
+      setCookie('marketingEmailsOptIn', registrationFields?.configurableFormFields?.marketingEmailsOptIn);
+    }
+
+    const providerUrl = referrer === LOGIN_PAGE ? provider.loginUrl : provider.registerUrl;
+    if (!providerUrl) {
+      return;
+    }
+    redirectWithDelay(getConfig().LMS_BASE_URL + providerUrl);
+  }
+
+  return socialAuthProviders.map((provider) => {
+    const type = providerType(provider);
+    const label = type === 'google' ? 'Sign in with Google' : 'Sign in with FEID';
+
+    return (
+      <button
+        id={`fpt-sso-${provider.id || type}`}
+        key={provider.id || `${type}-${provider.name}`}
+        type="button"
+        className={`fpt-sso-provider fpt-sso-provider--${type}`}
+        onClick={(event) => handleSubmit(event, provider)}
+        aria-label={label}
+      >
+        <span className="fpt-sso-provider__icon" aria-hidden="true">
+          {type === 'google' ? <GoogleIcon /> : <FeidIcon />}
+        </span>
+        <span className="fpt-sso-provider__label">{label}</span>
+        <span className="fpt-sso-provider__arrow" aria-hidden="true"><ArrowIcon /></span>
+      </button>
+    );
+  });
+};
+
+SocialAuthProviders.defaultProps = {
+  referrer: LOGIN_PAGE,
+  socialAuthProviders: [],
+};
+
+SocialAuthProviders.propTypes = {
+  referrer: PropTypes.string,
+  socialAuthProviders: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    iconClass: PropTypes.string,
+    iconImage: PropTypes.string,
+    loginUrl: PropTypes.string,
+    registerUrl: PropTypes.string,
+    skipRegistrationForm: PropTypes.bool,
+  })),
+};
+
+export default SocialAuthProviders;
+`, 'utf8');
+
+let scss = fs.readFileSync(scssPath, 'utf8');
+const styleMarker = 'FPT Polytechnic V14 SSO-only authn';
+if (!scss.includes(styleMarker)) {
+  scss += String.raw`
+
+/* FPT Polytechnic V14 SSO-only authn */
+.authn-figma-logistration #main-content > h3 {
+  display:none!important;
+}
+
+.fpt-sso-login {
+  width:100%;
+  max-width:430px;
+  margin:0 auto;
+  padding:0;
+}
+
+.fpt-sso-auth {
+  width:100%;
+}
+
+.fpt-sso-auth__title {
+  margin:0 0 22px!important;
+  color:#173B68!important;
+  font-size:24px!important;
+  line-height:1.25!important;
+  letter-spacing:-.025em!important;
+  font-weight:760!important;
+}
+
+.fpt-sso-auth__providers {
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  width:100%;
+}
+
+.fpt-sso-provider {
+  position:relative;
+  display:grid;
+  grid-template-columns:38px minmax(0,1fr) 20px;
+  align-items:center;
+  gap:14px;
+  width:100%;
+  min-height:62px;
+  margin:0;
+  padding:10px 16px;
+  border-radius:14px;
+  border:1px solid transparent;
+  font-family:inherit;
+  font-size:16px;
+  font-weight:700;
+  line-height:1.25;
+  text-align:left;
+  cursor:pointer;
+  transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease,background-color .16s ease;
+  -webkit-tap-highlight-color:transparent;
+}
+
+.fpt-sso-provider:hover {
+  transform:translateY(-1px);
+}
+
+.fpt-sso-provider:active {
+  transform:translateY(0);
+}
+
+.fpt-sso-provider:focus-visible {
+  outline:3px solid rgba(243,111,33,.34);
+  outline-offset:3px;
+}
+
+.fpt-sso-provider__icon {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:38px;
+  height:38px;
+  border-radius:10px;
+  overflow:hidden;
+}
+
+.fpt-sso-provider__icon svg {
+  display:block;
+  width:28px;
+  height:28px;
+  flex:none;
+}
+
+.fpt-sso-provider__label {
+  min-width:0;
+  white-space:nowrap;
+}
+
+.fpt-sso-provider__arrow {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:20px;
+  height:20px;
+  opacity:.72;
+}
+
+.fpt-sso-provider__arrow svg {
+  width:18px;
+  height:18px;
+}
+
+.fpt-sso-provider--feid {
+  color:#FFFFFF;
+  background:#0B3B82;
+  border-color:#0B3B82;
+  box-shadow:0 10px 24px rgba(11,59,130,.18);
+}
+
+.fpt-sso-provider--feid:hover {
+  color:#FFFFFF;
+  background:#072F69;
+  border-color:#072F69;
+  box-shadow:0 14px 30px rgba(11,59,130,.24);
+}
+
+.fpt-sso-provider--feid .fpt-sso-provider__icon {
+  background:#FFFFFF;
+}
+
+.fpt-sso-provider--google {
+  color:#24354B;
+  background:#FFFFFF;
+  border-color:#D7E0EB;
+  box-shadow:0 8px 20px rgba(23,59,104,.07);
+}
+
+.fpt-sso-provider--google:hover {
+  color:#173B68;
+  background:#FBFCFE;
+  border-color:#BFCBDD;
+  box-shadow:0 12px 26px rgba(23,59,104,.12);
+}
+
+.fpt-sso-provider--google .fpt-sso-provider__icon {
+  background:#FFFFFF;
+  box-shadow:inset 0 0 0 1px #E4E9F0;
+}
+
+.fpt-sso-auth__skeleton {
+  width:100%;
+}
+
+.fpt-sso-auth__skeleton > span {
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+
+.fpt-sso-auth__skeleton .react-loading-skeleton {
+  border-radius:14px!important;
+}
+
+.fpt-sso-auth__empty {
+  width:100%;
+  padding:14px 16px;
+  border:1px solid #F1C9B2;
+  border-radius:12px;
+  background:#FFF8F3;
+  color:#7A3512;
+  font-size:14px;
+  line-height:1.45;
+}
+
+@media (max-width:767.98px) {
+  .fpt-sso-login {
+    max-width:100%;
+  }
+
+  .fpt-sso-auth__title {
+    margin-bottom:18px!important;
+    font-size:21px!important;
+  }
+
+  .fpt-sso-provider {
+    min-height:58px;
+    grid-template-columns:34px minmax(0,1fr) 18px;
+    gap:12px;
+    padding:9px 14px;
+    border-radius:12px;
+    font-size:15px;
+  }
+
+  .fpt-sso-provider__icon {
+    width:34px;
+    height:34px;
+    border-radius:9px;
+  }
+
+  .fpt-sso-provider__icon svg {
+    width:25px;
+    height:25px;
+  }
+}
+`;
+  fs.writeFileSync(scssPath, scss, 'utf8');
+}
+
+for (const [path, marker] of [
+  [loginPagePath, 'FPT_SSO_ONLY_LOGIN_V1'],
+  [thirdPartyAuthPath, 'FPT_SSO_ONLY_TPA_V1'],
+  [socialAuthProvidersPath, 'FPT_SSO_ONLY_PROVIDERS_V1'],
+]) {
+  const rendered = fs.readFileSync(path, 'utf8');
+  if (!rendered.includes(marker)) {
+    throw new Error(`FPT SSO output verification failed: ${path}`);
+  }
+}
+JS4
