@@ -142,7 +142,7 @@ const LoginPage = ({
 
     if (skipHintedLogin) {
       const lmsBaseUrl = getConfig().LMS_BASE_URL;
-      window.location.href = `${lmsBaseUrl}${provider.loginUrl}`;
+      window.location.href = lmsBaseUrl + provider.loginUrl;
       return null;
     }
 
@@ -211,7 +211,7 @@ import Skeleton from 'react-loading-skeleton';
 import SocialAuthProviders from './SocialAuthProviders';
 import { LOGIN_PAGE, PENDING_STATE, REGISTER_PAGE } from '../data/constants';
 
-const providerKey = (provider) => `${provider?.name || ''} ${provider?.id || ''}`.trim().toLowerCase();
+const providerKey = (provider) => [provider?.name || '', provider?.id || ''].join(' ').trim().toLowerCase();
 const isAllowedProvider = (provider) => {
   const key = providerKey(provider);
   return key.includes('feid') || key.includes('google');
@@ -312,7 +312,7 @@ import { LOGIN_PAGE, REGISTER_PAGE } from '../data/constants';
 import { setCookie } from '../data/utils';
 import { redirectWithDelay } from '../data/utils/dataUtils';
 
-const providerKey = (provider) => `${provider?.name || ''} ${provider?.id || ''}`.trim().toLowerCase();
+const providerKey = (provider) => [provider?.name || '', provider?.id || ''].join(' ').trim().toLowerCase();
 const providerType = (provider) => (providerKey(provider).includes('google') ? 'google' : 'feid');
 
 const FeidIcon = () => (
@@ -371,10 +371,10 @@ const SocialAuthProviders = (props) => {
 
     return (
       <button
-        id={`fpt-sso-${provider.id || type}`}
-        key={provider.id || `${type}-${provider.name}`}
+        id={'fpt-sso-' + (provider.id || type)}
+        key={provider.id || (type + '-' + provider.name)}
         type="button"
-        className={`fpt-sso-provider fpt-sso-provider--${type}`}
+        className={'fpt-sso-provider fpt-sso-provider--' + type}
         onClick={(event) => handleSubmit(event, provider)}
         aria-label={label}
       >
