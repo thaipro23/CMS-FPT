@@ -1,3 +1,6 @@
+# Consolidated FPT Polytechnic legacy LMS UI patch.
+# Owns vendored assets, Discovery Hero, LMS footer, responsive polish,
+# homepage Hero synchronization, and the light-only legacy LMS presentation.
 
 # All FPT assets are vendored in Git. No runtime/build-time hotlinking.
 RUN mkdir -p /openedx/staticfiles/indigo/images/fpt
@@ -116,3 +119,302 @@ if footer.exists():
 </footer>
 ''', encoding='utf-8')
 PY2
+
+# Final Discovery/footer refinements. Fail closed if expected FPT markup changes.
+RUN python - <<'PY3'
+from pathlib import Path
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    if new in text:
+        return text
+    if old not in text:
+        raise RuntimeError(f"FPT UI polish target not found: {label}")
+    return text.replace(old, new, 1)
+
+
+courses = Path('/openedx/themes/indigo/lms/templates/courseware/courses.html')
+if courses.exists():
+    text = courses.read_text(encoding='utf-8')
+    text = replace_once(
+        text,
+        'role="tablist" aria-label="Chọn slide"',
+        'role="group" aria-label="Chọn slide"',
+        'hero navigation semantics',
+    )
+    text = replace_once(
+        text,
+        "root.addEventListener('focusin',stop);root.addEventListener('focusout',start);",
+        "root.addEventListener('focusin',stop);root.addEventListener('focusout',function(e){if(!root.contains(e.relatedTarget)){start()}});",
+        'hero focus/autoplay behavior',
+    )
+    text = replace_once(
+        text,
+        '.fpt-kicker{display:inline-flex;align-items:center;gap:8px;margin-bottom:14px;color:#F36F21;font-size:11px;line-height:1.2;font-weight:850;letter-spacing:.13em}',
+        '.fpt-kicker{display:inline-flex;align-items:center;gap:8px;margin-bottom:14px;color:#C94E08;font-size:11px;line-height:1.2;font-weight:850;letter-spacing:.13em}',
+        'hero small-text contrast',
+    )
+    text = replace_once(
+        text,
+        '.fpt-slide__cta{display:inline-flex!important;align-items:center;gap:8px;background:#F36F21;color:#fff!important;padding:12px 19px;border-radius:9px;font-weight:800;text-decoration:none!important;box-shadow:0 9px 22px rgba(243,111,33,.22);transition:transform .18s ease,box-shadow .18s ease,background .18s ease}',
+        '.fpt-slide__cta{display:inline-flex!important;align-items:center;gap:8px;background:#C65310;color:#fff!important;padding:12px 19px;border-radius:9px;font-weight:800;text-decoration:none!important;box-shadow:0 9px 22px rgba(198,83,16,.22);transition:transform .18s ease,box-shadow .18s ease,background .18s ease}',
+        'hero CTA contrast',
+    )
+    text = replace_once(
+        text,
+        '.fpt-slide__cta:hover{background:#E86414;transform:translateY(-1px);box-shadow:0 12px 26px rgba(243,111,33,.28)}',
+        '.fpt-slide__cta:hover{background:#B94700;transform:translateY(-1px);box-shadow:0 12px 26px rgba(185,71,0,.28)}',
+        'hero CTA hover contrast',
+    )
+    courses.write_text(text, encoding='utf-8')
+
+footer = Path('/openedx/themes/indigo/lms/templates/footer.html')
+if footer.exists():
+    text = footer.read_text(encoding='utf-8')
+    text = replace_once(
+        text,
+        '.fpt-lms-footer__grid{max-width:1340px;margin:0 auto;padding:40px 28px 28px;display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(220px,.9fr) minmax(300px,1.25fr);gap:52px;align-items:start}',
+        '.fpt-lms-footer__grid{max-width:1340px;margin:0 auto;padding:40px 28px 28px;display:grid;grid-template-columns:minmax(240px,1.05fr) minmax(210px,.88fr) minmax(280px,1.22fr);gap:44px;align-items:start}',
+        'legacy footer desktop proportions',
+    )
+    text = replace_once(
+        text,
+        '.fpt-lms-footer__logo{width:228px;max-height:66px;object-fit:contain;object-position:left center}.fpt-lms-footer__tag{margin-top:7px;color:#7A899C;font-size:13px;font-weight:650}',
+        '.fpt-lms-footer__logo{width:228px;max-height:66px;object-fit:contain;object-position:left center}.fpt-lms-footer__tag{margin-top:7px;color:#65758A;font-size:13px;font-weight:650}',
+        'legacy footer tagline contrast',
+    )
+    text = replace_once(
+        text,
+        '.fpt-lms-footer__copy{max-width:1340px;margin:0 auto;border-top:1px solid #E8EDF3;padding:18px 28px 24px;text-align:center;color:#8492A4;font-size:12px}',
+        '.fpt-lms-footer__copy{max-width:1340px;margin:0 auto;border-top:1px solid #E8EDF3;padding:18px 28px 24px;text-align:center;color:#65758A;font-size:12px}',
+        'legacy footer copyright contrast',
+    )
+    text = replace_once(
+        text,
+        '@media(max-width:760px){.fpt-lms-footer{margin-top:34px}.fpt-lms-footer__grid{grid-template-columns:1fr;gap:24px;padding:30px 22px 24px}.fpt-lms-footer__logo{width:205px}.fpt-lms-footer__copy{padding:17px 22px 22px}}',
+        '@media(max-width:960px){.fpt-lms-footer__grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:26px 40px;padding:34px 28px 24px}.fpt-lms-footer__grid>div:first-child{grid-column:1/-1}}@media(max-width:760px){.fpt-lms-footer{margin-top:34px}.fpt-lms-footer__grid{grid-template-columns:1fr;gap:22px;padding:30px 22px 24px}.fpt-lms-footer__grid>div:first-child{grid-column:auto}.fpt-lms-footer__logo{width:205px}.fpt-lms-footer__copy{padding:17px 22px 22px}}',
+        'legacy footer tablet/mobile proportions',
+    )
+    text = replace_once(
+        text,
+        '<div><strong class="fpt-lms-footer__title">Trụ sở chính</strong><p>Tòa nhà FPT Polytechnic, 13 Phan Tây Nhạc,<br/>Phường Xuân Phương, TP Hà Nội</p></div>',
+        '<div><strong class="fpt-lms-footer__title">ĐỊA CHỈ</strong><p>Tòa nhà FPT Polytechnic, 13 phố Phan Tây Nhạc,<br/>phường Xuân Phương</p></div>',
+        'simplified FPT Polytechnic address wording',
+    )
+    footer.write_text(text, encoding='utf-8')
+PY3
+
+# Final low-risk legacy LMS balance layer after the core Discovery/footer patch.
+RUN python - <<'PY4'
+from pathlib import Path
+
+courses = Path('/openedx/themes/indigo/lms/templates/courseware/courses.html')
+if courses.exists():
+    text = courses.read_text(encoding='utf-8')
+    if 'FPT_DISCOVERY_V8_START' not in text:
+        raise RuntimeError('FPT Discovery markup missing before V9 balance patch')
+
+    headings = {
+        'Học tập chủ động.': 'Phát triển mỗi ngày.',
+        'Học để làm được.': 'Học để đi xa hơn.',
+        'Một hành trình học tập.': 'Một trải nghiệm thống nhất.',
+    }
+    for first, second in headings.items():
+        final = f'<span class="fpt-headline-line">{first}</span><em class="fpt-headline-line">{second}</em>'
+        variants = (
+            f'{first}<br/><em>{second}</em>',
+            f'{first} <em>{second}</em>',
+            final,
+        )
+        for variant in variants[:-1]:
+            if variant in text:
+                text = text.replace(variant, final, 1)
+                break
+
+    expected_headlines = (
+        '<span class="fpt-headline-line">Học tập chủ động.</span><em class="fpt-headline-line">Phát triển mỗi ngày.</em>',
+        '<span class="fpt-headline-line">Học để làm được.</span><em class="fpt-headline-line">Học để đi xa hơn.</em>',
+        '<span class="fpt-headline-line">Một hành trình học tập.</span><em class="fpt-headline-line">Một trải nghiệm thống nhất.</em>',
+    )
+    for expected in expected_headlines:
+        if text.count(expected) != 1:
+            raise RuntimeError(f'FPT Hero explicit two-line headline contract failed: {expected}')
+
+    marker = 'FPT_DISCOVERY_V9_BALANCE'
+    if marker not in text:
+        css = r'''
+<style id="fpt-discovery-v9-balance">
+/* FPT_DISCOVERY_V9_BALANCE */
+.fpt-slide__copy{display:flex;flex-direction:column;align-items:flex-start;text-align:left;width:100%;max-width:660px;padding-left:0;margin-left:0}
+.fpt-kicker,.fpt-slide h1,.fpt-slide p,.fpt-slide__cta{margin-left:0!important;align-self:flex-start!important;text-align:left}
+.fpt-kicker{padding-left:0;display:block!important}
+.fpt-kicker:before{display:none!important}
+.fpt-slide h1{display:flex;flex-direction:column;align-items:flex-start;width:max-content;max-width:100%!important;text-wrap:initial!important;line-height:1.08}
+.fpt-headline-line{display:block;white-space:nowrap;margin:0!important;padding:0!important;text-align:left}
+.fpt-slide h1 em.fpt-headline-line{margin-top:2px!important}
+.fpt-slide p{max-width:590px;text-wrap:pretty}
+.fpt-slide__cta{justify-content:flex-start}
+.fpt-slide{grid-template-columns:minmax(0,.98fr) minmax(500px,1.02fr);gap:34px}
+.fpt-collage{height:330px}
+.fpt-card{border-width:5px;box-shadow:0 20px 42px rgba(27,65,111,.18)}
+.fpt-card--main{left:1%;top:28px;width:64%;height:276px;transform:rotate(-2.2deg);z-index:3}
+.fpt-card--top{right:1%;top:12px;width:34%;height:136px;transform:rotate(2.2deg);z-index:2}
+.fpt-card--bottom{right:2%;bottom:8px;width:36%;height:136px;transform:rotate(-2.2deg);z-index:4}
+.fpt-hero__arrow{width:44px;height:44px;margin-top:-22px;border:1px solid #CBD9E8;background:#fff;color:#0B3B82;box-shadow:0 10px 26px rgba(19,61,115,.18)}
+.fpt-hero__arrow:hover{box-shadow:0 12px 30px rgba(19,61,115,.24)}
+.fpt-hero__arrow--prev{left:14px}.fpt-hero__arrow--next{right:14px}
+@media(max-width:1180px){.fpt-slide h1{font-size:40px}.fpt-slide{grid-template-columns:minmax(0,1fr) minmax(430px,1fr)}}
+@media(max-width:1050px){.fpt-slide h1{font-size:36px}.fpt-collage{height:296px}.fpt-card--main{height:244px}.fpt-card--top,.fpt-card--bottom{height:128px}}
+/* FPT_DISCOVERY_V10_MOBILE_STACK
+   This balance stylesheet is appended after the original responsive rules, so
+   it must also own the final one-column tablet/mobile grid. Otherwise the
+   desktop minmax(430px,1fr) image track wins the cascade and crushes the copy. */
+@media(max-width:820px){
+.fpt-hero,.fpt-hero__stage{min-height:620px}
+.fpt-slide{grid-template-columns:minmax(0,1fr);gap:18px;min-height:620px;padding:38px 52px 58px}
+.fpt-slide__copy{width:100%;min-width:0;max-width:680px}
+.fpt-slide h1{font-size:38px;width:100%;max-width:100%!important}
+.fpt-headline-line{white-space:normal;max-width:100%}
+.fpt-collage{width:min(620px,100%);max-width:100%;min-width:0;height:290px;margin:0 auto}
+.fpt-card--main{left:1%;width:64%;height:242px}
+.fpt-card--top{right:0;width:35%;height:128px}
+.fpt-card--bottom{right:1%;width:37%;height:128px}
+}
+@media(max-width:520px){
+.fpt-hero,.fpt-hero__stage{min-height:660px}
+.fpt-slide{grid-template-columns:minmax(0,1fr);gap:16px;min-height:660px;padding:28px 20px 52px}
+.fpt-slide__copy{width:100%;min-width:0;max-width:none}
+.fpt-slide h1{width:100%;max-width:100%!important;font-size:clamp(29px,8.2vw,32px);line-height:1.08}
+.fpt-headline-line{white-space:normal;max-width:100%}
+.fpt-slide p{width:100%;max-width:100%;font-size:15px;line-height:1.65;margin:15px 0 21px}
+.fpt-collage{width:100%;max-width:390px;min-width:0;height:230px;margin:0 auto}
+.fpt-card{border-width:4px;border-radius:15px}
+.fpt-card--main{left:0;top:20px;width:68%;height:192px}
+.fpt-card--top{right:0;top:2px;width:37%;height:102px}
+.fpt-card--bottom{right:0;bottom:3px;width:39%;height:102px}
+}
+@media(max-width:380px){
+.fpt-hero,.fpt-hero__stage{min-height:650px}
+.fpt-slide{min-height:650px;padding:26px 18px 50px}
+.fpt-slide h1{font-size:28px}
+.fpt-slide p{font-size:14px;line-height:1.6;margin:14px 0 20px}
+.fpt-collage{height:220px}
+.fpt-card--main{height:184px}
+.fpt-card--top,.fpt-card--bottom{height:98px}
+}
+</style>
+'''
+        end = '<!-- FPT_DISCOVERY_V8_END -->'
+        if end not in text:
+            raise RuntimeError('FPT Discovery end marker missing before V9 balance patch')
+        text = text.replace(end, css + '\n' + end, 1)
+
+    courses.write_text(text, encoding='utf-8')
+
+footer = Path('/openedx/themes/indigo/lms/templates/footer.html')
+if footer.exists():
+    text = footer.read_text(encoding='utf-8')
+    tagline = '<div class="fpt-lms-footer__tag">Thực học – Thực nghiệp</div>'
+    if tagline in text:
+        text = text.replace(tagline, '', 1)
+    text = text.replace(
+        '/static/indigo/images/fpt/fpt-polytechnic-logo.png',
+        '/static/indigo/images/fpt/fpt-polytechnic-logo-white.png',
+    )
+
+    marker = 'FPT_LMS_FOOTER_V10_CONTRAST'
+    if marker not in text:
+        theme_css = r'''
+<style id="fpt-lms-footer-v10-contrast">
+/* FPT_LMS_FOOTER_V10_CONTRAST */
+.fpt-lms-footer{background:#071A33!important;border-top:1px solid #2F4765!important;color:#F3F7FC!important}
+.fpt-lms-footer__logo{filter:none!important;opacity:1!important}
+.fpt-lms-footer__title{color:#FFFFFF!important;font-weight:850!important}
+.fpt-lms-footer p,.fpt-lms-footer__address{color:#E3ECF6!important}
+.fpt-lms-footer a{color:#8ED0FF!important;text-decoration:none}
+.fpt-lms-footer a:hover,.fpt-lms-footer a:focus{color:#FFFFFF!important;text-decoration:underline}
+.fpt-lms-footer__copy{border-top:1px solid #2F4765!important;color:#C7D5E5!important}
+</style>
+'''
+        close = '</footer>'
+        if close not in text:
+            raise RuntimeError('FPT LMS footer close marker missing')
+        text = text.replace(close, theme_css + '\n' + close, 1)
+
+    footer.write_text(text, encoding='utf-8')
+
+# Tutor-Indigo legacy LMS renders its light/dark switch from this dedicated
+# template. Keep the theme permanently light and render no switch at all.
+toggle = Path('/openedx/themes/indigo/lms/templates/header/theme-toggle-button.html')
+if toggle.exists():
+    toggle.write_text(r'''<!-- FPT_LIGHT_ONLY_THEME_TOGGLE_DISABLED -->
+<script>
+(function(){
+  var key='selected-paragon-theme-variant';
+  try {
+    window.localStorage.setItem(key,'light');
+    document.cookie=key+'=light; path=/; max-age=31536000; SameSite=Lax';
+  } catch (e) {}
+  document.documentElement.setAttribute('data-paragon-theme-variant','light');
+  document.documentElement.style.colorScheme='light';
+  function lockLight(){ if(document.body){ document.body.classList.remove('indigo-dark-theme'); } }
+  lockLight();
+  document.addEventListener('DOMContentLoaded',lockLight,{once:true});
+})();
+</script>
+''', encoding='utf-8')
+PY4
+
+# Reuse the exact final Discovery Hero from /courses on the LMS homepage (/).
+RUN python - <<'PY5'
+from pathlib import Path
+
+courses = Path('/openedx/themes/indigo/lms/templates/courseware/courses.html')
+home = Path('/openedx/themes/indigo/lms/templates/index.html')
+
+start = '<!-- FPT_DISCOVERY_V8_START -->'
+end = '<!-- FPT_DISCOVERY_V8_END -->'
+home_anchor = '<section class="home style-logout">'
+search_old = '<div class="course-search">'
+search_new = '<div id="discovery-form" class="course-search">'
+
+if not courses.exists():
+    raise RuntimeError('Indigo courses.html missing before homepage slider patch')
+if not home.exists():
+    raise RuntimeError('Indigo index.html missing before homepage slider patch')
+
+courses_text = courses.read_text(encoding='utf-8')
+if start not in courses_text or end not in courses_text:
+    raise RuntimeError('Final FPT Discovery Hero missing from courses.html')
+
+# Extract the complete already-polished Hero, including the V9 balance/theme CSS.
+hero = start + courses_text.split(start, 1)[1].split(end, 1)[0] + end
+if 'FPT_DISCOVERY_V9_BALANCE' not in hero:
+    raise RuntimeError('Homepage slider patch must run after V9 Discovery balance patch')
+
+text = home.read_text(encoding='utf-8')
+
+# Keep the Hero idempotent and always synchronize it from /courses.
+if start in text and end in text:
+    before = text.split(start, 1)[0]
+    after = text.split(end, 1)[1]
+    text = before + hero + after
+elif home_anchor in text:
+    text = text.replace(home_anchor, hero + '\n' + home_anchor, 1)
+else:
+    raise RuntimeError('Indigo homepage anchor not found for FPT Hero insertion')
+
+# Hero CTAs use #discovery-form on both / and /courses. Give the homepage search
+# area the same anchor without changing its existing discovery behavior.
+if search_new not in text:
+    if search_old not in text:
+        raise RuntimeError('Indigo homepage course-search anchor not found')
+    text = text.replace(search_old, search_new, 1)
+
+if text.count('id="fpt-hero-slider"') != 1:
+    raise RuntimeError('Homepage must contain exactly one FPT Hero slider')
+if text.count('id="discovery-form"') != 1:
+    raise RuntimeError('Homepage must contain exactly one discovery-form anchor')
+
+home.write_text(text, encoding='utf-8')
+PY5
