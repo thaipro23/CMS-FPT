@@ -84,7 +84,7 @@ import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 
 # Authn source is copied into /openedx/app after npm install in Tutor MFE 21.x.
 # Compose the patches by responsibility: base FPT layout, viewport/branding
-# polish, then the SSO-only FEID/Google interaction layer.
+# polish, SSO-only FEID/Google interaction, then the final responsive shell lock.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authn",
     _jinja_raw(
@@ -93,6 +93,8 @@ hooks.Filters.ENV_PATCHES.add_item((
         + _read_patch("authn_polish.patch")
         + "\n"
         + _read_patch("authn_sso.patch")
+        + "\n"
+        + _read_patch("authn_layout_fix.patch")
     ),
 ))
 
