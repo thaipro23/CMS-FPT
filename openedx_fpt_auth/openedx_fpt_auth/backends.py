@@ -1,27 +1,12 @@
 """FEID OAuth2 backend compatible with Open edX Ulmo."""
 
 import json
-import logging
 from collections.abc import Mapping
 from typing import ClassVar
 from urllib.parse import quote, urlencode
 
 from social_core.backends.oauth import BaseOAuth2PKCE
 from social_core.exceptions import AuthMissingParameter
-
-logger = logging.getLogger(__name__)
-
-SENSITIVE_USERINFO_KEYS = frozenset(
-    {
-        "access_token",
-        "refresh_token",
-        "id_token",
-        "token",
-        "client_secret",
-        "code",
-        "code_verifier",
-    }
-)
 
 
 def _parse_mapping(value):
@@ -36,22 +21,6 @@ def _parse_mapping(value):
     except (TypeError, ValueError):
         return None
     return parsed if isinstance(parsed, Mapping) else None
-
-
-def _sanitize_userinfo(value):
-    """Recursively redact OAuth credentials while preserving FEID identity claims."""
-
-    if isinstance(value, Mapping):
-        sanitized = {}
-        for key, item in value.items():
-            if str(key).casefold() in SENSITIVE_USERINFO_KEYS:
-                sanitized[key] = "<redacted>"
-            else:
-                sanitized[key] = _sanitize_userinfo(item)
-        return sanitized
-    if isinstance(value, list):
-        return [_sanitize_userinfo(item) for item in value]
-    return value
 
 
 def extract_roll_numbers(response):
@@ -180,20 +149,9 @@ class FEIDOAuth2(BaseOAuth2PKCE):
         }
 
     def user_data(self, access_token, *args, **kwargs):
-        """Fetch FEID userinfo and temporarily log a credential-redacted payload."""
+        """Fetch FEID userinfo without logging tokens or identity payloads."""
 
-        response = self.get_json(
+        return self.get_json(
             self.USER_DATA_URL,
             headers={"Authorization": f"Bearer {access_token}"},
         )
-
-        logger.warning(
-            "[FPT_AUTH_DIAG] FEID userinfo=%s",
-            json.dumps(
-                _sanitize_userinfo(response),
-                ensure_ascii=False,
-                default=str,
-                sort_keys=True,
-            ),
-        )
-        return response
