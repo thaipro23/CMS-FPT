@@ -206,10 +206,10 @@ def set_logged_in_cookies_for_fpt_sso(
         # abort an otherwise successful third-party authentication pipeline.
         return None
 
+    # Do not log user id, username, email, RollNumber, tokens, or provider payload.
     logger.info(
-        "[FPT_AUTH] Allowing SSO-only user without local password backend=%s user_id=%s",
+        "[FPT_AUTH] Allowing SSO-only user without local password backend=%s",
         backend.name,
-        getattr(user, "pk", None),
     )
     response = redirect(redirect_url)
     return user_authn_cookies.set_logged_in_cookies(request, response, user)
