@@ -3,7 +3,11 @@
 import logging
 
 from django.contrib.auth import get_user_model
+from django.shortcuts import redirect
 from social_core.exceptions import AuthForbidden
+
+from common.djangoapps.third_party_auth import pipeline as openedx_tpa_pipeline
+from openedx.core.djangoapps.user_authn import cookies as user_authn_cookies
 
 from .backends import extract_roll_numbers
 
@@ -137,3 +141,75 @@ def block_supported_provider_user_creation(backend, user=None, *args, **kwargs):
 
     if backend.name in SUPPORTED_BACKENDS and user is None:
         _deny(backend, "user_missing_before_create_user")
+
+
+def set_logged_in_cookies_for_fpt_sso(
+    backend=None,
+    user=None,
+    strategy=None,
+    auth_entry=None,
+    current_partial=None,
+    *args,
+    **kwargs,
+):
+    """Allow mapped FPT SSO users to authenticate without a local password.
+
+    Open edX's standard third-party-auth cookie stage treats an unusable local
+    password as a disabled account and returns HTTP 403. FPT students/teachers
+    are intentionally SSO-only, so a missing local password is expected. This
+    wrapper preserves the upstream behavior for every other provider and for
+    FPT users that do have a usable local password.
+    """
+
+    if (
+        backend is None
+        or backend.name not in SUPPORTED_BACKENDS
+        or user is None
+        or user.has_usable_password()
+    ):
+        return openedx_tpa_pipeline.set_logged_in_cookies(
+            backend=backend,
+            user=user,
+            strategy=strategy,
+            auth_entry=auth_entry,
+            current_partial=current_partial,
+            *args,
+            **kwargs,
+        )
+
+    # FPT SSO-only accounts must still be active. The resolver also checks this,
+    # but enforce it here as defense in depth before authentication cookies are
+    # issued.
+    _require_active(backend, user)
+
+    if openedx_tpa_pipeline.is_api(auth_entry) or not user.is_authenticated:
+        return None
+
+    request = strategy.request if strategy else None
+    if request is None:
+        return None
+
+    if user_authn_cookies.are_logged_in_cookies_set(request):
+        return None
+
+    if current_partial is None:
+        logger.warning(
+            "[FPT_AUTH] SSO cookie stage missing current_partial backend=%s",
+            backend.name,
+        )
+        return None
+
+    try:
+        redirect_url = openedx_tpa_pipeline.get_complete_url(current_partial.backend)
+    except ValueError:
+        # Match upstream behavior: cookie setup is best-effort and should not
+        # abort an otherwise successful third-party authentication pipeline.
+        return None
+
+    logger.info(
+        "[FPT_AUTH] Allowing SSO-only user without local password backend=%s user_id=%s",
+        backend.name,
+        getattr(user, "pk", None),
+    )
+    response = redirect(redirect_url)
+    return user_authn_cookies.set_logged_in_cookies(request, response, user)
