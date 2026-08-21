@@ -3,8 +3,10 @@ from types import SimpleNamespace
 from openedx_fpt_auth.apps import (
     CREATE_GUARD_STAGE,
     CREATE_USER_STAGE,
+    FPT_COOKIE_STAGE,
     LEGACY_STAGE,
     LINK_STAGE,
+    OPENEDX_COOKIE_STAGE,
     SOCIAL_USER_STAGE,
     install_pipeline,
 )
@@ -60,6 +62,7 @@ def test_pipeline_installation_is_idempotent_and_before_create_user():
             "common.djangoapps.third_party_auth.pipeline.get_username",
             CREATE_USER_STAGE,
             "social_core.pipeline.social_auth.associate_user",
+            OPENEDX_COOKIE_STAGE,
         ]
     )
     install_pipeline(settings)
@@ -69,6 +72,8 @@ def test_pipeline_installation_is_idempotent_and_before_create_user():
     assert LEGACY_STAGE not in pipeline
     assert pipeline.count(LINK_STAGE) == 1
     assert pipeline.count(CREATE_GUARD_STAGE) == 1
+    assert pipeline.count(FPT_COOKIE_STAGE) == 1
+    assert OPENEDX_COOKIE_STAGE not in pipeline
     assert pipeline.index(SOCIAL_USER_STAGE) < pipeline.index(LINK_STAGE)
     assert pipeline.index(LINK_STAGE) < pipeline.index(CREATE_GUARD_STAGE)
     assert pipeline.index(CREATE_GUARD_STAGE) < pipeline.index(CREATE_USER_STAGE)
