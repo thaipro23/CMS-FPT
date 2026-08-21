@@ -62,6 +62,7 @@ MFE_CONFIG["INDIGO_ENABLE_DARK_TOGGLE"] = False
 MFE_CONFIG["INDIGO_FOOTER_NAV_LINKS"] = []
 MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
+MFE_CONFIG["FPT_SSO_ONLY_AUTH"] = True
 # Keep the approved FPT DefaultLayout on Authn Ulmo.4.
 MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
@@ -82,22 +83,13 @@ hooks.Filters.ENV_PATCHES.add_item((
 import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
-# Authn source is copied into /openedx/app after npm install in Tutor MFE 21.x.
-# Compose the patches by responsibility: base FPT layout, viewport/branding,
-# SSO-only FEID/Google interaction, responsive shell, then laptop-width lock.
+# Authn has one canonical source transformation. Do not stack layout/polish/SSO
+# patches after it: the canonical patch owns the final React tree and stylesheet,
+# including the error state. This prevents old local-login controls from
+# reappearing when FEID/Google returns an authentication failure.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authn",
-    _jinja_raw(
-        _read_patch("authn.patch")
-        + "\n"
-        + _read_patch("authn_polish.patch")
-        + "\n"
-        + _read_patch("authn_sso.patch")
-        + "\n"
-        + _read_patch("authn_layout_fix.patch")
-        + "\n"
-        + _read_patch("authn_laptop_layout_fix.patch")
-    ),
+    _jinja_raw(_read_patch("authn.patch")),
 ))
 
 hooks.Filters.ENV_PATCHES.add_item((
