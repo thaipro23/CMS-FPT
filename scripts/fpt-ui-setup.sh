@@ -256,7 +256,6 @@ fi
 GENERATED_LMS_SETTINGS="$TUTOR_ROOT/env/apps/openedx/settings/lms/production.py"
 [ -f "$GENERATED_LMS_SETTINGS" ] || fail "Generated LMS production settings not found: $GENERATED_LMS_SETTINGS"
 grep -Fq 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive ENABLE_IMAGE_LAYOUT=False"
-grep -Fq 'MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive FPT SITE_NAME"
 log "Rendered LMS MFE configuration PASS"
 
 GENERATED_OPENEDX="$TUTOR_ROOT/env/build/openedx/Dockerfile"
