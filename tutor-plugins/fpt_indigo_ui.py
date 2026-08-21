@@ -64,8 +64,6 @@ MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
 # Keep the approved FPT DefaultLayout on Authn Ulmo.4.
 MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False
-# Compatibility marker for the existing setup guard only. SITE_NAME is not overridden.
-# MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
 MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
