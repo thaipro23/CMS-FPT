@@ -5,7 +5,7 @@ import logging
 from django.contrib.auth import get_user_model
 from social_core.exceptions import AuthForbidden
 
-from .backends import extract_roll_number
+from .backends import extract_roll_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,29 @@ def _find_unique_user(backend, **lookup):
     return _require_active(backend, matches[0])
 
 
+def _find_unique_feid_user(backend, roll_numbers):
+    """Match any FEID RollNumber to CMS auth_user.username, requiring one user."""
+
+    manager = get_user_model()._default_manager
+    matches_by_pk = {}
+
+    for roll_number in roll_numbers:
+        if not roll_number or len(roll_number) > MAX_ROLL_NUMBER_LENGTH:
+            continue
+        matches = list(
+            manager.filter(username__iexact=roll_number).order_by("pk")[:2]
+        )
+        for matched_user in matches:
+            matches_by_pk[matched_user.pk] = matched_user
+
+    if not matches_by_pk:
+        _deny(backend, "user_not_found")
+    if len(matches_by_pk) != 1:
+        _deny(backend, "ambiguous_user")
+
+    return _require_active(backend, next(iter(matches_by_pk.values())))
+
+
 def _is_verified_google_email(response):
     value = response.get("email_verified")
     return value is True or (
@@ -81,10 +104,14 @@ def associate_existing_user(
         return _mapped_user(backend, user)
 
     if backend.name == FEID_BACKEND:
-        roll_number = extract_roll_number(response or {})
-        if not roll_number or len(roll_number) > MAX_ROLL_NUMBER_LENGTH:
+        roll_numbers = [
+            value
+            for value in extract_roll_numbers(response or {})
+            if value and len(value) <= MAX_ROLL_NUMBER_LENGTH
+        ]
+        if not roll_numbers:
             _deny(backend, "missing_or_invalid_roll_number")
-        matched_user = _find_unique_user(backend, username__iexact=roll_number)
+        matched_user = _find_unique_feid_user(backend, roll_numbers)
     else:
         if not _is_verified_google_email(response or {}):
             _deny(backend, "google_email_not_verified")
