@@ -1,5 +1,6 @@
 """Open edX plugin registration and pipeline installation."""
 
+from pathlib import Path
 from typing import ClassVar
 
 from django.apps import AppConfig
@@ -51,6 +52,14 @@ class FPTAuthConfig(AppConfig):
     """LMS-only plugin app for FEID and Google existing-user linking."""
 
     name = "openedx_fpt_auth"
+
+    # The repository contains an outer openedx_fpt_auth source directory and an
+    # inner Python package with the same name. When the repository itself is on
+    # sys.path, Python may expose the outer directory as a namespace package.
+    # Pin the Django app path to the real package so management commands,
+    # migrations, templates, and other app resources are discovered correctly.
+    path = str(Path(__file__).resolve().parent)
+
     verbose_name = "Open edX FPT Authentication"
 
     plugin_app: ClassVar[dict[str, object]] = {
