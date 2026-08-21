@@ -64,7 +64,6 @@ MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
 # Keep the approved FPT DefaultLayout on Authn Ulmo.4.
 MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False
-MFE_CONFIG["SITE_NAME"] = "FPT Polytechnic"
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
 MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
@@ -127,18 +126,13 @@ PLUGIN_SLOTS.add_item((
 ))
 
 
-# Compose legacy LMS refinements after the core patch. Homepage reuses the
-# already-balanced /courses Hero so both entry points stay synchronized.
+# Legacy LMS branding/discovery is intentionally consolidated into one patch.
+# Native logo replacement remains separate because it operates on collected
+# static assets after the theme/UI changes are rendered.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
     _jinja_raw(
         _read_patch("openedx.patch")
-        + "\n"
-        + _read_patch("openedx_polish.patch")
-        + "\n"
-        + _read_patch("openedx_balance.patch")
-        + "\n"
-        + _read_patch("homepage_slider.patch")
         + "\n"
         + _read_patch("native_logo.patch")
     ),
