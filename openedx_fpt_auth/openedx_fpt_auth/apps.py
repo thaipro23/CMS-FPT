@@ -9,8 +9,10 @@ from django.core.exceptions import ImproperlyConfigured
 
 SOCIAL_USER_STAGE = "social_core.pipeline.social_auth.social_user"
 CREATE_USER_STAGE = "social_core.pipeline.user.create_user"
+OPENEDX_COOKIE_STAGE = "common.djangoapps.third_party_auth.pipeline.set_logged_in_cookies"
 LINK_STAGE = "openedx_fpt_auth.pipeline.associate_existing_user"
 CREATE_GUARD_STAGE = "openedx_fpt_auth.pipeline.block_supported_provider_user_creation"
+FPT_COOKIE_STAGE = "openedx_fpt_auth.pipeline.set_logged_in_cookies_for_fpt_sso"
 LEGACY_STAGE = (
     "common.djangoapps.third_party_auth.feid_pipeline.associate_by_username_only"
 )
@@ -28,7 +30,12 @@ def install_pipeline(django_settings):
     pipeline = [
         stage
         for stage in pipeline
-        if stage not in {LEGACY_STAGE, LINK_STAGE, CREATE_GUARD_STAGE}
+        if stage not in {
+            LEGACY_STAGE,
+            LINK_STAGE,
+            CREATE_GUARD_STAGE,
+            FPT_COOKIE_STAGE,
+        }
     ]
     try:
         social_user_index = pipeline.index(SOCIAL_USER_STAGE)
@@ -44,6 +51,14 @@ def install_pipeline(django_settings):
         if create_user_index <= pipeline.index(LINK_STAGE):
             raise ImproperlyConfigured("FPT Auth resolver must run before create_user")
         pipeline.insert(create_user_index, CREATE_GUARD_STAGE)
+
+    try:
+        cookie_index = pipeline.index(OPENEDX_COOKIE_STAGE)
+    except ValueError as exc:
+        raise ImproperlyConfigured(
+            "FPT Auth cannot find the Open edX set_logged_in_cookies pipeline stage"
+        ) from exc
+    pipeline[cookie_index] = FPT_COOKIE_STAGE
 
     django_settings.SOCIAL_AUTH_PIPELINE = pipeline
 
