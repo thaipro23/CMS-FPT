@@ -1,18 +1,43 @@
-
+# Canonical FPT Polytechnic Authn customization for Open edX Ulmo.4.
+#
+# This is the single source of truth for Authn. Do not stack later Vxx patches
+# on top of it. The login React tree is SSO-only by construction: username,
+# password, forgot-password, and local submit controls are not rendered at all,
+# including when FEID/Google authentication returns an error.
 RUN node - <<'JS2'
 const fs = require('fs');
 
-const root = '/openedx/app/src/base-container/components/default-layout';
-const write = (name, value) => fs.writeFileSync(`${root}/${name}`, value, 'utf8');
+const layoutRoot = '/openedx/app/src/base-container/components/default-layout';
+const paths = {
+  large: `${layoutRoot}/LargeLayout.jsx`,
+  medium: `${layoutRoot}/MediumLayout.jsx`,
+  small: `${layoutRoot}/SmallLayout.jsx`,
+  logistration: '/openedx/app/src/logistration/Logistration.jsx',
+  login: '/openedx/app/src/login/LoginPage.jsx',
+  thirdPartyAuth: '/openedx/app/src/common-components/ThirdPartyAuth.jsx',
+  socialAuthProviders: '/openedx/app/src/common-components/SocialAuthProviders.jsx',
+  scss: '/openedx/app/src/index.scss',
+};
 
-write('LargeLayout.jsx', String.raw`import React from 'react';
+for (const path of Object.values(paths)) {
+  if (!fs.existsSync(path)) {
+    throw new Error(`FPT Authn canonical source target not found: ${path}`);
+  }
+}
+
+const write = (path, value) => fs.writeFileSync(path, value, 'utf8');
+
+const layoutPreamble = String.raw`import React from 'react';
 
 import { getConfig } from '@edx/frontend-platform';
 
 const getFptBaseUrl = () => getConfig().LMS_BASE_URL || window.location.origin;
 const getFptAsset = (name) => new URL('/static/indigo/images/fpt/' + name, getFptBaseUrl()).toString();
 const getFptHome = () => getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl();
+`;
 
+write(paths.large, layoutPreamble + String.raw`
+// FPT_AUTHN_CANONICAL_LAYOUT_V1
 const LargeLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--large" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
@@ -24,21 +49,14 @@ const LargeLayout = () => (
         <h1><span>Start learning</span><em>with CMS</em></h1>
       </div>
     </div>
-    <div className="fpt-auth-wedge" aria-hidden="true" />
   </aside>
 );
 
 export default LargeLayout;
 `);
 
-write('MediumLayout.jsx', String.raw`import React from 'react';
-
-import { getConfig } from '@edx/frontend-platform';
-
-const getFptBaseUrl = () => getConfig().LMS_BASE_URL || window.location.origin;
-const getFptAsset = (name) => new URL('/static/indigo/images/fpt/' + name, getFptBaseUrl()).toString();
-const getFptHome = () => getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl();
-
+write(paths.medium, layoutPreamble + String.raw`
+// FPT_AUTHN_CANONICAL_LAYOUT_V1
 const MediumLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--medium" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
@@ -56,14 +74,8 @@ const MediumLayout = () => (
 export default MediumLayout;
 `);
 
-write('SmallLayout.jsx', String.raw`import React from 'react';
-
-import { getConfig } from '@edx/frontend-platform';
-
-const getFptBaseUrl = () => getConfig().LMS_BASE_URL || window.location.origin;
-const getFptAsset = (name) => new URL('/static/indigo/images/fpt/' + name, getFptBaseUrl()).toString();
-const getFptHome = () => getConfig().MARKETING_SITE_BASE_URL || getFptBaseUrl();
-
+write(paths.small, layoutPreamble + String.raw`
+// FPT_AUTHN_CANONICAL_LAYOUT_V1
 const SmallLayout = () => (
   <aside className="fpt-auth-visual fpt-auth-visual--small" aria-label="FPT Polytechnic">
     <div className="fpt-auth-panel">
@@ -80,84 +92,461 @@ const SmallLayout = () => (
 export default SmallLayout;
 `);
 
-const scss = '/openedx/app/src/index.scss';
-if (fs.existsSync(scss)) {
-  const marker = 'FPT Polytechnic V10 edX full-screen authn';
-  let current = fs.readFileSync(scss, 'utf8');
-  if (!current.includes(marker)) {
-    current += String.raw`
+let logistration = fs.readFileSync(paths.logistration, 'utf8');
+if (!logistration.includes('FPT_SSO_ONLY_LOGISTRATION_V1')) {
+  const configAnchor = '  const hideRegistrationLink = getConfig().SHOW_REGISTRATION_LINKS === false;';
+  if (!logistration.includes(configAnchor)) {
+    throw new Error('FPT Authn does not recognize Logistration config anchor');
+  }
+  logistration = logistration.replace(
+    configAnchor,
+    `${configAnchor}\n  const fptSsoOnlyAuth = getConfig().FPT_SSO_ONLY_AUTH === true; // FPT_SSO_ONLY_LOGISTRATION_V1`,
+  );
 
-/* FPT Polytechnic V10 edX full-screen authn */
+  const disabledHeading = `                {!institutionLogin && (\n                  <h3 className="mb-4.5">{formatMessage(messages['logistration.sign.in'])}</h3>\n                )}`;
+  const disabledHeadingReplacement = `                {!institutionLogin && !fptSsoOnlyAuth && (\n                  <h3 className="mb-4.5">{formatMessage(messages['logistration.sign.in'])}</h3>\n                )}`;
+  if (!logistration.includes(disabledHeading)) {
+    throw new Error('FPT Authn does not recognize disabled-registration Sign in heading');
+  }
+  logistration = logistration.replace(disabledHeading, disabledHeadingReplacement);
+
+  const hiddenRegistrationHeading = '                {!institutionLogin && !isValidTpaHint() && hideRegistrationLink && (';
+  if (!logistration.includes(hiddenRegistrationHeading)) {
+    throw new Error('FPT Authn does not recognize hidden-registration Sign in heading');
+  }
+  logistration = logistration.replace(
+    hiddenRegistrationHeading,
+    '                {!institutionLogin && !isValidTpaHint() && hideRegistrationLink && !fptSsoOnlyAuth && (',
+  );
+  write(paths.logistration, logistration);
+}
+
+write(paths.login, String.raw`// FPT_SSO_ONLY_LOGIN_V3
+import {
+  useCallback, useEffect, useMemo, useState,
+} from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+
+import { getConfig } from '@edx/frontend-platform';
+import { sendPageEvent } from '@edx/frontend-platform/analytics';
+import { useIntl } from '@edx/frontend-platform/i18n';
+import PropTypes from 'prop-types';
+import { Helmet } from 'react-helmet';
+import Skeleton from 'react-loading-skeleton';
+
+import {
+  InstitutionLogistration,
+  RedirectLogistration,
+  ThirdPartyAuthAlert,
+} from '../common-components';
+import { getThirdPartyAuthContext } from '../common-components/data/actions';
+import { thirdPartyAuthContextSelector } from '../common-components/data/selectors';
+import EnterpriseSSO from '../common-components/EnterpriseSSO';
+import ThirdPartyAuth from '../common-components/ThirdPartyAuth';
+import { PENDING_STATE } from '../data/constants';
+import {
+  getAllPossibleQueryParams,
+  getTpaHint,
+  getTpaProvider,
+} from '../data/utils';
+import { TPA_AUTHENTICATION_FAILURE } from './data/constants';
+import LoginFailureMessage from './LoginFailure';
+import messages from './messages';
+
+const LoginPage = ({
+  institutionLogin,
+  handleInstitutionLogin,
+}) => {
+  const dispatch = useDispatch();
+  const getTPADataFromBackend = useCallback(
+    (urlParams) => dispatch(getThirdPartyAuthContext(urlParams)),
+    [dispatch],
+  );
+  const {
+    loginResult,
+    thirdPartyAuthContext,
+    thirdPartyAuthApiStatus,
+  } = useSelector((state) => ({
+    loginResult: state.login.loginResult,
+    thirdPartyAuthContext: thirdPartyAuthContextSelector(state),
+    thirdPartyAuthApiStatus: state.commonComponents.thirdPartyAuthApiStatus,
+  }));
+  const {
+    providers,
+    currentProvider,
+    secondaryProviders,
+    finishAuthUrl,
+    platformName,
+    errorMessage: thirdPartyErrorMessage,
+  } = thirdPartyAuthContext;
+  const { formatMessage } = useIntl();
+  const queryParams = useMemo(() => getAllPossibleQueryParams(), []);
+  const tpaHint = getTpaHint();
+  const [errorCode, setErrorCode] = useState({
+    type: '',
+    count: 0,
+    context: {},
+  });
+
+  useEffect(() => {
+    sendPageEvent('login_and_registration', 'login');
+  }, []);
+
+  useEffect(() => {
+    const payload = { ...queryParams };
+    if (tpaHint) {
+      payload.tpa_hint = tpaHint;
+    }
+    getTPADataFromBackend(payload);
+  }, [queryParams, tpaHint, getTPADataFromBackend]);
+
+  useEffect(() => {
+    if (thirdPartyErrorMessage) {
+      setErrorCode((previous) => ({
+        type: TPA_AUTHENTICATION_FAILURE,
+        count: previous.count + 1,
+        context: { errorMessage: thirdPartyErrorMessage },
+      }));
+    }
+  }, [thirdPartyErrorMessage]);
+
+  const {
+    provider,
+    skipHintedLogin,
+  } = getTpaProvider(tpaHint, providers, secondaryProviders);
+
+  if (tpaHint) {
+    if (thirdPartyAuthApiStatus === PENDING_STATE) {
+      return <Skeleton height={58} count={2} />;
+    }
+
+    if (skipHintedLogin) {
+      window.location.href = getConfig().LMS_BASE_URL + provider.loginUrl;
+      return null;
+    }
+
+    if (provider) {
+      return <EnterpriseSSO provider={provider} />;
+    }
+  }
+
+  if (institutionLogin) {
+    return (
+      <InstitutionLogistration
+        secondaryProviders={secondaryProviders}
+        headingTitle={formatMessage(messages['institution.login.page.title'])}
+      />
+    );
+  }
+
+  return (
+    <>
+      <Helmet>
+        <title>{formatMessage(messages['login.page.title'], { siteName: getConfig().SITE_NAME })}</title>
+      </Helmet>
+      <RedirectLogistration
+        success={loginResult.success}
+        redirectUrl={loginResult.redirectUrl}
+        finishAuthUrl={finishAuthUrl}
+      />
+      <section className="fpt-sso-login" aria-label="Sign in with FEID or Google">
+        <LoginFailureMessage
+          errorCode={errorCode.type}
+          errorCount={errorCode.count}
+          context={errorCode.context}
+        />
+        <ThirdPartyAuthAlert
+          currentProvider={currentProvider}
+          platformName={platformName}
+        />
+        <ThirdPartyAuth
+          currentProvider={currentProvider}
+          providers={providers}
+          secondaryProviders={secondaryProviders}
+          handleInstitutionLogin={handleInstitutionLogin}
+          thirdPartyAuthApiStatus={thirdPartyAuthApiStatus}
+          isLoginPage
+        />
+      </section>
+    </>
+  );
+};
+
+LoginPage.propTypes = {
+  institutionLogin: PropTypes.bool.isRequired,
+  handleInstitutionLogin: PropTypes.func.isRequired,
+};
+
+export default LoginPage;
+`);
+
+write(paths.thirdPartyAuth, String.raw`// FPT_SSO_ONLY_TPA_V3
+import React from 'react';
+
+import PropTypes from 'prop-types';
+import Skeleton from 'react-loading-skeleton';
+
+import SocialAuthProviders from './SocialAuthProviders';
+import { LOGIN_PAGE, PENDING_STATE, REGISTER_PAGE } from '../data/constants';
+
+const providerKey = (provider) => [provider?.name || '', provider?.id || ''].join(' ').trim().toLowerCase();
+const isAllowedProvider = (provider) => {
+  const key = providerKey(provider);
+  return key.includes('feid') || key.includes('google');
+};
+const providerRank = (provider) => (providerKey(provider).includes('feid') ? 0 : 1);
+
+const ThirdPartyAuth = (props) => {
+  const {
+    providers,
+    secondaryProviders,
+    thirdPartyAuthApiStatus,
+    isLoginPage,
+  } = props;
+
+  const uniqueProviders = [...providers, ...secondaryProviders]
+    .filter(isAllowedProvider)
+    .filter((provider, index, all) => (
+      all.findIndex((candidate) => (
+        (candidate.id && candidate.id === provider.id)
+        || providerKey(candidate) === providerKey(provider)
+      )) === index
+    ))
+    .sort((left, right) => providerRank(left) - providerRank(right));
+
+  const isPending = thirdPartyAuthApiStatus === PENDING_STATE;
+
+  return (
+    <div className="fpt-sso-auth">
+      <h1 className="fpt-sso-auth__title">
+        {isLoginPage ? 'Sign in with:' : 'Create account with:'}
+      </h1>
+
+      {isPending ? (
+        <div className="fpt-sso-auth__skeleton" aria-label="Loading sign in providers">
+          <Skeleton height={60} count={2} />
+        </div>
+      ) : (
+        <div className="fpt-sso-auth__providers">
+          <SocialAuthProviders
+            socialAuthProviders={uniqueProviders}
+            referrer={isLoginPage ? LOGIN_PAGE : REGISTER_PAGE}
+          />
+          {uniqueProviders.length === 0 && (
+            <div className="fpt-sso-auth__empty" role="alert">
+              FEID and Google sign-in are temporarily unavailable.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+ThirdPartyAuth.defaultProps = {
+  currentProvider: null,
+  providers: [],
+  secondaryProviders: [],
+  thirdPartyAuthApiStatus: PENDING_STATE,
+  isLoginPage: false,
+};
+
+ThirdPartyAuth.propTypes = {
+  currentProvider: PropTypes.string,
+  handleInstitutionLogin: PropTypes.func.isRequired,
+  providers: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    iconClass: PropTypes.string,
+    iconImage: PropTypes.string,
+    loginUrl: PropTypes.string,
+    registerUrl: PropTypes.string,
+  })),
+  secondaryProviders: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    iconClass: PropTypes.string,
+    iconImage: PropTypes.string,
+    loginUrl: PropTypes.string,
+    registerUrl: PropTypes.string,
+  })),
+  thirdPartyAuthApiStatus: PropTypes.string,
+  isLoginPage: PropTypes.bool,
+};
+
+export default ThirdPartyAuth;
+`);
+
+write(paths.socialAuthProviders, String.raw`// FPT_SSO_ONLY_PROVIDERS_V3
+import React from 'react';
+
+import { getConfig } from '@edx/frontend-platform';
+import PropTypes from 'prop-types';
+
+import { LOGIN_PAGE } from '../data/constants';
+
+const providerKey = (provider) => [provider?.name || '', provider?.id || ''].join(' ').trim().toLowerCase();
+const providerType = (provider) => (providerKey(provider).includes('google') ? 'google' : 'feid');
+
+const FeidIcon = () => (
+  <svg viewBox="0 0 28 28" role="img" aria-label="FEID" focusable="false">
+    <rect x="1" y="1" width="26" height="26" rx="8" fill="#FFFFFF" />
+    <path d="M7.2 6.8h12.4v4H11.4v3.2h6.7v3.8h-6.7v4.9H7.2V6.8Z" fill="#0B3B82" />
+    <path d="M20.6 6.8h2.2v15.9h-2.2V6.8Z" fill="#F36F21" />
+  </svg>
+);
+
+const GoogleIcon = () => (
+  <svg viewBox="0 0 24 24" role="img" aria-label="Google" focusable="false">
+    <path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.06H12v3.9h5.39a4.61 4.61 0 0 1-2 3.02v2.53h3.24c1.89-1.74 2.97-4.3 2.97-7.39Z" />
+    <path fill="#34A853" d="M12 22c2.7 0 4.96-.89 6.62-2.41l-3.24-2.53c-.9.6-2.05.96-3.38.96-2.6 0-4.8-1.76-5.59-4.13H3.07v2.6A10 10 0 0 0 12 22Z" />
+    <path fill="#FBBC05" d="M6.41 13.89A6.02 6.02 0 0 1 6.1 12c0-.66.11-1.3.31-1.89v-2.6H3.07A10 10 0 0 0 2 12c0 1.61.38 3.14 1.07 4.49l3.34-2.6Z" />
+    <path fill="#EA4335" d="M12 5.98c1.47 0 2.79.5 3.83 1.5l2.86-2.87A9.65 9.65 0 0 0 12 2a10 10 0 0 0-8.93 5.51l3.34 2.6C7.2 7.74 9.4 5.98 12 5.98Z" />
+  </svg>
+);
+
+const ArrowIcon = () => (
+  <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+    <path d="M7.5 4.5 13 10l-5.5 5.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const SocialAuthProviders = ({ referrer, socialAuthProviders }) => {
+  const handleSubmit = (event, provider) => {
+    event.preventDefault();
+    const providerUrl = referrer === LOGIN_PAGE ? provider.loginUrl : provider.registerUrl;
+    if (providerUrl) {
+      window.location.assign(getConfig().LMS_BASE_URL + providerUrl);
+    }
+  };
+
+  return socialAuthProviders.map((provider) => {
+    const type = providerType(provider);
+    const label = type === 'google' ? 'Sign in with Google' : 'Sign in with FEID';
+
+    return (
+      <button
+        id={'fpt-sso-' + (provider.id || type)}
+        key={provider.id || (type + '-' + provider.name)}
+        type="button"
+        className={'fpt-sso-provider fpt-sso-provider--' + type}
+        onClick={(event) => handleSubmit(event, provider)}
+        aria-label={label}
+      >
+        <span className="fpt-sso-provider__icon" aria-hidden="true">
+          {type === 'google' ? <GoogleIcon /> : <FeidIcon />}
+        </span>
+        <span className="fpt-sso-provider__label">{label}</span>
+        <span className="fpt-sso-provider__arrow" aria-hidden="true"><ArrowIcon /></span>
+      </button>
+    );
+  });
+};
+
+SocialAuthProviders.defaultProps = {
+  referrer: LOGIN_PAGE,
+  socialAuthProviders: [],
+};
+
+SocialAuthProviders.propTypes = {
+  referrer: PropTypes.string,
+  socialAuthProviders: PropTypes.arrayOf(PropTypes.shape({
+    id: PropTypes.string,
+    name: PropTypes.string,
+    iconClass: PropTypes.string,
+    iconImage: PropTypes.string,
+    loginUrl: PropTypes.string,
+    registerUrl: PropTypes.string,
+    skipRegistrationForm: PropTypes.bool,
+  })),
+};
+
+export default SocialAuthProviders;
+`);
+
+let scss = fs.readFileSync(paths.scss, 'utf8');
+const styleMarker = 'FPT_AUTHN_CANONICAL_V1';
+if (!scss.includes(styleMarker)) {
+  scss += String.raw`
+
+/* FPT_AUTHN_CANONICAL_V1 */
 :root {
-  --fpt-primary:#0B3B82;
-  --fpt-primary-dark:#072B61;
-  --fpt-accent:#F36F21;
-  --fpt-auth-left:53%;
+  --fpt-auth-brand:#071A33;
+  --fpt-auth-primary:#0B3B82;
+  --fpt-auth-primary-hover:#072F69;
+  --fpt-auth-accent:#F36F21;
+  --fpt-auth-text:#173B68;
+  --fpt-auth-border:#D7E0EB;
+  --fpt-auth-surface:#FFFFFF;
 }
 
-html,body,#root {
-  width:100%;
-  min-height:100%;
+html,
+body,
+#root {
+  width:100%!important;
+  min-width:0!important;
+  min-height:100%!important;
   margin:0!important;
   padding:0!important;
-  background:var(--fpt-primary)!important;
-  color-scheme:light;
+  background:var(--fpt-auth-surface)!important;
+  background-image:none!important;
+  color-scheme:light!important;
 }
-body { overflow-x:hidden; }
-.layout,.layout * { box-sizing:border-box; }
+
+body { overflow-x:hidden!important; }
+.extra-large-screen-top-stripe,
+.medium-screen-top-stripe,
+.small-screen-top-stripe { display:none!important; }
+
 .layout {
-  width:100vw!important;
+  box-sizing:border-box!important;
+  width:100%!important;
   max-width:none!important;
+  min-width:0!important;
+  min-height:100vh!important;
+  min-height:100dvh!important;
   margin:0!important;
   padding:0!important;
   border:0!important;
   border-radius:0!important;
   box-shadow:none!important;
-  background:#fff!important;
+  background:var(--fpt-auth-surface)!important;
+  background-image:none!important;
 }
-.extra-large-screen-top-stripe,.medium-screen-top-stripe,.small-screen-top-stripe { display:none!important; }
-.bg-primary-400,.bg-primary-500 { background-color:var(--fpt-primary)!important; }
-.text-accent-a { color:var(--fpt-accent)!important; }
-.btn-primary { background:var(--fpt-primary)!important; border-color:var(--fpt-primary)!important; }
-.btn-primary:hover,.btn-primary:focus { background:var(--fpt-primary-dark)!important; border-color:var(--fpt-primary-dark)!important; }
+.layout *,
+.layout *::before,
+.layout *::after { box-sizing:border-box; }
 
-.fpt-auth-visual {
-  position:relative;
-  overflow:hidden;
+.fpt-auth-visual,
+.fpt-auth-panel {
   margin:0!important;
-  padding:0!important;
   border:0!important;
   border-radius:0!important;
   box-shadow:none!important;
-  background:var(--fpt-primary);
+  background:var(--fpt-auth-brand)!important;
+  background-image:none!important;
 }
+.fpt-auth-visual { position:relative; overflow:hidden; }
 .fpt-auth-panel {
   position:relative;
   display:flex;
   flex-direction:column;
-  margin:0;
-  background:var(--fpt-primary)!important;
-  background-image:none!important;
-  color:#fff;
+  width:100%;
+  color:#FFFFFF;
 }
 .fpt-auth-logo-link {
   position:absolute;
-  top:clamp(32px,3vw,48px);
-  left:clamp(36px,3.5vw,56px);
   z-index:3;
   display:inline-flex;
   width:max-content;
-  max-width:calc(100% - 72px);
-  visibility:visible!important;
-  opacity:1!important;
+  max-width:calc(100% - 40px);
   text-decoration:none!important;
 }
 .fpt-auth-logo {
-  display:block;
+  display:block!important;
   width:220px;
   max-width:100%!important;
-  max-height:none!important;
-  height:auto;
+  height:auto!important;
   object-fit:contain;
   object-position:left center;
   filter:none!important;
@@ -167,120 +556,379 @@ body { overflow-x:hidden; }
 .fpt-auth-copy {
   display:flex;
   align-items:center;
-  gap:34px;
+  gap:30px;
+  width:min(560px,82%);
   margin:auto;
-  width:min(570px,82%);
 }
 .fpt-auth-slash {
   flex:0 0 auto;
   width:0;
-  height:190px;
-  border-left:6px solid var(--fpt-accent);
+  height:172px;
+  border-left:6px solid var(--fpt-auth-accent);
   transform:skewX(-12deg);
   border-radius:999px;
 }
 .fpt-auth-copy h1 {
   margin:0;
-  color:#fff;
-  font-size:clamp(48px,4.15vw,70px);
+  color:#FFFFFF!important;
+  font-size:clamp(48px,4.2vw,70px);
   line-height:.98;
   letter-spacing:-.05em;
   font-weight:780;
 }
-.fpt-auth-copy h1 span,.fpt-auth-copy h1 em { display:block; white-space:nowrap; }
+.fpt-auth-copy h1 span,
+.fpt-auth-copy h1 em { display:block; white-space:nowrap; }
 .fpt-auth-copy h1 em {
   margin-top:10px;
-  color:#FF9A5C;
+  color:#FF9A5C!important;
   font-style:normal;
   font-weight:850;
 }
 
-.fpt-auth-wedge { position:relative; overflow:hidden; margin:0; background:#fff; }
-.fpt-auth-wedge::before {
-  content:'';
-  position:absolute;
-  inset:0;
-  background:var(--fpt-primary);
-  clip-path:polygon(0 0,100% 0,0 100%);
-}
-
 .layout > .content {
-  position:relative;
-  z-index:1;
+  box-sizing:border-box!important;
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
   margin:0!important;
   border:0!important;
   border-radius:0!important;
   box-shadow:none!important;
-  background:#fff!important;
+  background:var(--fpt-auth-surface)!important;
+  background-image:none!important;
 }
-#main-content {
-  width:min(500px,100%);
-  max-width:500px;
-  margin:0;
-  background:transparent!important;
+.layout > .content > div {
+  width:100%!important;
+  max-width:430px!important;
+  min-width:0!important;
+  margin:0 auto!important;
+}
+#main-content,
+#main-content.main-content {
+  box-sizing:border-box!important;
+  width:100%!important;
+  max-width:430px!important;
+  min-width:0!important;
+  margin:0!important;
+  padding:0!important;
   border:0!important;
   border-radius:0!important;
   box-shadow:none!important;
-  padding:0!important;
+  background:transparent!important;
 }
-#main-content h1,#main-content h2,#main-content h3 { color:#173B68; letter-spacing:-.02em; }
-#main-content .form-control { min-height:48px; border-radius:5px; border-color:#9DA8B5; background:#fff; color:#172B45; }
-#main-content .form-control:focus { border-color:#5B7FA9; box-shadow:0 0 0 3px rgba(11,59,130,.08); }
-#main-content .btn { min-height:47px; border-radius:24px; font-weight:750; }
+
+.fpt-sso-login,
+.fpt-sso-auth,
+.fpt-sso-auth__providers {
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
+}
+.fpt-sso-login { margin:0!important; padding:0!important; }
+.fpt-sso-auth__title {
+  margin:0 0 22px!important;
+  color:var(--fpt-auth-text)!important;
+  font-size:24px!important;
+  line-height:1.2!important;
+  letter-spacing:-.025em!important;
+  font-weight:750!important;
+}
+.fpt-sso-auth__providers {
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.fpt-sso-provider {
+  position:relative;
+  display:grid;
+  grid-template-columns:38px minmax(0,1fr) 20px;
+  align-items:center;
+  gap:14px;
+  width:100%!important;
+  min-width:0!important;
+  min-height:62px;
+  margin:0;
+  padding:10px 16px;
+  border:1px solid transparent;
+  border-radius:14px;
+  font-family:inherit;
+  font-size:16px;
+  font-weight:700;
+  line-height:1.25;
+  text-align:left;
+  cursor:pointer;
+  transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease,background-color .16s ease;
+  -webkit-tap-highlight-color:transparent;
+}
+.fpt-sso-provider:hover { transform:translateY(-1px); }
+.fpt-sso-provider:active { transform:translateY(0); }
+.fpt-sso-provider:focus-visible { outline:3px solid rgba(243,111,33,.34); outline-offset:3px; }
+.fpt-sso-provider__icon {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:38px;
+  height:38px;
+  border-radius:10px;
+  overflow:hidden;
+}
+.fpt-sso-provider__icon svg { display:block; width:28px; height:28px; flex:none; }
+.fpt-sso-provider__label { min-width:0; white-space:nowrap; }
+.fpt-sso-provider__arrow {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:20px;
+  height:20px;
+  opacity:.72;
+}
+.fpt-sso-provider__arrow svg { width:18px; height:18px; }
+.fpt-sso-provider--feid {
+  color:#FFFFFF!important;
+  background:var(--fpt-auth-primary)!important;
+  border-color:var(--fpt-auth-primary)!important;
+  box-shadow:0 10px 24px rgba(11,59,130,.18);
+}
+.fpt-sso-provider--feid:hover,
+.fpt-sso-provider--feid:focus {
+  color:#FFFFFF!important;
+  background:var(--fpt-auth-primary-hover)!important;
+  border-color:var(--fpt-auth-primary-hover)!important;
+  box-shadow:0 14px 30px rgba(11,59,130,.24);
+}
+.fpt-sso-provider--feid .fpt-sso-provider__icon { background:#FFFFFF; }
+.fpt-sso-provider--google {
+  color:#24354B!important;
+  background:#FFFFFF!important;
+  border-color:var(--fpt-auth-border)!important;
+  box-shadow:0 8px 20px rgba(23,59,104,.07);
+}
+.fpt-sso-provider--google:hover {
+  color:#173B68!important;
+  background:#FBFCFE!important;
+  border-color:#BFCBDD!important;
+  box-shadow:0 12px 26px rgba(23,59,104,.12);
+}
+.fpt-sso-provider--google .fpt-sso-provider__icon {
+  background:#FFFFFF;
+  box-shadow:inset 0 0 0 1px #E4E9F0;
+}
+.fpt-sso-auth__skeleton { width:100%; }
+.fpt-sso-auth__skeleton > span { display:flex; flex-direction:column; gap:14px; }
+.fpt-sso-auth__skeleton .react-loading-skeleton { border-radius:14px!important; }
+.fpt-sso-auth__empty {
+  width:100%;
+  padding:14px 16px;
+  border:1px solid #F1C9B2;
+  border-radius:12px;
+  background:#FFF8F3;
+  color:#7A3512;
+  font-size:14px;
+  line-height:1.45;
+}
 
 @media (min-width:1200px) {
-  html,body,#root { height:100%; min-height:0; overflow:hidden; }
-  .layout {
-    height:100vh!important;
-    height:100dvh!important;
+  html, body, #root {
+    height:100%!important;
     min-height:100vh!important;
     min-height:100dvh!important;
-    display:grid!important;
-    grid-template-columns:var(--fpt-auth-left) calc(100% - var(--fpt-auth-left));
-    align-items:stretch!important;
     overflow:hidden!important;
   }
-  .fpt-auth-visual--large { width:100%!important; height:100%!important; display:flex!important; }
-  .fpt-auth-visual--large .fpt-auth-panel { width:82%; height:100%; }
-  .fpt-auth-visual--large .fpt-auth-wedge { width:18%; height:100%; }
+  .layout {
+    display:grid!important;
+    grid-template-columns:minmax(0,54%) minmax(420px,46%)!important;
+    grid-template-rows:minmax(0,1fr)!important;
+    align-items:stretch!important;
+    height:100vh!important;
+    height:100dvh!important;
+    max-height:100dvh!important;
+    overflow:hidden!important;
+  }
+  .fpt-auth-visual--large {
+    display:block!important;
+    grid-column:1!important;
+    grid-row:1!important;
+    width:100%!important;
+    height:100%!important;
+    min-width:0!important;
+    min-height:100%!important;
+  }
+  .fpt-auth-visual--large .fpt-auth-panel { height:100%!important; min-height:100%!important; }
+  .fpt-auth-visual--large .fpt-auth-logo-link { top:clamp(34px,4vh,54px)!important; left:clamp(38px,4vw,68px)!important; }
+  .fpt-auth-visual--large .fpt-auth-logo { width:220px!important; }
   .layout > .content {
+    display:flex!important;
+    grid-column:2!important;
+    grid-row:1!important;
+    align-items:center!important;
+    justify-content:center!important;
+    height:100%!important;
+    min-height:0!important;
+    padding:48px clamp(44px,5vw,86px)!important;
+    overflow:auto!important;
+  }
+}
+
+@media (min-width:992px) and (max-width:1199.98px) {
+  html, body, #root {
+    height:100%!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:hidden!important;
+  }
+  .layout {
+    display:grid!important;
+    grid-template-columns:minmax(0,52%) minmax(400px,48%)!important;
+    grid-template-rows:minmax(0,1fr)!important;
+    align-items:stretch!important;
+    height:100vh!important;
+    height:100dvh!important;
+    max-height:100dvh!important;
+    overflow:hidden!important;
+  }
+  .fpt-auth-visual--medium {
+    display:block!important;
+    grid-column:1!important;
+    grid-row:1!important;
+    width:100%!important;
+    height:100%!important;
+    min-height:100%!important;
+  }
+  .fpt-auth-visual--medium .fpt-auth-panel { height:100%!important; min-height:100%!important; }
+  .fpt-auth-visual--medium .fpt-auth-logo-link { top:36px!important; left:40px!important; }
+  .fpt-auth-visual--medium .fpt-auth-logo { width:190px!important; }
+  .fpt-auth-visual--medium .fpt-auth-copy { width:min(470px,82%)!important; gap:24px!important; }
+  .fpt-auth-visual--medium .fpt-auth-slash { height:132px!important; border-left-width:5px!important; }
+  .fpt-auth-visual--medium .fpt-auth-copy h1 { font-size:clamp(38px,4.1vw,52px)!important; line-height:1!important; }
+  .layout > .content {
+    display:flex!important;
+    grid-column:2!important;
+    grid-row:1!important;
+    align-items:center!important;
+    justify-content:center!important;
     width:100%!important;
     height:100%!important;
     min-height:0!important;
-    display:flex!important;
-    align-items:center!important;
-    justify-content:center!important;
-    overflow:hidden!important;
-    padding:44px clamp(56px,7vw,126px)!important;
+    padding:44px clamp(34px,4vw,58px)!important;
+    overflow:auto!important;
   }
 }
 
-@media (min-width:768px) and (max-width:1199.98px) {
-  .layout { min-height:100vh!important; display:flex!important; flex-direction:column!important; align-items:stretch!important; }
-  .fpt-auth-visual--medium { width:100%; min-height:230px; }
-  .fpt-auth-visual--medium .fpt-auth-panel { min-height:230px; width:100%; }
-  .fpt-auth-visual--medium .fpt-auth-logo-link { top:24px; left:32px; }
-  .fpt-auth-visual--medium .fpt-auth-logo { width:176px; }
-  .fpt-auth-visual--medium .fpt-auth-copy { gap:20px; width:min(650px,84%); padding-top:54px; }
-  .fpt-auth-visual--medium .fpt-auth-slash { height:88px; border-left-width:5px; }
-  .fpt-auth-visual--medium .fpt-auth-copy h1 { font-size:38px; line-height:1; }
-  .layout > .content { width:100%!important; padding:38px 24px 50px!important; display:flex!important; justify-content:center!important; }
+@media (min-width:768px) and (max-width:991.98px) {
+  html, body, #root { min-height:100vh!important; min-height:100dvh!important; overflow:auto!important; }
+  .layout {
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:stretch!important;
+    justify-content:flex-start!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:visible!important;
+  }
+  .fpt-auth-visual--medium,
+  .fpt-auth-visual--medium .fpt-auth-panel {
+    display:block!important;
+    flex:0 0 250px!important;
+    width:100%!important;
+    min-height:250px!important;
+    height:250px!important;
+  }
+  .fpt-auth-visual--medium .fpt-auth-logo-link { top:28px!important; left:34px!important; }
+  .fpt-auth-visual--medium .fpt-auth-logo { width:180px!important; }
+  .fpt-auth-visual--medium .fpt-auth-copy { width:min(650px,82%)!important; gap:22px!important; padding-top:58px!important; }
+  .fpt-auth-visual--medium .fpt-auth-slash { height:92px!important; }
+  .fpt-auth-visual--medium .fpt-auth-copy h1 { font-size:40px!important; }
+  .layout > .content {
+    display:flex!important;
+    flex:1 0 auto!important;
+    align-items:center!important;
+    justify-content:center!important;
+    min-height:calc(100dvh - 250px)!important;
+    padding:42px 28px 52px!important;
+  }
 }
 
 @media (max-width:767.98px) {
-  .layout { min-height:100vh!important; display:flex!important; flex-direction:column!important; align-items:stretch!important; }
-  .fpt-auth-visual--small { width:100%; min-height:208px; }
-  .fpt-auth-visual--small .fpt-auth-panel { min-height:208px; width:100%; }
-  .fpt-auth-visual--small .fpt-auth-logo-link { top:20px; left:24px; max-width:calc(100% - 48px); }
-  .fpt-auth-visual--small .fpt-auth-logo { width:164px; }
-  .fpt-auth-visual--small .fpt-auth-copy { width:auto; margin:auto 24px 24px; padding-top:82px; }
-  .fpt-auth-visual--small .fpt-auth-copy h1 { font-size:30px; line-height:1; }
-  .fpt-auth-copy h1 span,.fpt-auth-copy h1 em { white-space:normal; }
-  .layout > .content { width:100%!important; padding:26px 18px 36px!important; display:flex!important; justify-content:center!important; }
-  #main-content { width:100%; max-width:470px; }
+  html, body, #root { min-width:0!important; min-height:100vh!important; min-height:100dvh!important; overflow:auto!important; }
+  .layout {
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:stretch!important;
+    justify-content:flex-start!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:visible!important;
+  }
+  .fpt-auth-visual--small,
+  .fpt-auth-visual--small .fpt-auth-panel {
+    display:block!important;
+    flex:0 0 190px!important;
+    width:100%!important;
+    min-width:0!important;
+    min-height:190px!important;
+    height:190px!important;
+  }
+  .fpt-auth-visual--small .fpt-auth-logo-link { top:18px!important; left:20px!important; max-width:calc(100% - 40px)!important; }
+  .fpt-auth-visual--small .fpt-auth-logo { width:150px!important; }
+  .fpt-auth-visual--small .fpt-auth-copy { width:auto!important; margin:auto 20px 22px!important; padding-top:70px!important; }
+  .fpt-auth-visual--small .fpt-auth-copy h1 { font-size:28px!important; line-height:1.02!important; }
+  .fpt-auth-copy h1 span,
+  .fpt-auth-copy h1 em { white-space:normal; }
+  .layout > .content {
+    display:flex!important;
+    flex:1 0 auto!important;
+    align-items:flex-start!important;
+    justify-content:center!important;
+    min-width:0!important;
+    min-height:calc(100dvh - 190px)!important;
+    padding:30px 20px 40px!important;
+  }
+  .layout > .content > div,
+  #main-content,
+  #main-content.main-content { width:100%!important; max-width:430px!important; min-width:0!important; }
+  .fpt-sso-auth__title { margin-bottom:18px!important; font-size:21px!important; }
+  .fpt-sso-provider {
+    min-height:56px!important;
+    grid-template-columns:34px minmax(0,1fr) 18px!important;
+    gap:10px!important;
+    padding:9px 13px!important;
+    border-radius:12px;
+    font-size:15px!important;
+  }
+  .fpt-sso-provider__icon { width:34px; height:34px; border-radius:9px; }
+  .fpt-sso-provider__icon svg { width:25px; height:25px; }
+  .fpt-sso-provider__label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 }
 `;
-    fs.writeFileSync(scss, current, 'utf8');
+  write(paths.scss, scss);
+}
+
+const verification = {
+  [paths.large]: 'FPT_AUTHN_CANONICAL_LAYOUT_V1',
+  [paths.medium]: 'FPT_AUTHN_CANONICAL_LAYOUT_V1',
+  [paths.small]: 'FPT_AUTHN_CANONICAL_LAYOUT_V1',
+  [paths.logistration]: 'FPT_SSO_ONLY_LOGISTRATION_V1',
+  [paths.login]: 'FPT_SSO_ONLY_LOGIN_V3',
+  [paths.thirdPartyAuth]: 'FPT_SSO_ONLY_TPA_V3',
+  [paths.socialAuthProviders]: 'FPT_SSO_ONLY_PROVIDERS_V3',
+  [paths.scss]: 'FPT_AUTHN_CANONICAL_V1',
+};
+for (const [path, marker] of Object.entries(verification)) {
+  const rendered = fs.readFileSync(path, 'utf8');
+  if (!rendered.includes(marker)) {
+    throw new Error(`FPT Authn canonical verification failed: ${path}`);
   }
+}
+
+const loginSource = fs.readFileSync(paths.login, 'utf8');
+for (const forbidden of ['sign-in-form', 'PasswordField', 'loginRequest', 'forgot-password']) {
+  if (loginSource.includes(forbidden)) {
+    throw new Error(`FPT Authn local-login control leaked into LoginPage: ${forbidden}`);
+  }
+}
+
+const logistrationSource = fs.readFileSync(paths.logistration, 'utf8');
+if (!logistrationSource.includes('!fptSsoOnlyAuth')) {
+  throw new Error('FPT Authn outer Sign in heading is not controlled by source logic');
 }
 JS2
