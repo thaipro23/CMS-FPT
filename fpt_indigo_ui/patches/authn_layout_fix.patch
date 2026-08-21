@@ -1,0 +1,424 @@
+# Final FPT Authn SSO responsive shell fix.
+# Applied after authn_sso.patch so it can override legacy/Paragon layout rules
+# without changing FEID/Google behavior.
+RUN node - <<'JS5'
+const fs = require('fs');
+
+const scssPath = '/openedx/app/src/index.scss';
+if (!fs.existsSync(scssPath)) {
+  throw new Error(`Authn stylesheet not found: ${scssPath}`);
+}
+
+let scss = fs.readFileSync(scssPath, 'utf8');
+const marker = 'FPT Polytechnic V15 SSO responsive shell';
+if (!scss.includes(marker)) {
+  scss += String.raw`
+
+/* FPT Polytechnic V15 SSO responsive shell */
+:root {
+  --fpt-sso-brand:#071A33;
+  --fpt-sso-primary:#0B3B82;
+  --fpt-sso-primary-hover:#072F69;
+  --fpt-sso-accent:#F36F21;
+  --fpt-sso-text:#173B68;
+  --fpt-sso-border:#D7E0EB;
+  --fpt-sso-surface:#FFFFFF;
+}
+
+html,
+body,
+#root {
+  width:100%!important;
+  min-width:0!important;
+  min-height:100%!important;
+  margin:0!important;
+  padding:0!important;
+  background:var(--fpt-sso-surface)!important;
+  background-image:none!important;
+  color-scheme:light!important;
+}
+
+body {
+  overflow-x:hidden!important;
+}
+
+.extra-large-screen-top-stripe,
+.medium-screen-top-stripe,
+.small-screen-top-stripe {
+  display:none!important;
+  width:0!important;
+  height:0!important;
+  min-height:0!important;
+  margin:0!important;
+  padding:0!important;
+  background:none!important;
+}
+
+.layout {
+  box-sizing:border-box!important;
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
+  min-height:100vh!important;
+  min-height:100dvh!important;
+  margin:0!important;
+  padding:0!important;
+  overflow:hidden!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:var(--fpt-sso-surface)!important;
+  background-image:none!important;
+}
+
+.layout *,
+.layout *::before,
+.layout *::after {
+  box-sizing:border-box;
+}
+
+.fpt-auth-visual,
+.fpt-auth-panel {
+  margin:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:var(--fpt-sso-brand)!important;
+  background-color:var(--fpt-sso-brand)!important;
+  background-image:none!important;
+}
+
+.fpt-auth-visual::before,
+.fpt-auth-visual::after,
+.fpt-auth-panel::before,
+.fpt-auth-panel::after {
+  content:none!important;
+  display:none!important;
+  background:none!important;
+}
+
+.fpt-auth-wedge {
+  display:none!important;
+}
+
+.layout > .content {
+  box-sizing:border-box!important;
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
+  margin:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:var(--fpt-sso-surface)!important;
+  background-color:var(--fpt-sso-surface)!important;
+  background-image:none!important;
+}
+
+.layout > .content > div {
+  width:100%!important;
+  max-width:430px!important;
+  min-width:0!important;
+  margin:0 auto!important;
+}
+
+#main-content,
+#main-content.main-content {
+  box-sizing:border-box!important;
+  width:100%!important;
+  max-width:430px!important;
+  min-width:0!important;
+  margin:0!important;
+  padding:0!important;
+  border:0!important;
+  border-radius:0!important;
+  box-shadow:none!important;
+  background:transparent!important;
+}
+
+/* Password login is intentionally unavailable: AP/ACMS provisions SSO-only accounts. */
+#main-content > h3 {
+  display:none!important;
+}
+
+.fpt-sso-login,
+.fpt-sso-auth,
+.fpt-sso-auth__providers {
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
+}
+
+.fpt-sso-login {
+  margin:0!important;
+  padding:0!important;
+}
+
+.fpt-sso-auth__title {
+  margin:0 0 22px!important;
+  color:var(--fpt-sso-text)!important;
+  font-size:24px!important;
+  line-height:1.2!important;
+  letter-spacing:-.025em!important;
+  font-weight:750!important;
+}
+
+.fpt-sso-provider {
+  width:100%!important;
+  max-width:none!important;
+  min-width:0!important;
+}
+
+.fpt-sso-provider--feid {
+  color:#FFFFFF!important;
+  background:var(--fpt-sso-primary)!important;
+  border-color:var(--fpt-sso-primary)!important;
+}
+
+.fpt-sso-provider--feid:hover,
+.fpt-sso-provider--feid:focus {
+  color:#FFFFFF!important;
+  background:var(--fpt-sso-primary-hover)!important;
+  border-color:var(--fpt-sso-primary-hover)!important;
+}
+
+.fpt-sso-provider--google {
+  color:#24354B!important;
+  background:#FFFFFF!important;
+  border-color:var(--fpt-sso-border)!important;
+}
+
+@media (min-width:1200px) {
+  html,
+  body,
+  #root {
+    height:100%!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:hidden!important;
+  }
+
+  .layout {
+    display:grid!important;
+    grid-template-columns:minmax(0,54%) minmax(420px,46%)!important;
+    grid-template-rows:minmax(0,1fr)!important;
+    align-items:stretch!important;
+    height:100vh!important;
+    height:100dvh!important;
+    max-height:100dvh!important;
+  }
+
+  .fpt-auth-visual--large {
+    display:block!important;
+    width:100%!important;
+    height:100%!important;
+    min-width:0!important;
+    min-height:100%!important;
+  }
+
+  .fpt-auth-visual--large .fpt-auth-panel {
+    width:100%!important;
+    height:100%!important;
+    min-height:100%!important;
+  }
+
+  .fpt-auth-visual--large .fpt-auth-logo-link {
+    top:clamp(34px,4vh,54px)!important;
+    left:clamp(38px,4vw,68px)!important;
+  }
+
+  .fpt-auth-visual--large .fpt-auth-logo {
+    width:220px!important;
+  }
+
+  .fpt-auth-visual--large .fpt-auth-copy {
+    width:min(560px,80%)!important;
+    gap:30px!important;
+  }
+
+  .fpt-auth-visual--large .fpt-auth-slash {
+    height:172px!important;
+  }
+
+  .fpt-auth-visual--large .fpt-auth-copy h1 {
+    font-size:clamp(48px,4.2vw,70px)!important;
+  }
+
+  .layout > .content {
+    display:flex!important;
+    align-items:center!important;
+    justify-content:center!important;
+    height:100%!important;
+    min-height:0!important;
+    padding:48px clamp(44px,5vw,86px)!important;
+    overflow:auto!important;
+  }
+}
+
+@media (min-width:768px) and (max-width:1199.98px) {
+  html,
+  body,
+  #root {
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:auto!important;
+  }
+
+  .layout {
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:stretch!important;
+    justify-content:flex-start!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:visible!important;
+  }
+
+  .fpt-auth-visual--medium {
+    display:block!important;
+    flex:0 0 250px!important;
+    width:100%!important;
+    min-height:250px!important;
+    height:250px!important;
+  }
+
+  .fpt-auth-visual--medium .fpt-auth-panel {
+    width:100%!important;
+    min-height:250px!important;
+    height:250px!important;
+  }
+
+  .fpt-auth-visual--medium .fpt-auth-logo-link {
+    top:28px!important;
+    left:34px!important;
+  }
+
+  .fpt-auth-visual--medium .fpt-auth-logo {
+    width:180px!important;
+  }
+
+  .fpt-auth-visual--medium .fpt-auth-copy {
+    width:min(650px,82%)!important;
+    gap:22px!important;
+    padding-top:58px!important;
+  }
+
+  .fpt-auth-visual--medium .fpt-auth-slash {
+    height:92px!important;
+  }
+
+  .fpt-auth-visual--medium .fpt-auth-copy h1 {
+    font-size:40px!important;
+  }
+
+  .layout > .content {
+    display:flex!important;
+    flex:1 0 auto!important;
+    align-items:center!important;
+    justify-content:center!important;
+    min-height:calc(100dvh - 250px)!important;
+    padding:42px 28px 52px!important;
+  }
+}
+
+@media (max-width:767.98px) {
+  html,
+  body,
+  #root {
+    min-width:0!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:auto!important;
+  }
+
+  .layout {
+    display:flex!important;
+    flex-direction:column!important;
+    align-items:stretch!important;
+    justify-content:flex-start!important;
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    overflow:visible!important;
+  }
+
+  .fpt-auth-visual--small {
+    display:block!important;
+    flex:0 0 190px!important;
+    width:100%!important;
+    min-width:0!important;
+    min-height:190px!important;
+    height:190px!important;
+  }
+
+  .fpt-auth-visual--small .fpt-auth-panel {
+    width:100%!important;
+    min-height:190px!important;
+    height:190px!important;
+  }
+
+  .fpt-auth-visual--small .fpt-auth-logo-link {
+    top:18px!important;
+    left:20px!important;
+    max-width:calc(100% - 40px)!important;
+  }
+
+  .fpt-auth-visual--small .fpt-auth-logo {
+    width:150px!important;
+  }
+
+  .fpt-auth-visual--small .fpt-auth-copy {
+    width:auto!important;
+    margin:auto 20px 22px!important;
+    padding-top:70px!important;
+  }
+
+  .fpt-auth-visual--small .fpt-auth-copy h1 {
+    font-size:28px!important;
+    line-height:1.02!important;
+  }
+
+  .layout > .content {
+    display:flex!important;
+    flex:1 0 auto!important;
+    align-items:flex-start!important;
+    justify-content:center!important;
+    min-width:0!important;
+    min-height:calc(100dvh - 190px)!important;
+    padding:30px 20px 40px!important;
+  }
+
+  .layout > .content > div,
+  #main-content,
+  #main-content.main-content {
+    width:100%!important;
+    max-width:430px!important;
+    min-width:0!important;
+  }
+
+  .fpt-sso-auth__title {
+    margin-bottom:18px!important;
+    font-size:21px!important;
+  }
+
+  .fpt-sso-provider {
+    min-height:56px!important;
+    grid-template-columns:34px minmax(0,1fr) 18px!important;
+    gap:10px!important;
+    padding:9px 13px!important;
+    font-size:15px!important;
+  }
+
+  .fpt-sso-provider__label {
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+}
+`;
+  fs.writeFileSync(scssPath, scss, 'utf8');
+}
+
+if (!fs.readFileSync(scssPath, 'utf8').includes(marker)) {
+  throw new Error('FPT Authn V15 responsive shell verification failed');
+}
+JS5
