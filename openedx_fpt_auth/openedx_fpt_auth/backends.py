@@ -23,19 +23,21 @@ def _parse_mapping(value):
     return parsed if isinstance(parsed, Mapping) else None
 
 
-def extract_roll_number(response):
-    """Extract the first non-empty FEID RollNumber using the legacy contract."""
+def extract_roll_numbers(response):
+    """Extract every unique non-empty FEID RollNumber from projectCampuses."""
 
     project_campuses = response.get("projectCampuses") or []
     if isinstance(project_campuses, str):
         try:
             project_campuses = json.loads(project_campuses)
         except (TypeError, ValueError):
-            return None
+            return []
 
     if not isinstance(project_campuses, list):
-        return None
+        return []
 
+    roll_numbers = []
+    seen = set()
     for entry in project_campuses:
         campus = _parse_mapping(entry)
         if not campus:
@@ -44,9 +46,21 @@ def extract_roll_number(response):
         if roll_number is None:
             continue
         normalized = str(roll_number).strip()
-        if normalized:
-            return normalized
-    return None
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        roll_numbers.append(normalized)
+    return roll_numbers
+
+
+def extract_roll_number(response):
+    """Return the first FEID RollNumber for backwards-compatible user details."""
+
+    roll_numbers = extract_roll_numbers(response)
+    return roll_numbers[0] if roll_numbers else None
 
 
 class FEIDOAuth2(BaseOAuth2PKCE):
