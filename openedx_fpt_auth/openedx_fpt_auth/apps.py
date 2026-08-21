@@ -34,7 +34,6 @@ def install_pipeline(django_settings):
             LEGACY_STAGE,
             LINK_STAGE,
             CREATE_GUARD_STAGE,
-            FPT_COOKIE_STAGE,
         }
     ]
     try:
@@ -52,13 +51,28 @@ def install_pipeline(django_settings):
             raise ImproperlyConfigured("FPT Auth resolver must run before create_user")
         pipeline.insert(create_user_index, CREATE_GUARD_STAGE)
 
-    try:
-        cookie_index = pipeline.index(OPENEDX_COOKIE_STAGE)
-    except ValueError as exc:
-        raise ImproperlyConfigured(
-            "FPT Auth cannot find the Open edX set_logged_in_cookies pipeline stage"
-        ) from exc
-    pipeline[cookie_index] = FPT_COOKIE_STAGE
+    if FPT_COOKIE_STAGE in pipeline:
+        # Keep exactly one FPT cookie stage and remove any stale upstream stage
+        # if settings were processed more than once.
+        seen_fpt_cookie_stage = False
+        normalized_pipeline = []
+        for stage in pipeline:
+            if stage == OPENEDX_COOKIE_STAGE:
+                continue
+            if stage == FPT_COOKIE_STAGE:
+                if seen_fpt_cookie_stage:
+                    continue
+                seen_fpt_cookie_stage = True
+            normalized_pipeline.append(stage)
+        pipeline = normalized_pipeline
+    else:
+        try:
+            cookie_index = pipeline.index(OPENEDX_COOKIE_STAGE)
+        except ValueError as exc:
+            raise ImproperlyConfigured(
+                "FPT Auth cannot find the Open edX set_logged_in_cookies pipeline stage"
+            ) from exc
+        pipeline[cookie_index] = FPT_COOKIE_STAGE
 
     django_settings.SOCIAL_AUTH_PIPELINE = pipeline
 
