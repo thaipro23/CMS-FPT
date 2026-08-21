@@ -31,8 +31,6 @@ log "Repository: $REPO_ROOT"
 log "Tutor root: $TUTOR_ROOT"
 log "Tutor plugin root: $PLUGIN_ROOT"
 
-# Never build a production-like image from tracked source that differs from the
-# checked-out commit. Untracked operational files are intentionally ignored.
 if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
   fail "Tracked source has local modifications. Commit/stash them before building FPT UI."
 fi
@@ -97,48 +95,51 @@ fi
 
 PATCH_DIR="$REPO_ROOT/fpt_indigo_ui/patches"
 AUTHN_PATCH="$PATCH_DIR/authn.patch"
-AUTHN_POLISH_PATCH="$PATCH_DIR/authn_polish.patch"
 OPENEDX_PATCH="$PATCH_DIR/openedx.patch"
 RUNTIME_PATCH="$PATCH_DIR/runtime.patch"
-for patch in "$AUTHN_PATCH" "$AUTHN_POLISH_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH"; do
+for patch in "$AUTHN_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH"; do
   [ -s "$patch" ] || fail "Missing FPT UI patch source: $patch"
 done
 
-python - "$FPT_PLUGIN" "$AUTHN_PATCH" "$AUTHN_POLISH_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH" <<'PYGUARD'
+python - "$FPT_PLUGIN" "$AUTHN_PATCH" "$OPENEDX_PATCH" "$RUNTIME_PATCH" <<'PYGUARD'
 from pathlib import Path
 import sys
 
-plugin, authn, authn_polish, openedx, runtime = [Path(x).read_text(encoding='utf-8') for x in sys.argv[1:]]
+plugin, authn, openedx, runtime = [Path(x).read_text(encoding='utf-8') for x in sys.argv[1:]]
 if '_read_patch("authn.patch")' not in plugin or '_read_patch("openedx.patch")' not in plugin:
-    raise SystemExit('Tutor plugin is not loading modular FPT patch sources')
+    raise SystemExit('Tutor plugin is not loading canonical FPT patch sources')
 if 'mfe-dockerfile-pre-npm-build-authn' not in plugin:
-    raise SystemExit('Authn patch must run at pre-npm-build after source copy')
-if 'mfe-dockerfile-post-npm-install-authn' in plugin:
-    raise SystemExit('obsolete Authn post-npm-install hook is still registered')
+    raise SystemExit('Authn canonical source transform must run after source copy')
+for obsolete in ('authn_polish.patch', 'authn_sso.patch', 'authn_layout_fix.patch', 'authn_laptop_layout_fix.patch'):
+    if f'_read_patch("{obsolete}")' in plugin:
+        raise SystemExit(f'obsolete stacked Authn patch is still active: {obsolete}')
 if "import React from 'react';" not in plugin or 'getConfig as getFptConfig' not in plugin:
     raise SystemExit('MFE runtime React/getConfig imports are incomplete')
 if 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' not in plugin:
     raise SystemExit('Authn must be pinned to the tested DefaultLayout')
-if "RUN node - <<'JS2'" not in authn:
-    raise SystemExit('Authn patch must use Node.js')
-if "RUN python - <<'PY2'" in authn:
-    raise SystemExit('Authn patch still contains Python heredoc')
+if 'MFE_CONFIG["FPT_SSO_ONLY_AUTH"] = True' not in plugin:
+    raise SystemExit('FPT SSO-only runtime flag is missing')
+if 'FPT_AUTHN_CANONICAL_V1' not in authn:
+    raise SystemExit('canonical Authn stylesheet/source marker is missing')
+for marker in (
+    'FPT_AUTHN_CANONICAL_LAYOUT_V1',
+    'FPT_SSO_ONLY_LOGISTRATION_V1',
+    'FPT_SSO_ONLY_LOGIN_V3',
+    'FPT_SSO_ONLY_TPA_V3',
+    'FPT_SSO_ONLY_PROVIDERS_V3',
+):
+    if marker not in authn:
+        raise SystemExit(f'canonical Authn marker is missing: {marker}')
 if authn.count("import React from 'react';") != 3:
-    raise SystemExit('all three Ulmo Authn layouts must preserve an explicit React import')
+    raise SystemExit('all three Ulmo Authn layouts must preserve explicit React imports')
 if authn.count('<img className="fpt-auth-logo fpt-auth-logo--white"') != 3:
-    raise SystemExit('all three Ulmo Authn layouts must render exactly one native white logo')
+    raise SystemExit('all three Ulmo Authn layouts must render exactly one white logo')
 if 'getConfig().LMS_BASE_URL || window.location.origin' not in authn:
     raise SystemExit('Authn white logo URL is missing the same-origin fallback')
-if 'FPT Polytechnic V12 white-logo dark-surface contract' not in authn_polish:
-    raise SystemExit('Authn white-logo dark-surface contract is missing')
-if 'FPT Polytechnic V13 solid-navy seamless wedge contract' not in authn_polish:
-    raise SystemExit('Authn solid-navy seamless wedge contract is missing')
-if '--fpt-auth-visual-surface:#071A33' not in authn_polish:
-    raise SystemExit('Authn solid-navy surface token is missing')
-if authn.count('<div className="fpt-auth-wedge"') != 1:
-    raise SystemExit('Authn must contain exactly one diagonal wedge element')
-if '.fpt-auth-wedge' not in authn or 'clip-path:polygon' not in authn:
-    raise SystemExit('approved single-wedge CSS is missing')
+if "for (const forbidden of ['sign-in-form', 'PasswordField', 'loginRequest', 'forgot-password'])" not in authn:
+    raise SystemExit('Authn local-login negative verification is missing')
+if '#main-content > h3' in authn:
+    raise SystemExit('Authn must not hide the outer Sign in heading with CSS; source logic must own it')
 if 'useEffect(' in runtime or 'getConfig()' in runtime:
     raise SystemExit('runtime patch contains unscoped React/getConfig dependency')
 if 'getFptConfig()' not in runtime:
@@ -147,7 +148,7 @@ if openedx.count('COPY --from=edx-platform /fpt_indigo_ui/assets/') != 5:
     raise SystemExit('expected exactly five vendored FPT asset COPY statements')
 if 'FptHeaderLogo' not in runtime or 'FptFooter' not in runtime:
     raise SystemExit('MFE runtime branding definitions are incomplete')
-if any('curl ' in data.lower() for data in (plugin, authn, authn_polish, openedx, runtime)):
+if any('curl ' in data.lower() for data in (plugin, authn, openedx, runtime)):
     raise SystemExit('FPT UI source must not download assets during build')
 print('[fpt-ui] Source guardrails PASS')
 PYGUARD
@@ -226,8 +227,6 @@ done
 log "Rendering Tutor environment"
 tutor config save
 
-# Verify Tutor-MFE resolved the custom Learning folder into the exact build
-# context used by the shared production MFE image.
 if [ "$SKIP_LEARNING_GUARD" != "1" ]; then
   MOUNTS_CHECK_FILE="$(mktemp)"
   tutor mounts list > "$MOUNTS_CHECK_FILE"
@@ -256,6 +255,7 @@ fi
 GENERATED_LMS_SETTINGS="$TUTOR_ROOT/env/apps/openedx/settings/lms/production.py"
 [ -f "$GENERATED_LMS_SETTINGS" ] || fail "Generated LMS production settings not found: $GENERATED_LMS_SETTINGS"
 grep -Fq 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive ENABLE_IMAGE_LAYOUT=False"
+grep -Fq 'MFE_CONFIG["FPT_SSO_ONLY_AUTH"] = True' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive FPT_SSO_ONLY_AUTH=True"
 log "Rendered LMS MFE configuration PASS"
 
 GENERATED_OPENEDX="$TUTOR_ROOT/env/build/openedx/Dockerfile"
@@ -272,12 +272,11 @@ MFE_DOCKERFILE="$TUTOR_ROOT/env/plugins/mfe/build/mfe/Dockerfile"
 MFE_ENV_CONFIG="$TUTOR_ROOT/env/plugins/mfe/build/mfe/env.config.jsx"
 [ -f "$MFE_DOCKERFILE" ] || fail "Generated MFE Dockerfile not found: $MFE_DOCKERFILE"
 [ -f "$MFE_ENV_CONFIG" ] || fail "Generated MFE env.config.jsx not found: $MFE_ENV_CONFIG"
-grep -Fq 'FPT Polytechnic V10 edX full-screen authn' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V10 layout patch"
-grep -Fq 'FPT Polytechnic V11 authn edge-to-edge lock' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V11 edge-to-edge patch"
-grep -Fq 'FPT Polytechnic V12 white-logo dark-surface contract' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V12 logo/surface contract"
-grep -Fq 'FPT Polytechnic V13 solid-navy seamless wedge contract' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain the FPT Authn V13 solid/seamless contract"
-grep -Fq "RUN node - <<'JS2'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn patch is not using Node.js"
-grep -Fq "RUN node - <<'JS3'" "$MFE_DOCKERFILE" || fail "Generated MFE Authn polish patch is not using Node.js"
+grep -Fq 'FPT_AUTHN_CANONICAL_V1' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain canonical FPT Authn"
+grep -Fq 'FPT_SSO_ONLY_LOGISTRATION_V1' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain source-level Logistration SSO guard"
+grep -Fq 'FPT_SSO_ONLY_LOGIN_V3' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain SSO-only LoginPage"
+grep -Fq 'FPT_SSO_ONLY_TPA_V3' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain canonical third-party auth"
+grep -Fq 'FPT_SSO_ONLY_PROVIDERS_V3' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile does not contain canonical provider buttons"
 grep -Fq "import React from 'react';" "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing explicit React import"
 grep -Fq 'getConfig as getFptConfig' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT getConfig alias"
 grep -Fq 'const FptHeaderLogo' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT header runtime"
@@ -296,17 +295,14 @@ import sys
 text = Path(sys.argv[1]).read_text(encoding='utf-8')
 common = text.find('######## authn (common)')
 source_copy = text.find('COPY --from=authn-src / /openedx/app', common)
-layout_marker = text.find('FPT Polytechnic V10 edX full-screen authn', common)
-polish_marker = text.find('FPT Polytechnic V11 authn edge-to-edge lock', common)
-brand_marker = text.find('FPT Polytechnic V12 white-logo dark-surface contract', common)
-seamless_marker = text.find('FPT Polytechnic V13 solid-navy seamless wedge contract', common)
+canonical = text.find('FPT_AUTHN_CANONICAL_V1', common)
 dev = text.find('######## authn (dev)', common)
-if min(common, source_copy, layout_marker, polish_marker, brand_marker, seamless_marker, dev) < 0:
-    raise SystemExit('could not resolve Authn stage/V10/V11/V12/V13 patch markers in generated MFE Dockerfile')
-if not (common < source_copy < layout_marker < polish_marker < brand_marker < seamless_marker < dev):
-    raise SystemExit('Authn patch ordering is unsafe: source COPY -> V10 layout -> V11 edge-to-edge -> V12 logo/surface -> V13 solid/seamless -> authn build is required')
-print('[fpt-ui] Generated Authn V10/V11/V12/V13 patch ordering PASS')
+if min(common, source_copy, canonical, dev) < 0:
+    raise SystemExit('could not resolve Authn stage/canonical marker in generated MFE Dockerfile')
+if not (common < source_copy < canonical < dev):
+    raise SystemExit('Authn ordering is unsafe: source COPY -> canonical FPT Authn -> authn build is required')
+print('[fpt-ui] Generated canonical Authn ordering PASS')
 PYORDER
 
 log "Generated MFE Dockerfile verified: $MFE_DOCKERFILE"
-log "Setup OK: Ulmo.4/Tutor 21.0.9 baseline, clean source, rendered config, Unit Reset Learning build mount, plugins linked, assets vendored, patch ordering verified"
+log "Setup OK: Ulmo.4/Tutor 21.0.9 baseline, clean source, rendered config, Unit Reset Learning build mount, plugins linked, assets vendored, canonical Authn verified"
