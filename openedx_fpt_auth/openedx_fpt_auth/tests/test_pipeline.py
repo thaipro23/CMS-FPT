@@ -6,9 +6,11 @@ from social_core.exceptions import AuthForbidden
 from social_core.pipeline.social_auth import associate_user
 from social_core.pipeline.user import create_user, user_details
 
+from common.djangoapps.third_party_auth import pipeline as openedx_tpa_pipeline
 from openedx_fpt_auth.pipeline import (
     associate_existing_user,
     block_supported_provider_user_creation,
+    set_logged_in_cookies_for_fpt_sso,
 )
 
 
@@ -255,3 +257,36 @@ def test_standard_pipeline_creates_social_link_but_not_auth_user():
         "user": user,
         "new_association": True,
     }
+
+
+def test_cookie_stage_delegates_to_unwrapped_openedx_partial():
+    """Avoid nesting Open edX's @partial.partial and duplicating current_partial."""
+
+    google_backend = backend("google-oauth2")
+    user = SimpleNamespace(has_usable_password=lambda: True)
+    strategy = SimpleNamespace()
+    current_partial = SimpleNamespace(backend="google-oauth2")
+
+    assert hasattr(set_logged_in_cookies_for_fpt_sso, "__wrapped__")
+
+    with patch.object(
+        openedx_tpa_pipeline.set_logged_in_cookies,
+        "__wrapped__",
+        return_value="delegated",
+    ) as upstream:
+        result = set_logged_in_cookies_for_fpt_sso.__wrapped__(
+            backend=google_backend,
+            user=user,
+            strategy=strategy,
+            auth_entry="login",
+            current_partial=current_partial,
+        )
+
+    assert result == "delegated"
+    upstream.assert_called_once_with(
+        backend=google_backend,
+        user=user,
+        strategy=strategy,
+        auth_entry="login",
+        current_partial=current_partial,
+    )
