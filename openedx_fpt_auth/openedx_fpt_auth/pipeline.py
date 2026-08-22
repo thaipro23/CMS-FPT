@@ -5,6 +5,7 @@ import logging
 from django.contrib.auth import get_user_model
 from django.shortcuts import redirect
 from social_core.exceptions import AuthForbidden
+from social_core.pipeline import partial
 
 from common.djangoapps.third_party_auth import pipeline as openedx_tpa_pipeline
 from openedx.core.djangoapps.user_authn import cookies as user_authn_cookies
@@ -143,6 +144,7 @@ def block_supported_provider_user_creation(backend, user=None, *args, **kwargs):
         _deny(backend, "user_missing_before_create_user")
 
 
+@partial.partial
 def set_logged_in_cookies_for_fpt_sso(
     backend=None,
     user=None,
@@ -159,6 +161,10 @@ def set_logged_in_cookies_for_fpt_sso(
     are intentionally SSO-only, so a missing local password is expected. This
     wrapper preserves the upstream behavior for every other provider and for
     FPT users that do have a usable local password.
+
+    This stage owns the partial-pipeline wrapper. When delegating to Open edX,
+    call the upstream function beneath its own ``@partial.partial`` decorator
+    so ``current_partial`` is injected exactly once.
     """
 
     if (
@@ -167,7 +173,7 @@ def set_logged_in_cookies_for_fpt_sso(
         or user is None
         or user.has_usable_password()
     ):
-        return openedx_tpa_pipeline.set_logged_in_cookies(
+        return openedx_tpa_pipeline.set_logged_in_cookies.__wrapped__(
             backend=backend,
             user=user,
             strategy=strategy,
