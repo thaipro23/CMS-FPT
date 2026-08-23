@@ -17,7 +17,7 @@ Endpoint này đọc từ Studio/modulestore theo hướng draft-first, nhằm l
 - Link tài liệu đính kèm trong HTML/problem content.
 - Course static assets nếu bản Open edX hiện tại hỗ trợ contentstore listing.
 
-## Endpoint publish thật từ v25.9.13.4
+## Endpoint publish thật
 
 ```http
 POST /api/ai-connector/v1/courses/<course_id>/libraries
@@ -25,7 +25,7 @@ POST /api/ai-connector/v1/libraries/<library_key>/problems
 POST /api/ai-connector/v1/courses/<course_id>/problems
 ```
 
-Từ v25.9.13.4, các endpoint này không còn dùng stub/local memory. Chúng thử dùng Content Libraries V2 Python API trong CMS/Studio:
+Các endpoint publish dùng Content Libraries V2 Python API trong CMS/Studio:
 
 - `create_library`
 - `get_library`
@@ -34,85 +34,98 @@ Từ v25.9.13.4, các endpoint này không còn dùng stub/local memory. Chúng 
 - `publish_component_changes`
 - `publish_changes`
 
-Nếu Open edX đang chạy chưa có Content Libraries V2 API hoặc chưa xác định được Studio staff user để publish, plugin sẽ trả lỗi rõ ràng và **không báo thành công giả**.
+Nếu Open edX đang chạy chưa có Content Libraries V2 API hoặc chưa xác định được Studio staff user để publish, plugin trả lỗi rõ ràng và **không báo thành công giả**.
 
-## Env bảo mật cho publish user / HMAC
+## Bảo mật publish / HMAC
 
-Production không cho anonymous publish và không còn fallback sang "first staff user". Nếu request từ AI Server dùng OAuth client_credentials hoặc HMAC và vào plugin dưới dạng AnonymousUser, CMS container phải có một user staff/admin rõ ràng:
+Production không cho anonymous publish và không fallback sang "first staff user". AI Server ký request server-to-server bằng cùng secret với Open edX connector:
 
 ```env
 AI_CONNECTOR_PUBLISH_USERNAME=<studio_staff_or_admin_username>
 AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH=false
-AI_CONNECTOR_HMAC_SECRET=<same_64_hex_secret_as_OPENEDX_CONNECTOR_HMAC_SECRET>
+AI_CONNECTOR_HMAC_SECRET=<same_secret_as_AI_Server_OPENEDX_CONNECTOR_HMAC_SECRET>
 AI_CONNECTOR_HMAC_SKEW_SECONDS=300
-AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS=studio.example.edu,lms.example.edu,apps.example.edu
+AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS=cms.fpl.edu.vn,scms.fpl.edu.vn,app.cms.fpl.edu.vn
 ```
 
-`AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH` hiện được giữ để tương thích env cũ nhưng endpoint publish/rollback không còn chấp nhận anonymous. Các endpoint publish/rollback/diagnostics/studio-content yêu cầu một trong hai điều kiện: request có HMAC hợp lệ từ AI Server, hoặc user hiện tại là Studio staff/admin.
+Các endpoint publish/rollback/diagnostics là HMAC-only. Browser staff cookie không được dùng thay HMAC tại các endpoint `csrf_exempt` này.
 
 Asset/transcript download có SSRF guard: chỉ download từ Studio host hiện tại hoặc host nằm trong `AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS`; redirect bị chặn và cookie chỉ forward cho cùng host.
 
 ## Kiểm tra plugin
 
 ```bash
-curl http://studio.local.openedx.io/api/ai-connector/v1/health
+curl https://scms.fpl.edu.vn/api/ai-connector/v1/health
 ```
 
-Kỳ vọng:
+Kỳ vọng connector package hiện tại:
 
 ```json
 {
   "status": "ok",
-  "version": "25.9.13.43",
+  "service": "openedx_ai_connector",
+  "version": "0.1.8",
   "publish_implementation": "content_libraries_v2_python_api",
   "stub_publish": false
 }
 ```
 
-## Lưu ý release Open edX
+Nếu package metadata không đọc được trong source/dev mode, health có thể trả `0.1.8-source`.
 
-- Open edX có Content Libraries V2: plugin có thể tạo Library và import Problem thật.
-- Open edX chỉ có Legacy Libraries hoặc chưa bật V2: plugin trả lỗi `Content Libraries V2 Python API không khả dụng`. Khi đó cần nâng/bật Libraries V2 hoặc viết adapter Legacy Library riêng.
+## Content Library dùng chung
 
-## v25.9.13.10 - Library component tags
-
-Connector can attach Open edX Content Tags to imported Library problems.
-
-CMS/Studio env vars:
+ACMS hiện dùng một canonical Content Library organization cho ngân hàng câu hỏi:
 
 ```env
-AI_CONNECTOR_TAGGING_ENABLED=true
-AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID=ai-learning-check
-AI_CONNECTOR_TAG_TAXONOMY_NAME=AI Learning Check
+AI_CONNECTOR_LIBRARY_ORG=FPT
+AI_CONNECTOR_AUTO_CREATE_ORG=false
 ```
 
-If Content Tagging is unavailable, publishing still succeeds and the connector returns a non-fatal `tag_result` warning.
+`FPT` ở đây là Organization sở hữu Content Library dùng chung, **không phải** org của mọi delivery course. Course vật lý vẫn giữ full Course ID/org thực tế, ví dụ `course-v1:FPL+...`, `course-v1:FPS+...`.
+
+Production phải tạo sẵn Organization `FPT`; connector mặc định fail closed nếu organization này chưa tồn tại và không tự tạo khi `AI_CONNECTOR_AUTO_CREATE_ORG=false`.
 
 ## Tutor config plugin mode
 
-v25.9.13.43 adds a Tutor plugin helper at:
+Canonical Tutor helper nằm tại:
 
 ```text
-tutor-plugins/ai_learning_connector_env.py
+tutor-plugins/openedx_connector.py
 ```
 
-Use it when AI Server and Open edX run separately and you do not want to maintain a manual `docker-compose.override.yml` for `AI_CONNECTOR_*` values. See:
+Plugin này chịu trách nhiệm cả hai phần:
 
-```text
-docs/TUTOR_PLUGIN_AI_CONNECTOR_ENV.md
+1. Cài `openedx_connector_plugin` vào Open edX image.
+2. Render `AI_CONNECTOR_*` settings vào **cả LMS và CMS**.
+
+Ví dụ:
+
+```bash
+cp tutor-plugins/openedx_connector.py "$(tutor plugins printroot)/openedx_connector.py"
+tutor plugins enable openedx_connector
+
+tutor config save \
+  --set AI_CONNECTOR_LIBRARY_ORG=FPT \
+  --set AI_CONNECTOR_AUTO_CREATE_ORG=false \
+  --set AI_CONNECTOR_MAX_BATCH_SIZE=5000
 ```
 
+Secrets như `AI_CONNECTOR_HMAC_SECRET` và `AI_CONNECTOR_PUBLISH_USERNAME` phải được cấp riêng cho môi trường triển khai, không commit vào Git.
 
-## v25.9.16.5.8 - Unified Open edX Connector academic endpoints
+## Unified Open edX Connector academic endpoints
 
-The connector also exposes API-first Student Management endpoints under the canonical connector namespace for AI Server:
+Connector expose các API Student Management dưới canonical namespace:
 
 ```http
 POST /api/ai-connector/v1/users/resolve
 POST /api/ai-connector/v1/courses/search
+POST /api/ai-connector/v1/class-analytics
+POST /api/ai-connector/v1/course-enrollment/batch
+POST /api/ai-connector/v1/course-enrollment/enroll
+POST /api/ai-connector/v1/course-enrollment/remove
 ```
 
-Security uses HMAC headers from AI Server:
+Security dùng HMAC headers từ AI Server:
 
 ```text
 X-AI-Connector-Timestamp
@@ -120,20 +133,22 @@ X-AI-Connector-Nonce
 X-AI-Connector-Signature
 ```
 
-Use the same connector secret as AI Server `OPENEDX_CONNECTOR_HMAC_SECRET`:
+Dùng cùng connector secret với AI Server `OPENEDX_CONNECTOR_HMAC_SECRET`:
 
 ```env
 AI_CONNECTOR_HMAC_SECRET=<same-secret-as-AI-server>
 AI_CONNECTOR_MAX_BATCH_SIZE=5000
 ```
 
-`users/resolve` intentionally matches only by exact username (`AP username = CMS/Open edX username`). It does not fuzzy-match by name or email.
+Với sinh viên, payload chuẩn dùng `RollNumber`/`student_code` làm canonical Open edX username. Lookup không phân biệt hoa thường nhưng khi tạo mới phải giữ đúng RollNumber; AP username không phải fallback cho student. Teacher/legacy payload giữ contract riêng của connector.
 
-## v25.9.16.4.0 - Student Progress Dashboard component grades
+`AI_CONNECTOR_MAX_BATCH_SIZE` có thể được cấp qua process env hoặc Tutor-rendered Django settings; process env được ưu tiên khi cả hai cùng tồn tại.
 
-`POST /api/ai-connector/v1/class-analytics` now returns best-effort component/subsection grade breakdown when the Open edX deployment has `PersistentSubsectionGrade` rows for the requested users and course.
+## Student Progress Dashboard component grades
 
-Response fields per student may include:
+`POST /api/ai-connector/v1/class-analytics` trả best-effort component/subsection grade breakdown khi Open edX deployment có `PersistentSubsectionGrade` cho users/course tương ứng.
+
+Response có thể gồm:
 
 ```json
 {
@@ -145,4 +160,10 @@ Response fields per student may include:
 }
 ```
 
-If component grades are not available, the endpoint still returns user/enrollment/progress/course-grade data and leaves `component_scores` empty.
+Nếu component grades không khả dụng, endpoint vẫn trả user/enrollment/progress/course-grade data và để `component_scores` rỗng.
+
+## Lưu ý release Open edX
+
+- Open edX có Content Libraries V2: plugin có thể tạo Library và import Problem thật.
+- Nếu Content Libraries V2 Python API không khả dụng: connector fail rõ ràng thay vì giả lập publish thành công.
+- Canonical API prefix là `/api/ai-connector/v1/`; `/api/ai-student-insight/v1/` chỉ còn alias tương thích rolling upgrade.
