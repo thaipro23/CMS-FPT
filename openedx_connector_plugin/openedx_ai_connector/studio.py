@@ -23,6 +23,7 @@ import socket
 import time
 import uuid
 import traceback
+from importlib import metadata as importlib_metadata
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any
@@ -51,6 +52,19 @@ from .runtime import _load_openedx_modules
 
 
 logger = logging.getLogger(__name__)
+
+
+def _connector_package_version() -> str:
+    try:
+        return importlib_metadata.version('openedx-ai-connector')
+    except Exception:
+        return '0.1.8-source'
+
+
+class LibraryOrganizationMissingError(RuntimeError):
+    def __init__(self, org_short_name: str):
+        self.org_short_name = str(org_short_name or '').strip().upper()
+        super().__init__(f'Open edX Organization {self.org_short_name} chưa tồn tại.')
 
 
 # v25.9.13.39: rollback delete verifies/matches Library components by local component key, not only full usage key.
@@ -161,7 +175,7 @@ def health(request):
         'status': 'ok',
         'service': 'openedx_ai_connector',
         'message': 'AI connector is running',
-        'version': '25.9.16.4.0',
+        'version': _connector_package_version(),
         'publish_implementation': 'content_libraries_v2_python_api',
         'stub_publish': False,
     })
@@ -2201,9 +2215,12 @@ def _connector_error(message: str, status: int = 500, code: str = 'openedx_publi
 
 def _course_org(course_id: str, metadata: dict | None = None) -> str:
     metadata = metadata or {}
-    explicit = metadata.get('org') or metadata.get('library_org')
+    explicit = metadata.get('library_org') or metadata.get('org')
     if explicit:
         return _safe_slug(str(explicit), max_len=30, fallback='org').upper()
+    configured = _setting_or_env('AI_CONNECTOR_LIBRARY_ORG', '')
+    if configured:
+        return _safe_slug(str(configured), max_len=30, fallback='org').upper()
     if course_id.startswith('course-v1:') and '+' in course_id:
         return _safe_slug(course_id.split(':', 1)[1].split('+', 1)[0], max_len=30, fallback='org').upper()
     if '+' in course_id:
@@ -2241,11 +2258,8 @@ def _organization_for_library(course_id: str, metadata: dict | None = None):
         return org
 
     existing = list(Organization.objects.all().values_list('short_name', flat=True)[:50])
-    raise RuntimeError(
-        f'Không tìm thấy Open edX Organization short_name={org_short_name!r}. '
-        f'Các org hiện có: {existing}. '
-        'Tạo Organization tương ứng với org trong course_id hoặc set AI_CONNECTOR_AUTO_CREATE_ORG=true cho môi trường dev/local.'
-    )
+    logger.error('AI connector missing Library Organization %s; existing=%s', org_short_name, existing)
+    raise LibraryOrganizationMissingError(org_short_name)
 
 
 def _safe_slug(text: str, max_len: int = 64, fallback: str = 'ai-library') -> str:
@@ -3797,7 +3811,7 @@ def publish_diagnostics(request):
     data: dict[str, Any] = {
         'ok': True,
         'status': 'diagnostics',
-        'version': '25.9.16.4.0',
+        'version': _connector_package_version(),
         'implementation': 'content_libraries_v2_python_api',
         'env': {
             'AI_CONNECTOR_PUBLISH_USERNAME': bool(_setting_or_env('AI_CONNECTOR_PUBLISH_USERNAME')),
@@ -3805,6 +3819,7 @@ def publish_diagnostics(request):
             'AI_CONNECTOR_COMPONENT_PUBLISH_ENABLED': _setting_or_env('AI_CONNECTOR_COMPONENT_PUBLISH_ENABLED', ''),
             'AI_CONNECTOR_TAGGING_ENABLED': _setting_or_env('AI_CONNECTOR_TAGGING_ENABLED', 'true'),
             'AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID': _setting_or_env('AI_CONNECTOR_TAG_TAXONOMY_EXPORT_ID', 'ai-learning-check'),
+            'AI_CONNECTOR_LIBRARY_ORG': _setting_or_env('AI_CONNECTOR_LIBRARY_ORG', 'FPT'),
         },
         'checks': {},
     }
@@ -3839,8 +3854,16 @@ def publish_diagnostics(request):
 
     try:
         from organizations.models import Organization  # type: ignore
-        data['organizations'] = list(Organization.objects.all().values_list('short_name', flat=True)[:50])
+        organizations = list(Organization.objects.all().values_list('short_name', flat=True)[:50])
+        data['organizations'] = organizations
+        expected_org = _safe_slug(_setting_or_env('AI_CONNECTOR_LIBRARY_ORG', 'FPT'), max_len=30, fallback='org').upper()
+        exists = any(str(item or '').strip().upper() == expected_org for item in organizations)
+        data['library_org'] = {'expected': expected_org, 'exists': exists}
+        if not exists:
+            data['ok'] = False
+            data['library_org']['message'] = f'Organization {expected_org} chưa tồn tại trong Open edX.'
     except Exception as exc:
+        data['ok'] = False
         data['organizations'] = {'ok': False, 'message': _message_from_exception(exc, 'Organization list failed'), 'detail': _exception_detail(exc, 'organizations')}
 
     return _json_response(data, status=200 if data.get('ok') else 500)
@@ -3888,6 +3911,16 @@ def publish_problem(request, course_id: str):
             tag_names=payload.get('tag_names') or metadata.get('tag_names') or [],
         )
         return _json_response({**result, 'library_result': library})
+    except LibraryOrganizationMissingError as exc:
+        return _json_response({
+            'ok': False,
+            'status': 'error',
+            'error_code': 'openedx_library_org_missing',
+            'message': f'Organization {exc.org_short_name} chưa tồn tại trong Open edX. Hãy tạo Organization trước khi publish Library.',
+            'detail': {'organization': exc.org_short_name},
+            'implementation': 'content_libraries_v2_python_api',
+            'stub': False,
+        }, status=409)
     except ValueError as exc:
         return _connector_error(_message_from_exception(exc, 'OLX không hợp lệ'), status=400, code='invalid_olx', detail=_exception_detail(exc, 'publish_problem.validate_olx'))
     except Exception as exc:
@@ -3923,6 +3956,16 @@ def ensure_chapter_library(request, course_id: str):
             metadata=metadata,
         )
         return _json_response(result)
+    except LibraryOrganizationMissingError as exc:
+        return _json_response({
+            'ok': False,
+            'status': 'error',
+            'error_code': 'openedx_library_org_missing',
+            'message': f'Organization {exc.org_short_name} chưa tồn tại trong Open edX. Hãy tạo Organization trước khi publish Library.',
+            'detail': {'organization': exc.org_short_name},
+            'implementation': 'content_libraries_v2_python_api',
+            'stub': False,
+        }, status=409)
     except Exception as exc:
         return _connector_error(_message_from_exception(exc, 'Ensure/Create Library thất bại trong CMS'), status=502, code='openedx_library_ensure_failed', detail=_exception_detail(exc, 'ensure_chapter_library'))
 

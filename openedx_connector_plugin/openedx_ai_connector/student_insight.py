@@ -2594,6 +2594,107 @@ def _student_insight_enroll_results(course_id: str, requested: list[dict[str, An
     return results
 
 
+def _student_insight_remove_access_results(course_id: str, requested: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    course_key = _course_key_from_string(course_id)
+    if course_key is None:
+        return [{'username': item.get('username') or '', 'person_type': item.get('person_type') or 'student', 'status': 'failed', 'verified_after_write': False, 'message': 'Course ID không hợp lệ'} for item in requested]
+    found_by_key = _student_insight_user_map(requested)
+    CourseEnrollment, _enroll_source, enroll_error = _course_enrollment_model()
+    CourseLimitedStaffRole, _limited_source, limited_error = _course_limited_staff_role_class()
+    CourseStaffRole, _staff_source, staff_error = _course_staff_role_class()
+    results: list[dict[str, Any]] = []
+    for item in requested:
+        username = str(item.get('username') or '').strip()
+        user = found_by_key.get(_normalize_username_input(username)) if username else None
+        if user is None and item.get('openedx_user_id'):
+            user = found_by_key.get(f"id:{item['openedx_user_id']}")
+        person_type = str(item.get('person_type') or item.get('role') or 'student').strip().lower()
+        is_teacher = person_type in {'teacher', 'staff', 'instructor'}
+        base = {'student_code': item.get('student_code') or None, 'username': username or None, 'person_type': 'teacher' if is_teacher else 'student', 'openedx_user_id': str(getattr(user, 'id', '') or '') if user is not None else None}
+        if user is None:
+            results.append({**base, 'status': 'missing_user', 'verified_after_write': True, 'message': 'User không tồn tại; không còn access để dọn.'})
+            continue
+        if is_teacher:
+            if CourseLimitedStaffRole is None or CourseStaffRole is None:
+                results.append({**base, 'status': 'course_role_import_failed', 'verified_after_write': False, 'message': 'Không import được Course role để dọn quyền.', 'diagnostics': {'limited_role_import_error': limited_error, 'staff_role_import_error': staff_error}})
+                continue
+            try:
+                limited_role = CourseLimitedStaffRole(course_key)
+                full_role = CourseStaffRole(course_key)
+                had_limited = _course_role_has_exact_user(limited_role, user)
+                had_full = _course_role_has_exact_user(full_role, user)
+                if had_limited:
+                    limited_role.remove_users(user)
+                if had_full:
+                    full_role.remove_users(user)
+                limited_remaining = _course_role_has_exact_user(limited_role, user)
+                full_remaining = _course_role_has_exact_user(full_role, user)
+                results.append({**base, 'status': 'course_roles_removed' if (had_limited or had_full) and not (limited_remaining or full_remaining) else ('already_no_course_role' if not (had_limited or had_full) else 'course_roles_remove_not_verified'), 'verified_after_write': not (limited_remaining or full_remaining), 'removed_limited_staff': had_limited, 'removed_course_staff': had_full})
+            except Exception as exc:
+                results.append({**base, 'status': 'course_roles_remove_failed', 'verified_after_write': False, 'message': 'Không dọn được quyền Course' + (f': {exc}' if _connector_debug_errors_enabled() else '')})
+            continue
+        if CourseEnrollment is None:
+            results.append({**base, 'status': 'course_enrollment_import_failed', 'verified_after_write': False, 'message': 'Không import được CourseEnrollment để dọn enrollment.', 'diagnostics': {'course_enrollment_import_error': enroll_error}})
+            continue
+        try:
+            enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
+            if not enrollment or not bool(getattr(enrollment, 'is_active', False)):
+                results.append({**base, 'status': 'already_not_enrolled', 'verified_after_write': True})
+                continue
+            unenroll = getattr(CourseEnrollment, 'unenroll', None)
+            if callable(unenroll):
+                try:
+                    unenroll(user, course_key)
+                except TypeError:
+                    unenroll(user=user, course_id=course_key)
+            else:
+                enrollment.is_active = False
+                enrollment.save(update_fields=['is_active'])
+            enrollment = CourseEnrollment.objects.filter(user=user, course_id=course_key).first()
+            active = bool(enrollment and getattr(enrollment, 'is_active', False))
+            results.append({**base, 'status': 'unenroll_not_verified' if active else 'unenrolled', 'verified_after_write': not active})
+        except Exception as exc:
+            results.append({**base, 'status': 'unenroll_failed', 'verified_after_write': False, 'message': 'Không unenroll được Course cũ' + (f': {exc}' if _connector_debug_errors_enabled() else '')})
+    return results
+
+
+@csrf_exempt
+def student_insight_course_enrollment_remove(request):
+    if request.method != 'POST':
+        return _json_response({'ok': False, 'message': 'Method not allowed'}, status=405)
+    auth_error = _require_student_insight_hmac(request)
+    if auth_error:
+        return auth_error
+    data, error = _read_json_body(request)
+    if error:
+        return error
+    data = data or {}
+    course_id = str(data.get('course_id') or '').strip()
+    if not course_id:
+        return _json_response({'ok': False, 'message': 'Thiếu course_id'}, status=400)
+    requested = _student_insight_requested_students(data)
+    raw_teachers = data.get('teachers') or []
+    if isinstance(raw_teachers, list):
+        for teacher in raw_teachers:
+            if isinstance(teacher, str):
+                teacher = {'username': teacher, 'person_type': 'teacher', 'role': 'teacher'}
+            elif isinstance(teacher, dict):
+                teacher = {**teacher, 'person_type': 'teacher', 'role': teacher.get('role') or 'teacher'}
+            else:
+                continue
+            requested.extend(_student_insight_requested_students({'students': [teacher]}))
+    batch_error = _batch_too_large_response(len(requested))
+    if batch_error:
+        return batch_error
+    results = _student_insight_remove_access_results(course_id, requested)
+    counts: dict[str, int] = {}
+    for item in results:
+        value = str(item.get('status') or 'unknown')
+        counts[value] = counts.get(value, 0) + 1
+    ok = all(item.get('verified_after_write') is True for item in results)
+    return _json_response({'ok': ok, 'course_id': course_id, 'total': len(results), 'counts': counts, 'results': results}, status=200 if ok else 409)
+
+
 @csrf_exempt
 def student_insight_course_enrollment_enroll(request):
     """Enroll resolved CMS/Open edX users into a course.

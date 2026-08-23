@@ -43,14 +43,10 @@ Production không cho anonymous publish và không còn fallback sang "first sta
 ```env
 AI_CONNECTOR_PUBLISH_USERNAME=<studio_staff_or_admin_username>
 AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH=false
-AI_CONNECTOR_HMAC_SECRET=<same_secret_as_OPENEDX_CONNECTOR_HMAC_SECRET>
+AI_CONNECTOR_HMAC_SECRET=<same_64_hex_secret_as_OPENEDX_CONNECTOR_HMAC_SECRET>
 AI_CONNECTOR_HMAC_SKEW_SECONDS=300
-AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS=edx.cms.fpl.edu.vn,scms.fpl.edu.vn,app.cms.fpl.edu.vn
-AI_CONNECTOR_SESSION_BRIDGE_ALLOWED_RETURN_HOSTS=dash-cms.fpl.edu.vn
-AI_CONNECTOR_SESSION_BRIDGE_TTL_SECONDS=60
+AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS=studio.example.edu,lms.example.edu,apps.example.edu
 ```
-
-`AI_CONNECTOR_SESSION_BRIDGE_SECRET` có thể để trống; CMS connector sẽ fallback sang `AI_CONNECTOR_HMAC_SECRET`. Nếu dùng secret bridge riêng thì AI Server phải đặt cùng giá trị ở `OPENEDX_SESSION_BRIDGE_SECRET`.
 
 `AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH` hiện được giữ để tương thích env cũ nhưng endpoint publish/rollback không còn chấp nhận anonymous. Các endpoint publish/rollback/diagnostics/studio-content yêu cầu một trong hai điều kiện: request có HMAC hợp lệ từ AI Server, hoặc user hiện tại là Studio staff/admin.
 
@@ -67,7 +63,7 @@ Kỳ vọng:
 ```json
 {
   "status": "ok",
-  "service": "openedx_ai_connector",
+  "version": "25.9.13.43",
   "publish_implementation": "content_libraries_v2_python_api",
   "stub_publish": false
 }
@@ -92,30 +88,22 @@ AI_CONNECTOR_TAG_TAXONOMY_NAME=AI Learning Check
 
 If Content Tagging is unavailable, publishing still succeeds and the connector returns a non-fatal `tag_result` warning.
 
-## Tutor config
+## Tutor config plugin mode
 
-`tutor-plugins/openedx_connector.py` là source of truth cho cả việc cài Django connector package và render các `AI_CONNECTOR_*` settings vào LMS/CMS. Không cần plugin phụ `ai_learning_connector_env.py` hoặc `docker-compose.override.yml` riêng.
-
-Production tối thiểu phải đặt HMAC secret giống phía AI Server:
-
-```bash
-tutor config save \
-  --set AI_CONNECTOR_HMAC_SECRET='<same-value-as-AI-server-OPENEDX_CONNECTOR_HMAC_SECRET>' \
-  --set AI_CONNECTOR_SESSION_BRIDGE_ALLOWED_RETURN_HOSTS='dash-cms.fpl.edu.vn' \
-  --set AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS='edx.cms.fpl.edu.vn,scms.fpl.edu.vn,app.cms.fpl.edu.vn' \
-  --set AI_QUIZ_RUNTIME_ALLOWED_ORIGINS='https://app.cms.fpl.edu.vn,https://edx.cms.fpl.edu.vn,https://scms.fpl.edu.vn,https://dash-cms.fpl.edu.vn'
-```
-
-Nếu AI Server dùng `AUTH_MODE=openedx_sso`, hai phía phải có cùng bridge secret. Có thể dùng luôn HMAC secret (mặc định fallback) hoặc đặt cặp riêng:
+v25.9.13.43 adds a Tutor plugin helper at:
 
 ```text
-CMS/Open edX: AI_CONNECTOR_SESSION_BRIDGE_SECRET
-AI Server:    OPENEDX_SESSION_BRIDGE_SECRET
+tutor-plugins/ai_learning_connector_env.py
 ```
 
-Không commit giá trị thật của bất kỳ secret nào vào Git.
+Use it when AI Server and Open edX run separately and you do not want to maintain a manual `docker-compose.override.yml` for `AI_CONNECTOR_*` values. See:
 
-## Unified Open edX Connector academic endpoints
+```text
+docs/TUTOR_PLUGIN_AI_CONNECTOR_ENV.md
+```
+
+
+## v25.9.16.5.8 - Unified Open edX Connector academic endpoints
 
 The connector also exposes API-first Student Management endpoints under the canonical connector namespace for AI Server:
 
@@ -128,23 +116,22 @@ Security uses HMAC headers from AI Server:
 
 ```text
 X-AI-Connector-Timestamp
+X-AI-Connector-Nonce
 X-AI-Connector-Signature
-X-AI-Connector-Nonce (recommended)
 ```
-
-The current verifier accepts both the nonce-aware canonical signature and the legacy nonce-less signature for rolling compatibility. New AI Server code should send a unique nonce per request.
 
 Use the same connector secret as AI Server `OPENEDX_CONNECTOR_HMAC_SECRET`:
 
 ```env
 AI_CONNECTOR_HMAC_SECRET=<same-secret-as-AI-server>
+AI_CONNECTOR_MAX_BATCH_SIZE=5000
 ```
 
-`users/resolve` must resolve the canonical CMS/Open edX username used by the deployment (for FPL student flows this is the normalized RollNumber/student code), not fuzzy-match by display name or email.
+`users/resolve` intentionally matches only by exact username (`AP username = CMS/Open edX username`). It does not fuzzy-match by name or email.
 
-## Student Progress Dashboard component grades
+## v25.9.16.4.0 - Student Progress Dashboard component grades
 
-`POST /api/ai-connector/v1/class-analytics` returns best-effort component/subsection grade breakdown when the Open edX deployment has `PersistentSubsectionGrade` rows for the requested users and course.
+`POST /api/ai-connector/v1/class-analytics` now returns best-effort component/subsection grade breakdown when the Open edX deployment has `PersistentSubsectionGrade` rows for the requested users and course.
 
 Response fields per student may include:
 
