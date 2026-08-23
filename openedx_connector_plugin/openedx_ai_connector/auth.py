@@ -123,7 +123,7 @@ def _staff_or_superuser(request) -> bool:
 
 
 def _auth_failed_response(reason: str = 'connector authentication required') -> JsonResponse:
-    return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=status)
+    return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=403)
 
 
 def _student_insight_hmac_secret() -> str:
