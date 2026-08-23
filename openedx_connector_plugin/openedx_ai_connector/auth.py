@@ -21,7 +21,13 @@ from django.core.cache import cache
 from django.http import JsonResponse
 
 MAX_AI_CONNECTOR_BODY_BYTES = int(os.environ.get('AI_CONNECTOR_MAX_BODY_BYTES') or 2 * 1024 * 1024)
-MAX_STUDENT_INSIGHT_BATCH_SIZE = int(os.environ.get('AI_CONNECTOR_MAX_BATCH_SIZE') or os.environ.get('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE') or 500)
+MAX_STUDENT_INSIGHT_BATCH_SIZE = int(
+    os.environ.get('AI_CONNECTOR_MAX_BATCH_SIZE')
+    or getattr(settings, 'AI_CONNECTOR_MAX_BATCH_SIZE', None)
+    or os.environ.get('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE')
+    or getattr(settings, 'AI_STUDENT_INSIGHT_MAX_BATCH_SIZE', None)
+    or 500
+)
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -117,7 +123,7 @@ def _staff_or_superuser(request) -> bool:
 
 
 def _auth_failed_response(reason: str = 'connector authentication required') -> JsonResponse:
-    return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=403)
+    return _json_response({'ok': False, 'status': 'forbidden', 'code': 'connector_auth_required', 'message': reason}, status=status)
 
 
 def _student_insight_hmac_secret() -> str:
