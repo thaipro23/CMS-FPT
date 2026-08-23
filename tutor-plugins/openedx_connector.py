@@ -4,10 +4,10 @@ This production plugin intentionally owns both pieces of the integration:
 1. Install the Django connector package into the shared Open edX image.
 2. Render the connector security/runtime settings into BOTH LMS and CMS.
 
-ACMS 25.9.16.7.2.64.16.5.7.2.10 uses the canonical
-/api/ai-connector/v1/* namespace. Student Management runtime endpoints are served
-from LMS Django, while Studio draft/publish/session-bridge endpoints are served
-from CMS Django. Therefore HMAC must be configured on both applications.
+ACMS 25.9.16.7.2.64.16.5.7.2.12 with openedx-ai-connector 0.1.8 uses the
+canonical /api/ai-connector/v1/* namespace. Student Management runtime endpoints
+are served from LMS Django, while Studio draft/publish/session-bridge endpoints
+are served from CMS Django. Therefore HMAC must be configured on both applications.
 
 Secrets are deliberately empty by default. Production must provide the same HMAC
 secret used by AI Server OPENEDX_CONNECTOR_HMAC_SECRET via Tutor config.
