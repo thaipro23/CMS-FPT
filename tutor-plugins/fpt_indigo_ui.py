@@ -92,6 +92,14 @@ hooks.Filters.ENV_PATCHES.add_item((
     _jinja_raw(_read_patch("authn.patch")),
 ))
 
+# Course Unit assessment/library-backed components are created through ACMS.
+# Apply this at Authoring source level so blocked buttons are not rendered at all
+# instead of being hidden with CSS selectors that can drift across MFE releases.
+hooks.Filters.ENV_PATCHES.add_item((
+    "mfe-dockerfile-pre-npm-build-authoring",
+    _jinja_raw(_read_patch("authoring.patch")),
+))
+
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-runtime-definitions",
     _jinja_raw(_read_patch("runtime.patch")),
