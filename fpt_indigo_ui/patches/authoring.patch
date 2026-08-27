@@ -1,0 +1,64 @@
+# FPT Authoring customization for Open edX Ulmo.4.
+#
+# Course Unit assessment/library-backed components must be created through ACMS.
+# Keep Text, Video, Open Response, Drag and Drop, Advanced, and other non-blocked
+# component types available in Studio. This is a source-level filter, not CSS.
+RUN node - <<'JS'
+const fs = require('fs');
+
+const path = '/openedx/app/src/course-unit/add-component/AddComponent.tsx';
+const marker = '// FPT_AUTHORING_ACMS_ONLY_QUESTION_CREATION_V1';
+
+if (!fs.existsSync(path)) {
+  throw new Error(`FPT Authoring source target not found: ${path}`);
+}
+
+let source = fs.readFileSync(path, 'utf8');
+
+const componentAnchor = 'const AddComponent = ({';
+if (!source.includes(componentAnchor)) {
+  throw new Error('FPT Authoring AddComponent anchor not found');
+}
+
+if (!source.includes(marker)) {
+  source = source.replace(
+    componentAnchor,
+    `${marker}
+const FPT_ACMS_ONLY_COMPONENT_TYPES = new Set<string>([
+  COMPONENT_TYPES.problem,
+  COMPONENT_TYPES.itembank,
+  COMPONENT_TYPES.libraryV2,
+  COMPONENT_TYPES.library,
+]);
+
+${componentAnchor}`,
+  );
+}
+
+const mapAnchor = '{componentTemplates.map((component: ComponentTemplateData) => {';
+const filteredMap = `{componentTemplates
+                  .filter(
+                    (component: ComponentTemplateData) =>
+                      !isUnitVerticalType
+                      || !FPT_ACMS_ONLY_COMPONENT_TYPES.has(component.type),
+                  )
+                  .map((component: ComponentTemplateData) => {`;
+
+if (source.includes(mapAnchor)) {
+  source = source.replace(mapAnchor, filteredMap);
+} else if (!source.includes('FPT_ACMS_ONLY_COMPONENT_TYPES.has(component.type)')) {
+  throw new Error(
+    'FPT Authoring componentTemplates render anchor not found; upstream Authoring source may have changed',
+  );
+}
+
+if (!source.includes(marker)) {
+  throw new Error('FPT Authoring marker missing after source transformation');
+}
+if (!source.includes('FPT_ACMS_ONLY_COMPONENT_TYPES.has(component.type)')) {
+  throw new Error('FPT Authoring ACMS-only Unit component filter was not applied');
+}
+
+fs.writeFileSync(path, source, 'utf8');
+console.log('[fpt-authoring] Unit buttons removed: Problem, Problem Bank, Library Content, Legacy Library');
+JS
