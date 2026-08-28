@@ -8,6 +8,7 @@ from tutormfe.hooks import PLUGIN_SLOTS
 FPT_PRIMARY = "#0B3B82"
 FPT_PRIMARY_DARK = "#072B61"
 FPT_ACCENT = "#F36F21"
+FPT_TIME_ZONE = "Asia/Ho_Chi_Minh"
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PATCH_DIR = _REPO_ROOT / "fpt_indigo_ui" / "patches"
@@ -39,6 +40,18 @@ DATABASES["read_replica"] = _fpt_read_replica
 """,
 ))
 
+# FPT_TIMEZONE_V1
+# Keep all server-side Open edX date handling on the FPT Polytechnic business
+# timezone while preserving timezone-aware UTC storage semantics.
+hooks.Filters.ENV_PATCHES.add_item((
+    "openedx-common-settings",
+    f"""
+# FPT_TIMEZONE_V1
+TIME_ZONE = "{FPT_TIME_ZONE}"
+USE_TZ = True
+""",
+))
+
 
 def _jinja_raw(text: str) -> str:
     """Protect JSX/CSS braces from Tutor/Jinja patch rendering."""
@@ -63,6 +76,7 @@ MFE_CONFIG["INDIGO_FOOTER_NAV_LINKS"] = []
 MFE_CONFIG["ALLOW_PUBLIC_ACCOUNT_CREATION"] = False
 MFE_CONFIG["SHOW_REGISTRATION_LINKS"] = False
 MFE_CONFIG["FPT_SSO_ONLY_AUTH"] = True
+MFE_CONFIG["FPT_TIME_ZONE"] = "{FPT_TIME_ZONE}"
 # Keep the approved FPT DefaultLayout on Authn Ulmo.4.
 MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False
 MFE_CONFIG["FPT_PRIMARY_COLOR"] = "{FPT_PRIMARY}"
