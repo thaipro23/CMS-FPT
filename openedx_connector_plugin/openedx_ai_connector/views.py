@@ -12,7 +12,6 @@ from .studio import (
     studio_course_content,
     publish_problem,
     ensure_chapter_library,
-    import_problem_to_library,
     publish_diagnostics,
     backfill_library_tags,
     library_tags_diagnostics,
@@ -24,6 +23,7 @@ from .studio import (
     delete_quiz_node,
     insert_problem_banks,
 )
+from .media_publish import import_problem_to_library
 
 __all__ = [
     'health',

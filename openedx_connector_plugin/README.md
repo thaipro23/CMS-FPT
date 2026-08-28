@@ -31,8 +31,11 @@ Các endpoint publish dùng Content Libraries V2 Python API trong CMS/Studio:
 - `get_library`
 - `create_library_block`
 - `set_library_block_olx`
+- `add_library_block_static_asset_file`
 - `publish_component_changes`
 - `publish_changes`
+
+ACMS `25.9.16.7.2.64.16.5.7.2.18` có thể gửi tối đa 4 ảnh cho một câu hỏi. Connector `0.1.9` kiểm tra MIME/base64/SHA-256, upload ảnh vào static asset của chính Library component, thay placeholder `__ACMS_MEDIA_<id>__` bằng URL Open edX thật rồi mới lưu/publish OLX. Connector từ chối publish nếu placeholder media chưa được resolve, để tránh câu hỏi được publish nhưng ảnh bị hỏng.
 
 Nếu Open edX đang chạy chưa có Content Libraries V2 API hoặc chưa xác định được Studio staff user để publish, plugin trả lỗi rõ ràng và **không báo thành công giả**.
 
@@ -46,7 +49,10 @@ AI_CONNECTOR_ALLOW_ANONYMOUS_PUBLISH=false
 AI_CONNECTOR_HMAC_SECRET=<same_secret_as_AI_Server_OPENEDX_CONNECTOR_HMAC_SECRET>
 AI_CONNECTOR_HMAC_SKEW_SECONDS=300
 AI_CONNECTOR_ALLOWED_DOWNLOAD_HOSTS=cms.fpl.edu.vn,scms.fpl.edu.vn,app.cms.fpl.edu.vn
+AI_CONNECTOR_MAX_BODY_BYTES=25165824
 ```
+
+`AI_CONNECTOR_MAX_BODY_BYTES` mặc định là 24 MiB để đủ cho OLX + metadata + base64 media của ACMS v18; request vượt giới hạn trả `413` thay vì parse không giới hạn.
 
 Các endpoint publish/rollback/diagnostics là HMAC-only. Browser staff cookie không được dùng thay HMAC tại các endpoint `csrf_exempt` này.
 
@@ -58,19 +64,17 @@ Asset/transcript download có SSRF guard: chỉ download từ Studio host hiện
 curl https://scms.fpl.edu.vn/api/ai-connector/v1/health
 ```
 
-Kỳ vọng connector package hiện tại:
+Kỳ vọng connector package sau khi build/install:
 
 ```json
 {
   "status": "ok",
   "service": "openedx_ai_connector",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publish_implementation": "content_libraries_v2_python_api",
   "stub_publish": false
 }
 ```
-
-Nếu package metadata không đọc được trong source/dev mode, health có thể trả `0.1.8-source`.
 
 ## Content Library dùng chung
 
@@ -107,7 +111,8 @@ tutor plugins enable openedx_connector
 tutor config save \
   --set AI_CONNECTOR_LIBRARY_ORG=FPT \
   --set AI_CONNECTOR_AUTO_CREATE_ORG=false \
-  --set AI_CONNECTOR_MAX_BATCH_SIZE=5000
+  --set AI_CONNECTOR_MAX_BATCH_SIZE=5000 \
+  --set AI_CONNECTOR_MAX_BODY_BYTES=25165824
 ```
 
 Secrets như `AI_CONNECTOR_HMAC_SECRET` và `AI_CONNECTOR_PUBLISH_USERNAME` phải được cấp riêng cho môi trường triển khai, không commit vào Git.
@@ -164,6 +169,6 @@ Nếu component grades không khả dụng, endpoint vẫn trả user/enrollment
 
 ## Lưu ý release Open edX
 
-- Open edX có Content Libraries V2: plugin có thể tạo Library và import Problem thật.
+- Open edX có Content Libraries V2: plugin có thể tạo Library, import Problem thật và upload component static assets.
 - Nếu Content Libraries V2 Python API không khả dụng: connector fail rõ ràng thay vì giả lập publish thành công.
 - Canonical API prefix là `/api/ai-connector/v1/`; `/api/ai-student-insight/v1/` chỉ còn alias tương thích rolling upgrade.

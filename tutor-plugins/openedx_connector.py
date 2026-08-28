@@ -4,7 +4,7 @@ This production plugin intentionally owns both pieces of the integration:
 1. Install the Django connector package into the shared Open edX image.
 2. Render the connector security/runtime settings into BOTH LMS and CMS.
 
-ACMS 25.9.16.7.2.64.16.5.7.2.12 with openedx-ai-connector 0.1.8 uses the
+ACMS 25.9.16.7.2.64.16.5.7.2.18 with openedx-ai-connector 0.1.9 uses the
 canonical /api/ai-connector/v1/* namespace. Student Management runtime endpoints
 are served from LMS Django, while Studio draft/publish/session-bridge endpoints
 are served from CMS Django. Therefore HMAC must be configured on both applications.
@@ -32,6 +32,8 @@ hooks.Filters.CONFIG_DEFAULTS.add_items([
     ("AI_CONNECTOR_POST_PUBLISH_EVENTS_ENABLED", "false"),
     ("AI_CONNECTOR_ADMIN_GROUPS", "AI_ADMIN,AI Admin"),
     ("AI_CONNECTOR_ALLOW_ADMIN_GROUP", "false"),
+    # ACMS v18 may send up to four question images (4 MiB each) as base64 plus OLX/metadata.
+    ("AI_CONNECTOR_MAX_BODY_BYTES", "25165824"),
 
     # Unified Student Management connector contract.
     ("AI_CONNECTOR_MAX_BATCH_SIZE", "5000"),
@@ -77,6 +79,7 @@ AI_CONNECTOR_LIBRARY_ORG = "{{ AI_CONNECTOR_LIBRARY_ORG }}"
 AI_CONNECTOR_POST_PUBLISH_EVENTS_ENABLED = "{{ AI_CONNECTOR_POST_PUBLISH_EVENTS_ENABLED }}"
 AI_CONNECTOR_ADMIN_GROUPS = "{{ AI_CONNECTOR_ADMIN_GROUPS }}"
 AI_CONNECTOR_ALLOW_ADMIN_GROUP = "{{ AI_CONNECTOR_ALLOW_ADMIN_GROUP }}"
+AI_CONNECTOR_MAX_BODY_BYTES = "{{ AI_CONNECTOR_MAX_BODY_BYTES }}"
 AI_CONNECTOR_MAX_BATCH_SIZE = "{{ AI_CONNECTOR_MAX_BATCH_SIZE }}"
 AI_CONNECTOR_DEFAULT_ENROLLMENT_MODE = "{{ AI_CONNECTOR_DEFAULT_ENROLLMENT_MODE }}"
 AI_CONNECTOR_CREATED_USER_PASSWORD_MODE = "{{ AI_CONNECTOR_CREATED_USER_PASSWORD_MODE }}"
