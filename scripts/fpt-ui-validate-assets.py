@@ -19,6 +19,14 @@ MINIMUMS = {
     "fpt-campus-primary.jpg": (1200, 650),
     "fpt-campus-secondary.jpg": (900, 550),
 }
+SLIDER_DIMENSIONS = {
+    "fpt-slider-01-male-desktop.webp": (1920, 650),
+    "fpt-slider-01-male-mobile.webp": (1080, 1350),
+    "fpt-slider-02-female-desktop.webp": (1920, 650),
+    "fpt-slider-02-female-mobile.webp": (1080, 1350),
+    "fpt-slider-03-group-desktop.webp": (1920, 650),
+    "fpt-slider-03-group-mobile.webp": (1080, 1350),
+}
 LOGO_NAMES = {
     "fpt-polytechnic-logo.png",
     "fpt-polytechnic-logo-white.png",
@@ -30,6 +38,50 @@ JPEG_SOF = {
     0xC9, 0xCA, 0xCB,
     0xCD, 0xCE, 0xCF,
 }
+
+
+def _webp_dimensions(data: bytes, path: Path) -> tuple[int, int]:
+    if len(data) < 20 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+        raise RuntimeError(f"invalid WebP header: {path}")
+
+    offset = 12
+    while offset + 8 <= len(data):
+        fourcc = data[offset:offset + 4]
+        chunk_size = int.from_bytes(data[offset + 4:offset + 8], "little")
+        payload_start = offset + 8
+        payload_end = payload_start + chunk_size
+        if payload_end > len(data):
+            raise RuntimeError(f"invalid WebP chunk: {path}")
+        chunk = data[payload_start:payload_end]
+
+        if fourcc == b"VP8X":
+            if len(chunk) < 10:
+                raise RuntimeError(f"invalid VP8X chunk: {path}")
+            width = 1 + int.from_bytes(chunk[4:7], "little")
+            height = 1 + int.from_bytes(chunk[7:10], "little")
+            return width, height
+
+        if fourcc == b"VP8L":
+            if len(chunk) < 5 or chunk[0] != 0x2F:
+                raise RuntimeError(f"invalid VP8L chunk: {path}")
+            width = 1 + (chunk[1] | ((chunk[2] & 0x3F) << 8))
+            height = 1 + (
+                ((chunk[2] & 0xC0) >> 6)
+                | (chunk[3] << 2)
+                | ((chunk[4] & 0x0F) << 10)
+            )
+            return width, height
+
+        if fourcc == b"VP8 ":
+            if len(chunk) < 10 or chunk[3:6] != b"\x9d\x01\x2a":
+                raise RuntimeError(f"invalid VP8 frame header: {path}")
+            width = int.from_bytes(chunk[6:8], "little") & 0x3FFF
+            height = int.from_bytes(chunk[8:10], "little") & 0x3FFF
+            return width, height
+
+        offset = payload_end + (chunk_size & 1)
+
+    raise RuntimeError(f"WebP dimensions not found: {path}")
 
 
 def dimensions(path: Path) -> tuple[int, int]:
@@ -64,6 +116,9 @@ def dimensions(path: Path) -> tuple[int, int]:
             offset += segment_len
         raise RuntimeError(f"JPEG dimensions not found: {path}")
 
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return _webp_dimensions(data, path)
+
     raise RuntimeError(f"unsupported/incorrect image encoding: {path}")
 
 
@@ -90,8 +145,18 @@ def main() -> None:
             )
         print(f"[fpt-ui-assets] {name}: {width}x{height}, {path.stat().st_size} bytes")
 
-    # The two logos are intentionally distinct files: a colour logo for light
-    # headers and FPT-provided white artwork for navy/dark surfaces.
+    for name, expected in SLIDER_DIMENSIONS.items():
+        path = ASSET_DIR / name
+        if not path.is_file() or path.stat().st_size == 0:
+            raise SystemExit(f"missing/empty slider asset: {path.relative_to(ROOT)}")
+        actual = dimensions(path)
+        if actual != expected:
+            raise SystemExit(
+                f"slider resolution regression: {name}={actual[0]}x{actual[1]}; "
+                f"expected={expected[0]}x{expected[1]}"
+            )
+        print(f"[fpt-ui-assets] {name}: {actual[0]}x{actual[1]}, {path.stat().st_size} bytes")
+
     colour_logo = ASSET_DIR / "fpt-polytechnic-logo.png"
     white_logo = ASSET_DIR / "fpt-polytechnic-logo-white.png"
     if digest(colour_logo) == digest(white_logo):
@@ -129,7 +194,7 @@ def main() -> None:
         if urlparse(article).hostname != "caodang.fpt.edu.vn":
             raise SystemExit(f"non-official source article in manifest: {name}")
 
-    print("[fpt-ui-assets] RESOLUTION + MANIFEST FIDELITY PASS")
+    print("[fpt-ui-assets] RESOLUTION + MANIFEST + RESPONSIVE SLIDER PASS")
 
 
 if __name__ == "__main__":

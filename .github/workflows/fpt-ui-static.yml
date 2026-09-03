@@ -44,6 +44,7 @@ jobs:
             scripts/fpt-ui-smoke.sh \
             scripts/fpt-ui-validate-static.sh \
             scripts/fpt-ui-validate-polish.sh \
+            scripts/fpt-ui-validate-homepage-slider.sh \
             scripts/fpt-haproxy-ingress-setup.sh \
             scripts/fpt-ulmo-upgrade.sh
 
@@ -65,5 +66,5 @@ jobs:
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
 
-      - name: Validate legacy polish fixture
+      - name: Validate responsive slider polish
         run: bash scripts/fpt-ui-validate-polish.sh
