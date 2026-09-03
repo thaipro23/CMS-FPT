@@ -1,0 +1,96 @@
+# FPT_DISCOVERY_V11_IMAGE_ONLY
+# Replace the legacy text/collage Discovery hero with three responsive full-image slides.
+# The six slider assets are vendored in Git and copied into Indigo collected static files.
+RUN mkdir -p /openedx/staticfiles/indigo/images/fpt
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-slider-01-male-desktop.webp /openedx/staticfiles/indigo/images/fpt/fpt-slider-01-male-desktop.webp
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-slider-01-male-mobile.webp /openedx/staticfiles/indigo/images/fpt/fpt-slider-01-male-mobile.webp
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-slider-02-female-desktop.webp /openedx/staticfiles/indigo/images/fpt/fpt-slider-02-female-desktop.webp
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-slider-02-female-mobile.webp /openedx/staticfiles/indigo/images/fpt/fpt-slider-02-female-mobile.webp
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-slider-03-group-desktop.webp /openedx/staticfiles/indigo/images/fpt/fpt-slider-03-group-desktop.webp
+COPY --from=edx-platform /fpt_indigo_ui/assets/fpt-slider-03-group-mobile.webp /openedx/staticfiles/indigo/images/fpt/fpt-slider-03-group-mobile.webp
+
+RUN python - <<'PY_SLIDER_V11'
+from pathlib import Path
+
+START = '<!-- FPT_DISCOVERY_V8_START -->'
+END = '<!-- FPT_DISCOVERY_V8_END -->'
+
+hero = r'''<!-- FPT_DISCOVERY_V8_START -->
+<section id="fpt-hero-slider" class="fpt-hero" aria-label="FPT Polytechnic E-Learning">
+<style>
+/* FPT_DISCOVERY_V11_IMAGE_ONLY */
+.fpt-hero{--fpt-blue:#0B3B82;position:relative;overflow:hidden;margin:0 0 30px;background:#F4F9FF;border:1px solid #E3ECF5;border-radius:0}
+.fpt-hero__stage{position:relative;width:100%;max-width:1920px;aspect-ratio:1920/650;margin:0 auto;overflow:hidden;background:#F4F9FF}
+.fpt-slide{display:none;position:absolute;inset:0;width:100%;height:100%;padding:0;margin:0}
+.fpt-slide.is-active{display:block}
+.fpt-slide__picture,.fpt-slide__image{display:block;width:100%;height:100%}
+.fpt-slide__image{object-fit:cover;object-position:center;background:#F4F9FF}
+.fpt-hero__arrow{position:absolute;z-index:8;top:50%;width:44px;height:44px;margin-top:-22px;border:1px solid #CBD9E8;border-radius:50%;background:rgba(255,255,255,.94);color:#0B3B82;display:grid;place-items:center;font-size:25px;line-height:1;box-shadow:0 10px 26px rgba(19,61,115,.16);cursor:pointer;backdrop-filter:blur(6px)}
+.fpt-hero__arrow:hover,.fpt-hero__arrow:focus{background:#fff;box-shadow:0 12px 30px rgba(19,61,115,.22)}
+.fpt-hero__arrow--prev{left:18px}.fpt-hero__arrow--next{right:18px}
+.fpt-hero__nav{position:absolute;z-index:8;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:8px;align-items:center;padding:7px 9px;border-radius:999px;background:rgba(255,255,255,.64);backdrop-filter:blur(8px)}
+.fpt-dot{width:8px;height:8px;border:0;border-radius:50%;background:#9EB6D0;padding:0;cursor:pointer;transition:width .18s ease,background .18s ease}
+.fpt-dot.is-active{width:26px;border-radius:8px;background:#0B3B82}
+@media(max-width:820px){.fpt-hero__stage{aspect-ratio:4/5}.fpt-hero__arrow--prev{left:12px}.fpt-hero__arrow--next{right:12px}.fpt-hero__nav{bottom:13px}}
+@media(max-width:520px){.fpt-hero{margin-bottom:22px}.fpt-hero__arrow{display:none}.fpt-hero__nav{bottom:11px}.fpt-dot{width:7px;height:7px}.fpt-dot.is-active{width:23px}}
+@media(prefers-reduced-motion:reduce){.fpt-dot{transition:none!important}}
+</style>
+<div class="fpt-hero__stage">
+  <div class="fpt-slide is-active">
+    <picture class="fpt-slide__picture">
+      <source media="(max-width: 820px)" srcset="/static/indigo/images/fpt/fpt-slider-01-male-mobile.webp"/>
+      <img class="fpt-slide__image" src="/static/indigo/images/fpt/fpt-slider-01-male-desktop.webp" alt="" aria-hidden="true" fetchpriority="high" decoding="async"/>
+    </picture>
+  </div>
+  <div class="fpt-slide">
+    <picture class="fpt-slide__picture">
+      <source media="(max-width: 820px)" srcset="/static/indigo/images/fpt/fpt-slider-02-female-mobile.webp"/>
+      <img class="fpt-slide__image" src="/static/indigo/images/fpt/fpt-slider-02-female-desktop.webp" alt="" aria-hidden="true" decoding="async"/>
+    </picture>
+  </div>
+  <div class="fpt-slide">
+    <picture class="fpt-slide__picture">
+      <source media="(max-width: 820px)" srcset="/static/indigo/images/fpt/fpt-slider-03-group-mobile.webp"/>
+      <img class="fpt-slide__image" src="/static/indigo/images/fpt/fpt-slider-03-group-desktop.webp" alt="" aria-hidden="true" decoding="async"/>
+    </picture>
+  </div>
+  <button class="fpt-hero__arrow fpt-hero__arrow--prev" type="button" aria-label="Slide trước">‹</button>
+  <button class="fpt-hero__arrow fpt-hero__arrow--next" type="button" aria-label="Slide sau">›</button>
+  <div class="fpt-hero__nav" role="group" aria-label="Chọn slide"><button class="fpt-dot is-active" type="button" aria-label="Slide 1"></button><button class="fpt-dot" type="button" aria-label="Slide 2"></button><button class="fpt-dot" type="button" aria-label="Slide 3"></button></div>
+</div>
+<script>
+(function(){
+  var root=document.getElementById('fpt-hero-slider');if(!root)return;
+  var slides=root.querySelectorAll('.fpt-slide'),dots=root.querySelectorAll('.fpt-dot');
+  var prev=root.querySelector('.fpt-hero__arrow--prev'),next=root.querySelector('.fpt-hero__arrow--next');
+  var i=0,timer=null,reduced=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function show(n){i=(n+slides.length)%slides.length;for(var x=0;x<slides.length;x++){slides[x].classList.toggle('is-active',x===i);dots[x].classList.toggle('is-active',x===i);dots[x].setAttribute('aria-current',x===i?'true':'false')}}
+  function stop(){if(timer){clearInterval(timer);timer=null}}
+  function start(){stop();if(!reduced){timer=setInterval(function(){show(i+1)},7000)}}
+  for(var d=0;d<dots.length;d++){(function(x){dots[x].addEventListener('click',function(){show(x);start()})})(d)}
+  prev.addEventListener('click',function(){show(i-1);start()});next.addEventListener('click',function(){show(i+1);start()});
+  root.addEventListener('mouseenter',stop);root.addEventListener('mouseleave',start);
+  root.addEventListener('focusin',stop);root.addEventListener('focusout',function(e){if(!root.contains(e.relatedTarget)){start()}});
+  root.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'){show(i-1)}if(e.key==='ArrowRight'){show(i+1)}});
+  show(0);start();
+})();
+</script>
+</section>
+<!-- FPT_DISCOVERY_V8_END -->'''
+
+def replace_hero(path: Path) -> None:
+    if not path.exists():
+        raise RuntimeError(f'FPT slider target missing: {path}')
+    text = path.read_text(encoding='utf-8')
+    if START not in text or END not in text:
+        raise RuntimeError(f'FPT slider markers missing: {path}')
+    before = text.split(START, 1)[0]
+    after = text.split(END, 1)[1]
+    text = before + hero + after
+    if text.count('id="fpt-hero-slider"') != 1:
+        raise RuntimeError(f'FPT slider duplicate/missing after replacement: {path}')
+    path.write_text(text, encoding='utf-8')
+
+replace_hero(Path('/openedx/themes/indigo/lms/templates/courseware/courses.html'))
+replace_hero(Path('/openedx/themes/indigo/lms/templates/index.html'))
+PY_SLIDER_V11
