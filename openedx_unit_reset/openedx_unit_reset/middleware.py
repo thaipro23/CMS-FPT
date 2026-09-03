@@ -56,7 +56,7 @@ class UnitQuizSessionSubmitGuardMiddleware:
             return response
 
     def _inject_timer_runtime_for_lms_iframe(self, request, response):
-        """Inject runtime.js into LMS iframe HTML pages.
+        """Inject runtime.js only into complete authenticated LMS HTML documents.
 
         The Learning MFE can only post a timeout message to the LMS iframe.
         It cannot safely drive native Open edX controls from the top window
@@ -65,10 +65,21 @@ class UnitQuizSessionSubmitGuardMiddleware:
         and submit selected answers through Open edX problem_check APIs from
         inside the iframe.
 
-        This is intentionally generic for authenticated LMS HTML responses. It
-        is harmless outside timed quizzes because the script only acts when it
-        receives the explicit postMessage event from the Learning MFE.
+        Only successful GET responses containing a complete HTML document are
+        mutated. In particular, enrollment POST responses, redirects, API-like
+        HTML fragments, and error pages must pass through untouched; otherwise
+        the injected script can be mistaken for a redirect/error payload by the
+        caller and corrupt navigation after enrollment.
         """
+        # Never mutate enrollment/submit/API responses. Runtime injection is only
+        # valid for browser document loads.
+        if getattr(request, 'method', '').upper() != 'GET':
+            return response
+
+        # Do not alter redirects, errors, or other non-success responses.
+        if getattr(response, 'status_code', None) != 200:
+            return response
+
         path = (getattr(request, 'path', '') or '').lower()
         if '/api/unit-reset/v1/quiz-session/runtime.js' in path:
             return response
@@ -92,13 +103,16 @@ class UnitQuizSessionSubmitGuardMiddleware:
         if marker in html:
             return response
 
-        script = '<script id="%s" src="/api/unit-reset/v1/quiz-session/runtime.js" defer></script>' % marker
+        # Only inject into a complete HTML document. Never append the script to
+        # an HTML fragment because callers may treat that fragment as a redirect
+        # URL or status message (for example the native Open edX enroll flow).
         lower = html.lower()
         idx = lower.rfind('</body>')
-        if idx >= 0:
-            html = html[:idx] + script + html[idx:]
-        else:
-            html = html + script
+        if idx < 0:
+            return response
+
+        script = '<script id="%s" src="/api/unit-reset/v1/quiz-session/runtime.js" defer></script>' % marker
+        html = html[:idx] + script + html[idx:]
 
         response.content = html.encode(response.charset or 'utf-8')
         if response.has_header('Content-Length'):
