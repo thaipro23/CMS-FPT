@@ -145,12 +145,16 @@ PLUGIN_SLOTS.add_item((
 
 
 # Legacy LMS branding/discovery is intentionally consolidated into one patch.
+# The image-only slider patch runs after the legacy hero so it can replace that
+# markup idempotently on both /courses and the LMS homepage.
 # Native logo replacement remains separate because it operates on collected
 # static assets after the theme/UI changes are rendered.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
     _jinja_raw(
         _read_patch("openedx.patch")
+        + "\n"
+        + _read_patch("slider_images.patch")
         + "\n"
         + _read_patch("native_logo.patch")
     ),
