@@ -89,7 +89,12 @@ _TEXT_FIELD_NAMES = (
     'data', 'content', 'html', 'text', 'body', 'source_code', 'xml_data',
     'markdown', 'description', 'transcript', 'display_name'
 )
-MAX_AI_CONNECTOR_BODY_BYTES = int(os.environ.get('AI_CONNECTOR_MAX_BODY_BYTES') or 2 * 1024 * 1024)
+DEFAULT_AI_CONNECTOR_MAX_BODY_BYTES = 24 * 1024 * 1024
+MAX_AI_CONNECTOR_BODY_BYTES = int(
+    os.environ.get('AI_CONNECTOR_MAX_BODY_BYTES')
+    or getattr(settings, 'AI_CONNECTOR_MAX_BODY_BYTES', None)
+    or DEFAULT_AI_CONNECTOR_MAX_BODY_BYTES
+)
 MAX_STUDENT_INSIGHT_BATCH_SIZE = int(os.environ.get('AI_STUDENT_INSIGHT_MAX_BATCH_SIZE') or 500)
 
 _VIDEO_FIELD_NAMES = (

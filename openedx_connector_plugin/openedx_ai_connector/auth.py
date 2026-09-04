@@ -20,7 +20,12 @@ from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse
 
-MAX_AI_CONNECTOR_BODY_BYTES = int(os.environ.get('AI_CONNECTOR_MAX_BODY_BYTES') or 2 * 1024 * 1024)
+DEFAULT_AI_CONNECTOR_MAX_BODY_BYTES = 24 * 1024 * 1024
+MAX_AI_CONNECTOR_BODY_BYTES = int(
+    os.environ.get('AI_CONNECTOR_MAX_BODY_BYTES')
+    or getattr(settings, 'AI_CONNECTOR_MAX_BODY_BYTES', None)
+    or DEFAULT_AI_CONNECTOR_MAX_BODY_BYTES
+)
 MAX_STUDENT_INSIGHT_BATCH_SIZE = int(
     os.environ.get('AI_CONNECTOR_MAX_BATCH_SIZE')
     or getattr(settings, 'AI_CONNECTOR_MAX_BATCH_SIZE', None)
