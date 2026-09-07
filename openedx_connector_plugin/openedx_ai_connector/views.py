@@ -6,24 +6,36 @@ Keep this file thin so Django URLs and external imports remain stable.
 
 from __future__ import annotations
 
-from .studio import (
-    health,
-    course_content,
-    studio_course_content,
-    publish_problem,
-    ensure_chapter_library,
-    publish_diagnostics,
-    backfill_library_tags,
-    library_tags_diagnostics,
-    verify_library_problem,
-    delete_library_problem,
-    session_me,
-    session_bridge,
-    create_quiz_node,
-    delete_quiz_node,
-    insert_problem_banks,
-)
+from . import studio as _studio
+from .itembank_naming import problem_bank_slot_display_name
 from .media_publish import import_problem_to_library
+
+
+def _runtime_problem_bank_slot_display_name(slot):
+    """Resolve the primary Studio display name from the synced slot metadata."""
+    return _studio._normalized_xblock_display_name(problem_bank_slot_display_name(slot))
+
+
+# Runtime wiring: urls.py imports endpoint callables from this module, while those
+# callables execute with studio.py globals. Replace only the naming resolver so
+# the real insert endpoint uses slot_m0/slot_no without replacing studio.py.
+_studio._problem_bank_slot_display_name = _runtime_problem_bank_slot_display_name
+
+health = _studio.health
+course_content = _studio.course_content
+studio_course_content = _studio.studio_course_content
+publish_problem = _studio.publish_problem
+ensure_chapter_library = _studio.ensure_chapter_library
+publish_diagnostics = _studio.publish_diagnostics
+backfill_library_tags = _studio.backfill_library_tags
+library_tags_diagnostics = _studio.library_tags_diagnostics
+verify_library_problem = _studio.verify_library_problem
+delete_library_problem = _studio.delete_library_problem
+session_me = _studio.session_me
+session_bridge = _studio.session_bridge
+create_quiz_node = _studio.create_quiz_node
+delete_quiz_node = _studio.delete_quiz_node
+insert_problem_banks = _studio.insert_problem_banks
 
 __all__ = [
     'health',
