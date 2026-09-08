@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from openedx_connector_plugin.openedx_ai_connector.itembank_naming import (
@@ -34,3 +36,13 @@ def test_missing_or_invalid_slot_metadata_is_rejected():
     for slot in ({}, {'slot_no': 0}, {'slot_m0': 'not-a-number'}):
         with pytest.raises(ValueError):
             resolve_problem_bank_slot_number(slot)
+
+
+def test_views_runtime_wiring_calls_an_existing_studio_title_normalizer():
+    plugin_root = Path(__file__).resolve().parents[1]
+    views_source = (plugin_root / 'openedx_ai_connector' / 'views.py').read_text(encoding='utf-8')
+    studio_source = (plugin_root / 'openedx_ai_connector' / 'studio.py').read_text(encoding='utf-8')
+
+    assert '_normalized_xblock_display_name' not in views_source
+    assert 'def _normalize_xblock_title(' in studio_source
+    assert '_studio._normalize_xblock_title(' in views_source

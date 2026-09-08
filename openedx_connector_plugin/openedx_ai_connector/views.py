@@ -13,7 +13,11 @@ from .media_publish import import_problem_to_library
 
 def _runtime_problem_bank_slot_display_name(slot):
     """Resolve the primary Studio display name from the synced slot metadata."""
-    return _studio._normalized_xblock_display_name(problem_bank_slot_display_name(slot))
+    return _studio._normalize_xblock_title(
+        problem_bank_slot_display_name(slot),
+        'Problem Bank',
+        max_len=120,
+    )
 
 
 # Runtime wiring: urls.py imports endpoint callables from this module, while those
