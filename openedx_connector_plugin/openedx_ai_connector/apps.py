@@ -6,6 +6,10 @@ class OpenEdxAIConnectorConfig(AppConfig):
     verbose_name = "Open edX AI Connector"
 
     plugin_app = {
+        "settings_config": {
+            "lms.djangoapp": {"common": {"relative_path": "settings.common"}},
+            "cms.djangoapp": {"common": {"relative_path": "settings.common"}},
+        },
         "url_config": {
             "lms.djangoapp": {
                 "namespace": "openedx_ai_connector",

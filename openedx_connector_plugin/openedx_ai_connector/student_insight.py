@@ -39,6 +39,7 @@ from .auth import (
     _setting_or_env,
 )
 from .runtime import _load_openedx_modules
+from .database import ConnectorReplicaError, replica_reads
 
 try:
     # Reuse the robust OLX helpers from the Studio connector module.  Earlier
@@ -2091,6 +2092,7 @@ def _compact_progress_payload(progress: dict[str, Any]) -> dict[str, Any]:
     ]
     return {key: progress.get(key) for key in keys if key in progress and progress.get(key) is not None}
 
+@replica_reads
 def _student_learning_results(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
     course_key = _course_key_from_string(course_id)
     found_by_key = _student_insight_user_map(requested)
@@ -2204,6 +2206,15 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
     }
 
 
+def _replica_error_response(error):
+    return _json_response({
+        'ok': False,
+        'code': 'connector_replica_unavailable',
+        'message': str(error),
+        'results': [],
+    }, status=503)
+
+
 @csrf_exempt
 def student_insight_class_analytics(request):
     """Return enrollment/progress/grade snapshots for a class in one call.
@@ -2235,6 +2246,8 @@ def student_insight_class_analytics(request):
         include_diagnostics = bool(data.get('include_diagnostics'))
         skip_course_home_progress = bool(data.get('skip_course_home_progress') or data.get('fast_student_module'))
         results = _student_learning_results(course_id, requested, compact=compact, skip_course_home_progress=skip_course_home_progress)
+    except ConnectorReplicaError as exc:
+        return _replica_error_response(exc)
     except Exception:
         return _json_response({'ok': False, 'code': 'class_analytics_failed', 'message': 'Không lấy được dữ liệu học tập CMS/Open edX', 'results': []}, status=500)
     counts: dict[str, int] = {}
@@ -2759,7 +2772,10 @@ def student_insight_course_enrollment_batch(request):
     batch_error = _batch_too_large_response(len(requested))
     if batch_error:
         return batch_error
-    results = _student_learning_results(course_id, requested) if course_id and requested else []
+    try:
+        results = _student_learning_results(course_id, requested) if course_id and requested else []
+    except ConnectorReplicaError as exc:
+        return _replica_error_response(exc)
     return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'enrollment': item.get('enrollment'), 'enrollment_status': item.get('enrollment_status'), 'enrollment_mode': item.get('enrollment_mode')} for item in results], 'total': len(results)})
 
 
@@ -2779,7 +2795,10 @@ def student_insight_course_progress_batch(request):
     batch_error = _batch_too_large_response(len(requested))
     if batch_error:
         return batch_error
-    results = _student_learning_results(course_id, requested) if course_id and requested else []
+    try:
+        results = _student_learning_results(course_id, requested) if course_id and requested else []
+    except ConnectorReplicaError as exc:
+        return _replica_error_response(exc)
     return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'progress': item.get('progress'), 'progress_percent': item.get('progress_percent'), 'progress_source': item.get('progress_source'), 'completed_blocks': item.get('completed_blocks'), 'total_blocks': item.get('total_blocks')} for item in results], 'total': len(results)})
 
 
@@ -2799,5 +2818,8 @@ def student_insight_quiz_grades_batch(request):
     batch_error = _batch_too_large_response(len(requested))
     if batch_error:
         return batch_error
-    results = _student_learning_results(course_id, requested) if course_id and requested else []
+    try:
+        results = _student_learning_results(course_id, requested) if course_id and requested else []
+    except ConnectorReplicaError as exc:
+        return _replica_error_response(exc)
     return _json_response({'ok': True, 'course_id': course_id, 'results': [{'username': item.get('username'), 'student_code': item.get('student_code'), 'grade': item.get('grade'), 'grade_percent': item.get('grade_percent'), 'passed': item.get('passed')} for item in results], 'total': len(results)})
