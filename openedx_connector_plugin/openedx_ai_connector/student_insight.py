@@ -324,43 +324,13 @@ def _connector_debug_errors_enabled() -> bool:
 def _created_user_password_config() -> tuple[str, str, str]:
     """Return configured password policy for auto-created Open edX users.
 
-    Default is intentionally `unusable`: the created user can be enrolled and
-    tracked by Open edX, but cannot authenticate with a local password until SSO
-    or password reset sets one. Operators may opt into a fixed temporary password
-    for UAT/import windows only by setting AI_CONNECTOR_CREATED_USER_PASSWORD_MODE=fixed
-    and AI_CONNECTOR_CREATED_USER_DEFAULT_PASSWORD. The password is never returned
-    by the API response and is masked by AI Server audit logging.
+    Auto-created staff accounts are SSO-only. No password is generated or stored.
     """
-    mode = str(_setting_or_env('AI_CONNECTOR_CREATED_USER_PASSWORD_MODE', 'unusable') or 'unusable').strip().lower()
-    default_password = str(_setting_or_env('AI_CONNECTOR_CREATED_USER_DEFAULT_PASSWORD', '') or '')
-    if mode not in {'unusable', 'fixed', 'random'}:
-        mode = 'unusable'
-    if mode == 'fixed' and len(default_password) < 8:
-        # Do not silently create weak-password accounts. Fall back to unusable.
-        return 'unusable', '', 'fixed_password_missing_or_too_short'
-    return mode, default_password, 'configured'
+    return 'unusable', '', 'enforced_no_local_password'
 
 
 def _apply_created_user_password(user: Any) -> dict[str, Any]:
-    mode, default_password, config_status = _created_user_password_config()
-    if mode == 'fixed' and default_password:
-        user.set_password(default_password)
-        return {
-            'password_policy': 'fixed_env_password',
-            'password_login_enabled': True,
-            'password_config_status': config_status,
-            'password_note': 'User được tạo với mật khẩu tạm lấy từ AI_CONNECTOR_CREATED_USER_DEFAULT_PASSWORD; API không trả mật khẩu ra response.',
-        }
-    if mode == 'random':
-        # Random local password prevents login by guessing/default password. Since it
-        # is not returned or logged, real access still uses SSO/password reset.
-        user.set_password(secrets.token_urlsafe(32))
-        return {
-            'password_policy': 'random_not_returned',
-            'password_login_enabled': False,
-            'password_config_status': config_status,
-            'password_note': 'User có mật khẩu ngẫu nhiên không trả ra response; đăng nhập bằng SSO hoặc reset password.',
-        }
+    _mode, _default_password, config_status = _created_user_password_config()
     if hasattr(user, 'set_unusable_password'):
         user.set_unusable_password()
     return {
