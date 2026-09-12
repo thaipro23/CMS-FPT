@@ -21,8 +21,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.99'
-CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.99'
+CONNECTOR_VERSION = '25.9.16.5.100'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.100'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
     'denominator': 'reachable_sequential_subsections',
@@ -40,6 +40,7 @@ from .auth import (
 )
 from .runtime import _load_openedx_modules
 from .database import ConnectorReplicaError, replica_reads
+from .staff_provisioning import cms_staff_requested, ensure_required_cms_staff
 
 try:
     # Reuse the robust OLX helpers from the Studio connector module.  Earlier
@@ -557,6 +558,16 @@ def student_insight_resolve_users(request):
         if user is not None:
             full_name = user.get_full_name() if hasattr(user, 'get_full_name') else ''
             profile_state = _ensure_user_profile(user, full_name=full_name, username=username)
+            try:
+                staff_state = ensure_required_cms_staff(
+                    user,
+                    required=(item.get('person_type') == 'teacher' and cms_staff_requested(item.get('raw'))),
+                )
+            except Exception as exc:
+                message = 'Không thể cấp/xác nhận quyền CMS staff.'
+                if _connector_debug_errors_enabled():
+                    message = f'{message} {exc}'
+                return _json_response({'ok': False, 'message': message}, status=500)
             row = {
                 'student_code': student_code or None,
                 'ap_username': ap_username,
@@ -571,6 +582,7 @@ def student_insight_resolve_users(request):
                 'openedx_is_active': bool(getattr(user, 'is_active', True)),
                 'is_active': bool(getattr(user, 'is_active', True)),
                 'full_name': full_name,
+                **staff_state,
                 **_existing_user_password_state(user),
                 'user_profile_ok': bool(profile_state.get('ok')),
                 'user_profile_created': bool(profile_state.get('created')),
@@ -587,6 +599,10 @@ def student_insight_resolve_users(request):
             if create_missing and username:
                 try:
                     created_user, created, create_status, password_state = _ensure_cms_user(item.get('raw'), username, item.get('person_type') or 'student')
+                    staff_state = ensure_required_cms_staff(
+                        created_user,
+                        required=(item.get('person_type') == 'teacher' and cms_staff_requested(item.get('raw'))),
+                    ) if created_user is not None else {'is_staff': False, 'is_superuser': False, 'staff_updated': False}
                 except Exception as exc:
                     created_user = None
                     create_message = 'Không tạo được user CMS/Open edX' + (f': {exc}' if _connector_debug_errors_enabled() else '')
@@ -608,6 +624,7 @@ def student_insight_resolve_users(request):
                     'openedx_is_active': bool(getattr(created_user, 'is_active', True)),
                     'is_active': bool(getattr(created_user, 'is_active', True)),
                     'full_name': full_name,
+                    **staff_state,
                     **password_state,
                     'note': (('Đã tạo mới user CMS/Open edX từ RollNumber/student_code' if is_student_rollnumber else 'Đã tạo mới user CMS/Open edX từ dữ liệu AP') if created else ('Đã chuẩn hóa username user cũ theo RollNumber bằng email AP, giữ nguyên user ID và lịch sử' if create_status == 'migrated_legacy_email_to_rollnumber' else ('Khớp chính xác RollNumber/student_code = CMS/Open edX username' if is_student_rollnumber else 'Khớp chính xác username = CMS/Open edX username'))),
                 }
@@ -628,6 +645,9 @@ def student_insight_resolve_users(request):
                     'openedx_email': None,
                     'openedx_is_active': None,
                     'is_active': None,
+                    'is_staff': False,
+                    'is_superuser': False,
+                    'staff_updated': False,
                     **password_state,
                     'note': create_message,
                 }
