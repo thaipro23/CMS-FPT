@@ -40,6 +40,17 @@ def database_scope(alias):
         _read_alias.reset(token)
 
 
+def primary_reads(func):
+    """Pin one narrowly scoped connector read to the primary database."""
+
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with database_scope('default'):
+            return func(*args, **kwargs)
+
+    return wrapped
+
+
 class ConnectorDatabaseRouter:
     """Leave other requests and migrations to the existing Open edX routers."""
 

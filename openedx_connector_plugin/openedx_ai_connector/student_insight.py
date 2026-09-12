@@ -21,8 +21,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.100'
-CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.100'
+CONNECTOR_VERSION = '25.9.16.5.101'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.101'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
     'denominator': 'reachable_sequential_subsections',
@@ -39,7 +39,8 @@ from .auth import (
     _setting_or_env,
 )
 from .runtime import _load_openedx_modules
-from .database import ConnectorReplicaError, replica_reads
+from .database import ConnectorReplicaError, primary_reads, replica_reads
+from .read_consistency import normalize_analytics_read_consistency
 from .staff_provisioning import cms_staff_requested, ensure_required_cms_staff
 
 try:
@@ -2082,8 +2083,7 @@ def _compact_progress_payload(progress: dict[str, Any]) -> dict[str, Any]:
     ]
     return {key: progress.get(key) for key in keys if key in progress and progress.get(key) is not None}
 
-@replica_reads
-def _student_learning_results(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
+def _student_learning_results_on_selected_database(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
     course_key = _course_key_from_string(course_id)
     found_by_key = _student_insight_user_map(requested)
     users = []
@@ -2134,6 +2134,30 @@ def _student_learning_results(course_id: str, requested: list[dict[str, Any]], *
             'component_grades': components,
         })
     return results
+
+
+@replica_reads
+def _student_learning_results(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
+    """Default report path: always read the configured replica."""
+
+    return _student_learning_results_on_selected_database(
+        course_id,
+        requested,
+        compact=compact,
+        skip_course_home_progress=skip_course_home_progress,
+    )
+
+
+@primary_reads
+def _student_learning_results_primary(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
+    """Strong read used only by the immediate post-enrollment full-sync call."""
+
+    return _student_learning_results_on_selected_database(
+        course_id,
+        requested,
+        compact=compact,
+        skip_course_home_progress=skip_course_home_progress,
+    )
 
 
 def _learning_connector_diagnostics() -> dict[str, Any]:
@@ -2226,16 +2250,18 @@ def student_insight_class_analytics(request):
     if not course_id:
         return _json_response({'ok': False, 'message': 'Thiếu course_id'}, status=400)
     requested = _student_insight_requested_students(data)
+    read_consistency = normalize_analytics_read_consistency(data.get('read_consistency'))
     batch_error = _batch_too_large_response(len(requested))
     if batch_error:
         return batch_error
     if not requested:
-        return _json_response({'ok': True, 'course_id': course_id, 'results': [], 'total': 0})
+        return _json_response({'ok': True, 'course_id': course_id, 'read_consistency': read_consistency, 'results': [], 'total': 0})
     try:
         compact = bool(data.get('compact') or data.get('lite') or data.get('minimal'))
         include_diagnostics = bool(data.get('include_diagnostics'))
         skip_course_home_progress = bool(data.get('skip_course_home_progress') or data.get('fast_student_module'))
-        results = _student_learning_results(course_id, requested, compact=compact, skip_course_home_progress=skip_course_home_progress)
+        reader = _student_learning_results_primary if read_consistency == 'primary_after_enrollment' else _student_learning_results
+        results = reader(course_id, requested, compact=compact, skip_course_home_progress=skip_course_home_progress)
     except ConnectorReplicaError as exc:
         return _replica_error_response(exc)
     except Exception:
@@ -2264,6 +2290,7 @@ def student_insight_class_analytics(request):
         'course_id': course_id,
         'connector_version': CONNECTOR_VERSION,
         'connector_contract_version': CONNECTOR_CONTRACT_VERSION,
+        'read_consistency': read_consistency,
         'progress_contract': PROGRESS_CONTRACT,
         'total': len(results),
         'counts': counts,

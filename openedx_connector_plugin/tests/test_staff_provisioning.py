@@ -69,7 +69,7 @@ class StaffProvisioningTests(unittest.TestCase):
 
     def test_resolve_users_wires_staff_verification_into_response(self):
         source = RESOLVE_MODULE.read_text(encoding='utf-8')
-        self.assertIn("CONNECTOR_VERSION = '25.9.16.5.100'", source)
+        self.assertIn("CONNECTOR_VERSION = '25.9.16.5.101'", source)
         self.assertIn('ensure_required_cms_staff(', source)
         self.assertIn("item.get('person_type') == 'teacher'", source)
         self.assertIn('**staff_state', source)

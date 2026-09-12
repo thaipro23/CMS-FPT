@@ -76,6 +76,15 @@ class DatabaseRoutingTests(unittest.TestCase):
             self.assertEqual(self.router.db_for_read(str), 'reporting')
         self.assertIsNone(self.router.db_for_write(str))
 
+    def test_primary_reads_decorator_is_scoped_and_restores_replica(self):
+        @self.db.primary_reads
+        def read_primary():
+            return self.router.db_for_read(str)
+
+        with self.db.database_scope('reporting'):
+            self.assertEqual(read_primary(), 'default')
+            self.assertEqual(self.router.db_for_read(str), 'reporting')
+
     def test_concurrent_requests_do_not_share_database_or_write_pins(self):
         async def request(alias, write):
             with self.db.database_scope(alias):

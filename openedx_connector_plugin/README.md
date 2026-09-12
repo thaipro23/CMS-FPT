@@ -153,6 +153,8 @@ Với sinh viên, payload chuẩn dùng `RollNumber`/`student_code` làm canonic
 
 `POST /api/ai-connector/v1/class-analytics` trả best-effort component/subsection grade breakdown khi Open edX deployment có `PersistentSubsectionGrade` cho users/course tương ứng.
 
+Mặc định endpoint đọc database replica (`read_consistency: "replica"`). Chỉ full-sync của AI Server ngay sau khi connector xác nhận enrollment mới gửi `read_consistency: "primary_after_enrollment"`; connector pin đúng một lần đọc đó vào database `default` rồi tự khôi phục routing. Các báo cáo và lần cập nhật điểm thông thường vẫn bắt buộc đi qua replica.
+
 Response có thể gồm:
 
 ```json
