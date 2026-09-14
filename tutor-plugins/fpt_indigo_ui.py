@@ -133,13 +133,15 @@ hooks.Filters.ENV_PATCHES.add_item((
 import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
-# Authn has one canonical source transformation. Do not stack layout/polish/SSO
-# patches after it: the canonical patch owns the final React tree and stylesheet,
-# including the error state. This prevents old local-login controls from
-# reappearing when FEID/Google returns an authentication failure.
+# Authn keeps one canonical layout/style transform. A tiny follow-up patch only
+# changes the two provider labels; it does not replace layout, CSS, or routing.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authn",
-    _jinja_raw(_read_patch("authn.patch")),
+    _jinja_raw(
+        _read_patch("authn.patch")
+        + "\n"
+        + _read_patch("authn_labels.patch")
+    ),
 ))
 
 # Course Unit assessment/library-backed components are created through ACMS.
