@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .presence import presence_count
 from .views import (
     health,
     course_content,
@@ -30,9 +31,11 @@ from .student_insight import (
 
 # NOTE:
 # Canonical runtime prefix is /api/ai-connector/v1/.
-# OpenEdxAIConnectorConfig also mounts the old /api/ai-student-insight/v1/
-# alias for rolling upgrades only. Therefore paths here must be RELATIVE.
+# OpenEdxAIConnectorConfig also mounts /api/presence/v1/ and the old
+# /api/ai-student-insight/v1/ alias. Therefore paths here must be RELATIVE.
 urlpatterns = [
+    path("count", presence_count, name="presence_count"),
+    path("count/", presence_count, name="presence_count_slash"),
     path("users/resolve", student_insight_resolve_users, name="student_insight_resolve_users"),
     path("users/resolve/", student_insight_resolve_users, name="student_insight_resolve_users_slash"),
     path("courses/search", student_insight_course_search, name="student_insight_course_search"),
