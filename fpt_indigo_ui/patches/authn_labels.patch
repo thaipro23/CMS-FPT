@@ -1,0 +1,24 @@
+# FPT Authn role labels only. Keep canonical layout/styles/provider routing intact.
+RUN node - <<'JS2'
+const fs = require('fs');
+
+const path = '/openedx/app/src/common-components/SocialAuthProviders.jsx';
+const source = fs.readFileSync(path, 'utf8');
+
+const before = "const label = type === 'google' ? 'Sign in with Google' : 'Sign in with FEID';";
+const after = "const label = type === 'google' ? 'Staff Login' : 'Student Login'; // FPT_AUTHN_ROLE_LABELS_V1";
+
+if (!source.includes(before)) {
+  if (source.includes('FPT_AUTHN_ROLE_LABELS_V1')) {
+    process.exit(0);
+  }
+  throw new Error('FPT Authn role-label patch could not find canonical provider label anchor');
+}
+
+const rendered = source.replace(before, after);
+if (!rendered.includes("'Student Login'") || !rendered.includes("'Staff Login'")) {
+  throw new Error('FPT Authn role-label verification failed');
+}
+
+fs.writeFileSync(path, rendered, 'utf8');
+JS2
