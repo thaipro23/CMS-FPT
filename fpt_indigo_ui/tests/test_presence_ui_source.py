@@ -3,7 +3,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TUTOR_PLUGIN = REPO_ROOT / "tutor-plugins" / "fpt_indigo_ui.py"
-RUNTIME_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "runtime.patch"
+PRESENCE_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "presence_runtime.patch"
 
 
 def test_tutor_presence_integration_markers():
@@ -12,12 +12,13 @@ def test_tutor_presence_integration_markers():
     assert "openedx_fpt_presence" in source
     assert "FPTPresenceMiddleware" in source
     assert "FPT_PRESENCE_REDIS" in source
+    assert "_read_patch(\"presence_runtime.patch\")" in source
     assert "org.openedx.frontend.layout.learning_header_actions.v1" in source
     assert "RenderWidget: FptPresenceBadge" in source
 
 
 def test_learning_presence_badge_runtime_markers():
-    source = RUNTIME_PATCH.read_text(encoding="utf-8")
+    source = PRESENCE_PATCH.read_text(encoding="utf-8")
 
     assert "const FptPresenceBadge" in source
     assert "/api/fpt-presence/v1/count" in source
