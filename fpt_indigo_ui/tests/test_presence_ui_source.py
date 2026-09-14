@@ -69,3 +69,9 @@ def test_authn_login_labels_are_student_and_staff_without_changing_provider_rout
     assert "Sign in with FEID" in labels
     assert "Sign in with Google" in labels
     assert "provider.loginUrl" in canonical
+
+    # The follow-up patch must fail the image build if canonical Authn styling
+    # disappears, preventing a repeat of the unstyled login rollout.
+    assert "FPT_AUTHN_CANONICAL_V1" in labels
+    assert ".fpt-auth-visual--large" in labels
+    assert ".fpt-sso-provider--feid" in labels
