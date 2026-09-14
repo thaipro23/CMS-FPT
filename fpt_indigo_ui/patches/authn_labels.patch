@@ -3,21 +3,36 @@ RUN node - <<'JS2'
 const fs = require('fs');
 
 const path = '/openedx/app/src/common-components/SocialAuthProviders.jsx';
+const scssPath = '/openedx/app/src/index.scss';
 const source = fs.readFileSync(path, 'utf8');
 
 const before = "const label = type === 'google' ? 'Sign in with Google' : 'Sign in with FEID';";
 const after = "const label = type === 'google' ? 'Staff Login' : 'Student Login'; // FPT_AUTHN_ROLE_LABELS_V1";
 
-if (!source.includes(before)) {
-  if (source.includes('FPT_AUTHN_ROLE_LABELS_V1')) {
-    process.exit(0);
-  }
+let rendered = source;
+if (source.includes(before)) {
+  rendered = source.replace(before, after);
+} else if (!source.includes('FPT_AUTHN_ROLE_LABELS_V1')) {
   throw new Error('FPT Authn role-label patch could not find canonical provider label anchor');
 }
 
-const rendered = source.replace(before, after);
 if (!rendered.includes("'Student Login'") || !rendered.includes("'Staff Login'")) {
   throw new Error('FPT Authn role-label verification failed');
+}
+
+// Guard the exact failure mode seen in production: React customization present
+// but canonical Authn SCSS missing, which leaves the login page effectively
+// unstyled. Fail the image build instead of publishing that state.
+const scss = fs.readFileSync(scssPath, 'utf8');
+for (const required of [
+  'FPT_AUTHN_CANONICAL_V1',
+  '.fpt-auth-visual--large',
+  '.fpt-sso-provider--feid',
+  '.fpt-sso-provider--google',
+]) {
+  if (!scss.includes(required)) {
+    throw new Error(`FPT Authn canonical CSS verification failed: missing ${required}`);
+  }
 }
 
 fs.writeFileSync(path, rendered, 'utf8');
