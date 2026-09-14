@@ -52,39 +52,19 @@ USE_TZ = True
 """,
 ))
 
-# FPT_PRESENCE_V1
-# Install a tiny standalone Django plugin and point it at Tutor's existing Redis.
-# Presence is deliberately fail-open and never depends on MySQL/Mongo/Celery.
+# FPT_PRESENCE_V2
+# Only install the standalone Django plugin here. Runtime middleware and Redis
+# discovery live inside the installed plugin so K8s is not coupled to a matching
+# Tutor settings patch on the deployment node.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile-pre-assets",
     r"""
-# FPT_PRESENCE_V1
+# FPT_PRESENCE_V2
 RUN if [ -n "$PIP_COMMAND" ]; then \
         $PIP_COMMAND install -e /openedx/edx-platform/openedx_fpt_presence; \
     else \
         pip install -e /openedx/edx-platform/openedx_fpt_presence; \
     fi
-""",
-))
-
-hooks.Filters.ENV_PATCHES.add_item((
-    "openedx-common-settings",
-    """
-# FPT_PRESENCE_V1
-FPT_PRESENCE_REDIS = {
-    "HOST": "{{ REDIS_HOST }}",
-    "PORT": 6379,
-    "PASSWORD": "{{ REDIS_PASSWORD }}",
-    "DB": 0,
-    "SOCKET_CONNECT_TIMEOUT": 0.3,
-    "SOCKET_TIMEOUT": 0.3,
-}
-FPT_PRESENCE_ACTIVE_WINDOW_SECONDS = 600
-FPT_PRESENCE_TOUCH_INTERVAL_SECONDS = 60
-FPT_PRESENCE_COUNT_CACHE_SECONDS = 30
-_fpt_presence_middleware = "openedx_fpt_presence.middleware.FPTPresenceMiddleware"
-if _fpt_presence_middleware not in MIDDLEWARE:
-    MIDDLEWARE = [*MIDDLEWARE, _fpt_presence_middleware]
 """,
 ))
 
