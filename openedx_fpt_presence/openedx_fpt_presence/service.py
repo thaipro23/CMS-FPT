@@ -106,7 +106,8 @@ class PresenceService:
         try:
             return self.count()
         except Exception:
-            LOGGER.warning("FPT presence count unavailable", exc_info=False)
+            # Count requests may be frequent. Keep outages quiet and hide the badge.
+            LOGGER.debug("FPT presence count unavailable", exc_info=True)
             return None
 
 
