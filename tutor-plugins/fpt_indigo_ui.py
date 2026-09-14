@@ -53,9 +53,9 @@ USE_TZ = True
 ))
 
 # FPT_PRESENCE_V2
-# Only install the standalone Django plugin here. Runtime middleware and Redis
-# discovery live inside the installed plugin so K8s is not coupled to a matching
-# Tutor settings patch on the deployment node.
+# Install only the standalone Django plugin here. At runtime it reuses the Redis
+# connection already configured by Open edX; it does not provision or reconfigure
+# the external Redis service.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile-pre-assets",
     r"""
@@ -100,12 +100,9 @@ MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
 ))
 
-# Tutor-Indigo 21.2.1 already injects React (plus useEffect/useState) into the
-# shared env.config.jsx. Re-importing the React default binding here makes all
-# MFE builds fail with "Identifier 'React' has already been declared". Reuse
-# Indigo's React binding and only add the FPT-scoped getConfig alias.
-# Compatibility assertion marker retained for our generated-config guard:
-# import React from 'react';
+# Tutor-Indigo 21.2.1 already injects React (plus hooks) into shared env.config.jsx.
+# Reuse that binding and only add the FPT-scoped getConfig alias used by existing
+# footer/runtime code and the Learning-only presence widget below.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-buildtime-imports",
     _jinja_raw("""// FPT reuses the React binding supplied by Tutor-Indigo 21.2.1.
@@ -113,8 +110,9 @@ hooks.Filters.ENV_PATCHES.add_item((
 import { getConfig as getFptConfig } from '@edx/frontend-platform';"""),
 ))
 
-# Authn keeps one canonical layout/style transform. A tiny follow-up patch only
-# changes the two provider labels; it does not replace layout, CSS, or routing.
+# Authn keeps the approved canonical layout/styles. The tiny follow-up patch only
+# changes provider labels to Student Login / Staff Login; it does not touch CSS,
+# layout, provider ordering, or OAuth URLs.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authn",
     _jinja_raw(
@@ -125,20 +123,17 @@ hooks.Filters.ENV_PATCHES.add_item((
 ))
 
 # Course Unit assessment/library-backed components are created through ACMS.
-# Apply this at Authoring source level so blocked buttons are not rendered at all
-# instead of being hidden with CSS selectors that can drift across MFE releases.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-dockerfile-pre-npm-build-authoring",
     _jinja_raw(_read_patch("authoring.patch")),
 ))
 
+# Keep shared MFE runtime exactly as it was before presence was added. Presence
+# must never be injected into Authn/Profile/Account/etc.; the widget is defined
+# inline only in the Learning plugin slot below.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-runtime-definitions",
-    _jinja_raw(
-        _read_patch("runtime.patch")
-        + "\n"
-        + _read_patch("presence_runtime.patch")
-    ),
+    _jinja_raw(_read_patch("runtime.patch")),
 ))
 
 
@@ -152,18 +147,100 @@ FPT_FOOTER_SLOT = (
 )
 
 # Never override logo_slot. Stock Indigo/Open edX header markup remains intact.
-# The Open edX image replaces native logo.png/logo-white.png with the vendored
-# FPT Polytechnic logo, eliminating duplicate logo DOM and slot races.
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
 
-# The Learning header actions slot is immediately before the user menu in the
-# stock frontend header, so presence stays visible without replacing the header.
+# FPT_PRESENCE_LEARNING_ONLY_V1
+# Presence exists only inside the Learning header slot. It is deliberately not
+# part of shared MFE runtime definitions, so rebuilding Authn cannot pick up this
+# widget or its network/timer code.
 PLUGIN_SLOTS.add_item((
     "learning",
     "org.openedx.frontend.layout.learning_header_actions.v1",
     """
-    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_presence_badge', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptPresenceBadge } },
+    {
+      op: PLUGIN_OPERATIONS.Insert,
+      widget: {
+        id: 'fpt_presence_badge',
+        type: DIRECT_PLUGIN,
+        priority: 100,
+        RenderWidget: () => {
+          const [onlineCount, setOnlineCount] = React.useState(null);
+
+          React.useEffect(() => {
+            let mounted = true;
+
+            const loadPresenceCount = async () => {
+              try {
+                const response = await fetch(
+                  `${getFptConfig().LMS_BASE_URL}/api/fpt-presence/v1/count`,
+                  {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { Accept: 'application/json' },
+                  },
+                );
+                if (!response.ok) {
+                  throw new Error(`presence count returned ${response.status}`);
+                }
+
+                const payload = await response.json();
+                const nextCount = Number.isInteger(payload?.online) && payload.online >= 0
+                  ? payload.online
+                  : null;
+                if (mounted) {
+                  setOnlineCount(nextCount);
+                }
+              } catch (_error) {
+                if (mounted) {
+                  setOnlineCount(null);
+                }
+              }
+            };
+
+            loadPresenceCount();
+            const intervalId = window.setInterval(loadPresenceCount, 60000);
+            return () => {
+              mounted = false;
+              window.clearInterval(intervalId);
+            };
+          }, []);
+
+          if (onlineCount === null) {
+            return null;
+          }
+
+          const formattedCount = new Intl.NumberFormat('vi-VN').format(onlineCount);
+          return React.createElement(
+            'div',
+            {
+              className: 'fpt-presence-badge',
+              title: 'Người dùng có hoạt động trong 10 phút gần nhất',
+              'aria-label': `${formattedCount} người đang hoạt động`,
+              'aria-live': 'polite',
+              style: {
+                display: 'inline-flex', alignItems: 'center', gap: '7px',
+                margin: '0 12px 0 6px', padding: '5px 8px', color: '#34495E',
+                fontSize: '13px', fontWeight: 650, lineHeight: 1, whiteSpace: 'nowrap',
+              },
+            },
+            React.createElement('span', {
+              'aria-hidden': 'true',
+              style: {
+                display: 'inline-block', width: '8px', height: '8px',
+                borderRadius: '50%', background: '#22C55E',
+                boxShadow: '0 0 0 2px rgba(34,197,94,.12)',
+              },
+            }),
+            React.createElement(
+              'span',
+              { style: { fontVariantNumeric: 'tabular-nums' } },
+              `${formattedCount} online`,
+            ),
+          );
+        },
+      },
+    },
 """,
 ))
 
@@ -177,10 +254,6 @@ PLUGIN_SLOTS.add_item((
 
 
 # Legacy LMS branding/discovery is intentionally consolidated into one patch.
-# The image-only slider patch runs after the legacy hero so it can replace that
-# markup idempotently on both /courses and the LMS homepage.
-# Native logo replacement remains separate because it operates on collected
-# static assets after the theme/UI changes are rendered.
 hooks.Filters.ENV_PATCHES.add_item((
     "openedx-dockerfile",
     _jinja_raw(
