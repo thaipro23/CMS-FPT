@@ -62,18 +62,16 @@ def discover_redis_url(settings):
 
 
 def plugin_settings(settings):
-    """Install middleware and discover Redis from the live Open edX settings."""
+    """Install middleware and defaults; Redis is resolved from final runtime settings."""
 
     middleware = list(getattr(settings, "MIDDLEWARE", []))
     if MIDDLEWARE_PATH not in middleware:
         middleware.append(MIDDLEWARE_PATH)
         settings.MIDDLEWARE = middleware
 
-    if not getattr(settings, "FPT_PRESENCE_REDIS_URL", None):
-        redis_url = discover_redis_url(settings)
-        if redis_url:
-            settings.FPT_PRESENCE_REDIS_URL = redis_url
-
+    # Do not resolve/cache a Redis URL here. Tutor production settings may still
+    # be patched after common plugin settings run. PresenceService resolves the
+    # final CACHES/Celery settings lazily when it first needs Redis.
     settings.FPT_PRESENCE_ACTIVE_WINDOW_SECONDS = getattr(
         settings,
         "FPT_PRESENCE_ACTIVE_WINDOW_SECONDS",
