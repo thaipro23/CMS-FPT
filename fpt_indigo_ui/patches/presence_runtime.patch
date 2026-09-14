@@ -1,0 +1,69 @@
+// FPT_PRESENCE_LEARNING_ONLY_V1
+// Aggregate backend activity only. There is intentionally no browser heartbeat.
+const FptPresenceBadge = () => {
+  const [onlineCount, setOnlineCount] = useState(null);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadPresenceCount = async () => {
+      try {
+        const response = await fetch(
+          `${getFptConfig().LMS_BASE_URL}/api/fpt-presence/v1/count`,
+          {
+            method: 'GET',
+            credentials: 'include',
+            headers: { Accept: 'application/json' },
+          },
+        );
+        if (!response.ok) {
+          throw new Error(`presence count returned ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const nextCount = Number.isInteger(payload?.online) && payload.online >= 0
+          ? payload.online
+          : null;
+        if (mounted) {
+          setOnlineCount(nextCount);
+        }
+      } catch (_error) {
+        if (mounted) {
+          setOnlineCount(null);
+        }
+      }
+    };
+
+    loadPresenceCount();
+    const intervalId = window.setInterval(loadPresenceCount, 60000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  if (onlineCount === null) {
+    return null;
+  }
+
+  const formattedCount = new Intl.NumberFormat('vi-VN').format(onlineCount);
+
+  return (
+    <div
+      className="fpt-presence-badge"
+      title="Người dùng có hoạt động trong 10 phút gần nhất"
+      aria-label={`${formattedCount} người đang hoạt động`}
+      aria-live="polite"
+    >
+      <span className="fpt-presence-badge__dot" aria-hidden="true" />
+      <span className="fpt-presence-badge__count">{formattedCount} online</span>
+      <style>{`
+        .fpt-presence-badge{display:inline-flex;align-items:center;gap:7px;margin:0 12px 0 6px;padding:5px 8px;color:#34495E;font-size:13px;font-weight:650;line-height:1;white-space:nowrap}
+        .fpt-presence-badge__dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22C55E;box-shadow:0 0 0 2px rgba(34,197,94,.12)}
+        .fpt-presence-badge__count{font-variant-numeric:tabular-nums}
+        @media(max-width:767px){.fpt-presence-badge{margin-right:6px;padding:5px 4px;font-size:12px}.fpt-presence-badge__dot{width:7px;height:7px}}
+      `}</style>
+    </div>
+  );
+};
