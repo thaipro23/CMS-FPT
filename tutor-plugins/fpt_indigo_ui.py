@@ -52,6 +52,42 @@ USE_TZ = True
 """,
 ))
 
+# FPT_PRESENCE_V1
+# Install a tiny standalone Django plugin and point it at Tutor's existing Redis.
+# Presence is deliberately fail-open and never depends on MySQL/Mongo/Celery.
+hooks.Filters.ENV_PATCHES.add_item((
+    "openedx-dockerfile-pre-assets",
+    r"""
+# FPT_PRESENCE_V1
+RUN if [ -n "$PIP_COMMAND" ]; then \
+        $PIP_COMMAND install -e /openedx/edx-platform/openedx_fpt_presence; \
+    else \
+        pip install -e /openedx/edx-platform/openedx_fpt_presence; \
+    fi
+""",
+))
+
+hooks.Filters.ENV_PATCHES.add_item((
+    "openedx-common-settings",
+    """
+# FPT_PRESENCE_V1
+FPT_PRESENCE_REDIS = {
+    "HOST": "{{ REDIS_HOST }}",
+    "PORT": 6379,
+    "PASSWORD": "{{ REDIS_PASSWORD }}",
+    "DB": 0,
+    "SOCKET_CONNECT_TIMEOUT": 0.3,
+    "SOCKET_TIMEOUT": 0.3,
+}
+FPT_PRESENCE_ACTIVE_WINDOW_SECONDS = 600
+FPT_PRESENCE_TOUCH_INTERVAL_SECONDS = 60
+FPT_PRESENCE_COUNT_CACHE_SECONDS = 30
+_fpt_presence_middleware = "openedx_fpt_presence.middleware.FPTPresenceMiddleware"
+if _fpt_presence_middleware not in MIDDLEWARE:
+    MIDDLEWARE = [*MIDDLEWARE, _fpt_presence_middleware]
+""",
+))
+
 
 def _jinja_raw(text: str) -> str:
     """Protect JSX/CSS braces from Tutor/Jinja patch rendering."""
@@ -116,7 +152,11 @@ hooks.Filters.ENV_PATCHES.add_item((
 
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-runtime-definitions",
-    _jinja_raw(_read_patch("runtime.patch")),
+    _jinja_raw(
+        _read_patch("runtime.patch")
+        + "\n"
+        + _read_patch("presence_runtime.patch")
+    ),
 ))
 
 
@@ -134,6 +174,16 @@ FPT_FOOTER_SLOT = (
 # FPT Polytechnic logo, eliminating duplicate logo DOM and slot races.
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
+
+# The Learning header actions slot is immediately before the user menu in the
+# stock frontend header, so presence stays visible without replacing the header.
+PLUGIN_SLOTS.add_item((
+    "learning",
+    "org.openedx.frontend.layout.learning_header_actions.v1",
+    """
+    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_presence_badge', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptPresenceBadge } },
+""",
+))
 
 PLUGIN_SLOTS.add_item((
     "learner-dashboard",
