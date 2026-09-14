@@ -14,17 +14,17 @@ class OpenEdxAIConnectorConfig(AppConfig):
             "lms.djangoapp": {
                 "namespace": "openedx_ai_connector",
                 "app_name": "openedx_ai_connector",
-                # Canonical prefix: /api/ai-connector/v1/. The older
+                # Canonical connector prefix plus presence API. The older
                 # /api/ai-student-insight/v1/ alias remains for rolling upgrades.
-                "regex": r"^api/(?:ai-connector/v1/|ai-student-insight/v1/)",
+                "regex": r"^api/(?:ai-connector/v1/|ai-student-insight/v1/|presence/v1/)",
                 "relative_path": "urls",
             },
             "cms.djangoapp": {
                 "namespace": "openedx_ai_connector",
                 "app_name": "openedx_ai_connector",
-                # Canonical prefix: /api/ai-connector/v1/. The older
+                # Canonical connector prefix plus presence API. The older
                 # /api/ai-student-insight/v1/ alias remains for rolling upgrades.
-                "regex": r"^api/(?:ai-connector/v1/|ai-student-insight/v1/)",
+                "regex": r"^api/(?:ai-connector/v1/|ai-student-insight/v1/|presence/v1/)",
                 "relative_path": "urls",
             },
         }
