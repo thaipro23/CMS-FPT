@@ -15,6 +15,13 @@ AUTHN_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "authn.patch"
 AUTHN_LABELS_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "authn_labels.patch"
 
 
+def _hook_block(source: str, hook_name: str) -> str:
+    anchor = f'"{hook_name}",'
+    start = source.index(anchor)
+    end = source.index("\n))", start)
+    return source[start:end]
+
+
 def test_tutor_presence_integration_markers():
     tutor_source = TUTOR_PLUGIN.read_text(encoding="utf-8")
     settings_source = PRESENCE_SETTINGS.read_text(encoding="utf-8")
@@ -30,16 +37,17 @@ def test_presence_widget_is_learning_only_and_not_in_shared_mfe_runtime():
     tutor_source = TUTOR_PLUGIN.read_text(encoding="utf-8")
     presence_source = PRESENCE_PATCH.read_text(encoding="utf-8")
 
-    shared_runtime = tutor_source.split('"mfe-env-config-runtime-definitions"', 1)[1]
-    shared_runtime = shared_runtime.split("FPT_FOOTER_SLOT", 1)[0]
+    shared_runtime = _hook_block(
+        tutor_source,
+        "mfe-env-config-runtime-definitions",
+    )
+    learning_runtime = _hook_block(
+        tutor_source,
+        "mfe-env-config-runtime-definitions-learning",
+    )
 
     assert '_read_patch("runtime.patch")' in shared_runtime
     assert "presence_runtime.patch" not in shared_runtime
-
-    assert '"mfe-env-config-runtime-definitions-learning"' in tutor_source
-    learning_runtime = tutor_source.split(
-        '"mfe-env-config-runtime-definitions-learning"', 1
-    )[1].split("FPT_FOOTER_SLOT", 1)[0]
     assert '_read_patch("presence_runtime.patch")' in learning_runtime
 
     assert "FPT_PRESENCE_LEARNING_ONLY_V1" in presence_source
