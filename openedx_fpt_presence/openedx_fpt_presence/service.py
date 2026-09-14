@@ -114,23 +114,9 @@ class PresenceService:
 
 
 def _build_redis_client():
-    """Build a client from explicit FPT config or Open edX's existing Redis URL."""
+    """Build a client from the final Redis URL already used by Open edX."""
 
-    config = getattr(settings, "FPT_PRESENCE_REDIS", None) or {}
-    if config:
-        return redis.Redis(
-            host=config.get("HOST"),
-            port=int(config.get("PORT", 6379)),
-            db=int(config.get("DB", 0)),
-            username=config.get("USERNAME") or None,
-            password=config.get("PASSWORD") or None,
-            socket_connect_timeout=float(config.get("SOCKET_CONNECT_TIMEOUT", 0.3)),
-            socket_timeout=float(config.get("SOCKET_TIMEOUT", 0.3)),
-            health_check_interval=30,
-            decode_responses=True,
-        )
-
-    redis_url = getattr(settings, "FPT_PRESENCE_REDIS_URL", None) or discover_redis_url(settings)
+    redis_url = discover_redis_url(settings)
     if not redis_url:
         raise RuntimeError(
             "FPT presence could not discover a Redis URL from Open edX settings"
