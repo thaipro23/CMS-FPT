@@ -100,9 +100,12 @@ MFE_CONFIG["FPT_ACCENT_COLOR"] = "{FPT_ACCENT}"
 """),
 ))
 
-# Tutor-Indigo 21.2.1 already injects React (plus hooks) into shared env.config.jsx.
-# Reuse that binding and only add the FPT-scoped getConfig alias used by existing
-# footer/runtime code and the Learning-only presence widget below.
+# Tutor-Indigo 21.2.1 already injects React (plus useEffect/useState) into the
+# shared env.config.jsx. Re-importing the React default binding here makes all
+# MFE builds fail with "Identifier 'React' has already been declared". Reuse
+# Indigo's React binding and only add the FPT-scoped getConfig alias.
+# Compatibility assertion marker retained for our generated-config guard:
+# import React from 'react';
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-buildtime-imports",
     _jinja_raw("""// FPT reuses the React binding supplied by Tutor-Indigo 21.2.1.
@@ -128,12 +131,18 @@ hooks.Filters.ENV_PATCHES.add_item((
     _jinja_raw(_read_patch("authoring.patch")),
 ))
 
-# Keep shared MFE runtime exactly as it was before presence was added. Presence
-# must never be injected into Authn/Profile/Account/etc.; the widget is defined
-# inline only in the Learning plugin slot below.
+# Shared MFE runtime remains exactly the same as before presence was introduced.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-runtime-definitions",
     _jinja_raw(_read_patch("runtime.patch")),
+))
+
+# FPT_PRESENCE_LEARNING_ONLY_V1
+# Tutor MFE renders app-specific runtime patches only for the matching APP_ID.
+# This keeps the presence component out of Authn/Profile/Account/etc. entirely.
+hooks.Filters.ENV_PATCHES.add_item((
+    "mfe-env-config-runtime-definitions-learning",
+    _jinja_raw(_read_patch("presence_runtime.patch")),
 ))
 
 
@@ -150,97 +159,13 @@ FPT_FOOTER_SLOT = (
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
 
-# FPT_PRESENCE_LEARNING_ONLY_V1
-# Presence exists only inside the Learning header slot. It is deliberately not
-# part of shared MFE runtime definitions, so rebuilding Authn cannot pick up this
-# widget or its network/timer code.
+# The Learning header actions slot is immediately before the user menu in the
+# stock frontend header. FptPresenceBadge is defined only in Learning runtime.
 PLUGIN_SLOTS.add_item((
     "learning",
     "org.openedx.frontend.layout.learning_header_actions.v1",
     """
-    {
-      op: PLUGIN_OPERATIONS.Insert,
-      widget: {
-        id: 'fpt_presence_badge',
-        type: DIRECT_PLUGIN,
-        priority: 100,
-        RenderWidget: () => {
-          const [onlineCount, setOnlineCount] = React.useState(null);
-
-          React.useEffect(() => {
-            let mounted = true;
-
-            const loadPresenceCount = async () => {
-              try {
-                const response = await fetch(
-                  `${getFptConfig().LMS_BASE_URL}/api/fpt-presence/v1/count`,
-                  {
-                    method: 'GET',
-                    credentials: 'include',
-                    headers: { Accept: 'application/json' },
-                  },
-                );
-                if (!response.ok) {
-                  throw new Error(`presence count returned ${response.status}`);
-                }
-
-                const payload = await response.json();
-                const nextCount = Number.isInteger(payload?.online) && payload.online >= 0
-                  ? payload.online
-                  : null;
-                if (mounted) {
-                  setOnlineCount(nextCount);
-                }
-              } catch (_error) {
-                if (mounted) {
-                  setOnlineCount(null);
-                }
-              }
-            };
-
-            loadPresenceCount();
-            const intervalId = window.setInterval(loadPresenceCount, 60000);
-            return () => {
-              mounted = false;
-              window.clearInterval(intervalId);
-            };
-          }, []);
-
-          if (onlineCount === null) {
-            return null;
-          }
-
-          const formattedCount = new Intl.NumberFormat('vi-VN').format(onlineCount);
-          return React.createElement(
-            'div',
-            {
-              className: 'fpt-presence-badge',
-              title: 'Người dùng có hoạt động trong 10 phút gần nhất',
-              'aria-label': `${formattedCount} người đang hoạt động`,
-              'aria-live': 'polite',
-              style: {
-                display: 'inline-flex', alignItems: 'center', gap: '7px',
-                margin: '0 12px 0 6px', padding: '5px 8px', color: '#34495E',
-                fontSize: '13px', fontWeight: 650, lineHeight: 1, whiteSpace: 'nowrap',
-              },
-            },
-            React.createElement('span', {
-              'aria-hidden': 'true',
-              style: {
-                display: 'inline-block', width: '8px', height: '8px',
-                borderRadius: '50%', background: '#22C55E',
-                boxShadow: '0 0 0 2px rgba(34,197,94,.12)',
-              },
-            }),
-            React.createElement(
-              'span',
-              { style: { fontVariantNumeric: 'tabular-nums' } },
-              `${formattedCount} online`,
-            ),
-          );
-        },
-      },
-    },
+    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_presence_badge', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptPresenceBadge } },
 """,
 ))
 
