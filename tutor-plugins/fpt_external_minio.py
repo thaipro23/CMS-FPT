@@ -16,7 +16,27 @@ hooks.Filters.CONFIG_DEFAULTS.add_items([
     ("FPT_MINIO_GRADES_BUCKET_NAME", "openedxgrades"),
     ("FPT_MINIO_OPENEDX_LEARNING_BUCKET_NAME", "openedxlearning"),
     ("FPT_MINIO_QUERYSTRING_AUTH", True),
+    ("FPT_REPORT_PROXY_ENABLED", True),
+    ("FPT_REPORT_PROXY_TOKEN_TTL_SECONDS", 300),
 ])
+
+
+# Install the small LMS report-proxy plugin only when private MinIO report
+# downloads are enabled. It does not provision storage; it only streams an
+# already-created report through the LMS after validating a short-lived token.
+hooks.Filters.ENV_PATCHES.add_item((
+    "openedx-dockerfile-pre-assets",
+    r"""
+{% if FPT_MINIO_ENABLED and FPT_REPORT_PROXY_ENABLED %}
+# FPT_REPORT_PROXY_V1
+RUN if [ -n "$PIP_COMMAND" ]; then \
+        $PIP_COMMAND install -e /openedx/edx-platform/openedx_fpt_report_proxy; \
+    else \
+        pip install -e /openedx/edx-platform/openedx_fpt_report_proxy; \
+    fi
+{% endif %}
+""",
+))
 
 
 # Credentials are provided by Tutor core via OPENEDX_AWS_ACCESS_KEY and
@@ -51,6 +71,17 @@ GRADES_DOWNLOAD["STORAGE_KWARGS"] = {
     "location": GRADES_DOWNLOAD["STORAGE_KWARGS"]["location"].lstrip("/"),
     "bucket_name": "{{ FPT_MINIO_GRADES_BUCKET_NAME }}",
 }
+
+{% if FPT_REPORT_PROXY_ENABLED %}
+# FPT_REPORT_PROXY_V1
+# Keep report I/O on the private MinIO endpoint. Only storage.url() is replaced,
+# so Instructor Dashboard links point back to the LMS and never expose the
+# 10.x MinIO address to a browser.
+GRADES_DOWNLOAD["STORAGE_CLASS"] = "openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage"
+FPT_REPORT_PROXY_BASE_URL = "https://{{ LMS_HOST }}"
+FPT_REPORT_PROXY_DOWNLOAD_PATH = "/api/fpt-reports/v1/download"
+FPT_REPORT_PROXY_TOKEN_TTL_SECONDS = {{ FPT_REPORT_PROXY_TOKEN_TTL_SECONDS }}
+{% endif %}
 
 OPENEDX_LEARNING["MEDIA"]["BACKEND"] = STORAGES["default"]["BACKEND"]
 OPENEDX_LEARNING["MEDIA"]["OPTIONS"] = {
