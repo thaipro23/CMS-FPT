@@ -10,7 +10,7 @@ Mục tiêu là giữ nguyên nghiệp vụ Open edX, FEID, Unit Reset, Indigo v
 - Open edX: `OPENEDX_COMMON_VERSION=release/ulmo.4`.
 - Authn: tag `release/ulmo.4`, dùng DefaultLayout; `ENABLE_IMAGE_LAYOUT=False`.
 - Custom Learning MFE: `/opt/openedx/frontend-app-learning`, branch `mfe-unit-reset-runtime-clean`.
-- Unit Reset backend: package `openedx-unit-reset` từ `CMS-FPT/openedx_unit_reset`.
+- Unit Reset backend: package `openedx-unit-reset` `0.4.16` từ `CMS-FPT/openedx_unit_reset`.
 
 Script setup sẽ fail-fast nếu baseline khác, source tracked bị sửa chưa commit, custom Learning mất marker Unit Reset hoặc Learning không được Tutor map vào build context `mfe -> learning-src`.
 
@@ -140,7 +140,7 @@ CI xanh không thay thế full Tutor/Docker build trên UAT; nó chặn phần l
 - `/courses`: Hero nằm trên Search/Filters; CTA cuộn tới `#discovery-form`; Search/Filters/Course Grid giữ nguyên.
 - Learner Dashboard: banner FPT hiển thị và CourseList/enrollment behavior không đổi.
 - Learning: Course/Progress/Instructor/Unit/Quiz render bình thường.
-- Unit Reset: timer/cooldown/reset/iframe reload vẫn hoạt động theo contract hiện tại.
+- Unit Reset: timer/cooldown/reset/iframe reload vẫn hoạt động; reset Quiz 2 chỉ xóa state/score của Quiz 2 và phải giữ nguyên điểm Quiz 1.
 - Header/Footer/logo/asset không 404.
 - Authn/Learner Dashboard MFE host truy cập được qua Caddy/DNS.
 

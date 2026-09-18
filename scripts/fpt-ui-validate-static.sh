@@ -30,7 +30,16 @@ python -m py_compile \
   tutor-plugins/fpt_indigo_ui.py \
   tutor-plugins/openedx_unit_reset.py \
   openedx_unit_reset/setup.py \
+  openedx_unit_reset/openedx_unit_reset/reset_scope.py \
+  openedx_unit_reset/openedx_unit_reset/services.py \
+  openedx_unit_reset/tests/test_grade_isolation.py \
   scripts/fpt-ui-validate-assets.py
+
+log "Checking Unit Reset grade isolation"
+PYTHONPATH=openedx_unit_reset python -m unittest discover \
+  -s openedx_unit_reset/tests \
+  -p 'test_*.py' \
+  -v
 
 log "Checking vendored assets"
 python scripts/fpt-ui-validate-assets.py

@@ -9,6 +9,7 @@ from django.utils import timezone
 from opaque_keys.edx.keys import CourseKey, UsageKey
 
 from .models import UnitQuizSession, UnitQuizTimerConfig, UnitResetAudit, UnitResetControl
+from .reset_scope import official_reset_targets
 
 log = logging.getLogger(__name__)
 
@@ -115,6 +116,13 @@ def parse_keys(course_id, unit_usage_key):
     if getattr(settings, "UNIT_RESET_REQUIRE_UNIT_COURSE_MATCH", True):
         if getattr(unit_key, "course_key", None) != course_key:
             raise UnitResetError("Unit không thuộc khóa học đã gửi.", "UNIT_COURSE_MISMATCH", 403)
+
+    if getattr(unit_key, "block_type", None) != "vertical":
+        raise UnitResetError(
+            "unit_usage_key phải trỏ đúng tới một Unit (vertical).",
+            "UNIT_KEY_NOT_VERTICAL",
+            400,
+        )
 
     return course_key, unit_key
 
@@ -251,232 +259,92 @@ def get_latest_studentmodule_modified(user, course_key, reset_keys):
 
 
 
-def clear_user_grade_cache(user, course_key):
-    """
-    Clear persistent grade cache for this learner/course.
-
-    Reset StudentModule only clears answers/randomized state. The Progress tab
-    can still display old scores from persistent grade tables, so clear them and
-    let Open edX recalculate from current StudentModule rows.
-    """
-    result = {
-        "persistent_subsection_grade": 0,
-        "persistent_course_grade": 0,
-    }
-
+def get_reset_student_attempts():
+    """Import Open edX's supported reset API lazily."""
     try:
-        from lms.djangoapps.grades.models import (
-            PersistentCourseGrade,
-            PersistentSubsectionGrade,
-        )
-    except Exception:
-        log.exception("Could not import persistent grade models")
-        return result
-
-    try:
-        subsection_count, _ = PersistentSubsectionGrade.objects.filter(
-            user_id=user.id,
-            course_id=course_key,
-        ).delete()
-        result["persistent_subsection_grade"] = subsection_count
-    except Exception:
-        log.exception(
-            "Could not delete PersistentSubsectionGrade user_id=%s course_id=%s",
-            user.id,
-            course_key,
-        )
-
-    try:
-        course_count, _ = PersistentCourseGrade.objects.filter(
-            user_id=user.id,
-            course_id=course_key,
-        ).delete()
-        result["persistent_course_grade"] = course_count
-    except Exception:
-        log.exception(
-            "Could not delete PersistentCourseGrade user_id=%s course_id=%s",
-            user.id,
-            course_key,
-        )
-
-    return result
+        from lms.djangoapps.instructor.enrollment import reset_student_attempts
+        return reset_student_attempts
+    except Exception as exc:  # pragma: no cover - depends on Open edX runtime
+        raise UnitResetError(
+            "Không import được API reset chính thức của Open edX.",
+            "OPENEDX_RESET_API_IMPORT_FAILED",
+            500,
+        ) from exc
 
 
-# ---------------------------------------------------------------------------
-# Open edX submissions cleanup
-# ---------------------------------------------------------------------------
+def reset_unit_attempt_state(user, course_key, unit_key, base_keys, reset_keys):
+    """Reset one Unit through Open edX so score-reset signals are emitted."""
+    StudentModule = get_student_module_model()
+    reset_student_attempts = get_reset_student_attempts()
+    reset_keys = set(reset_keys)
+    targets = official_reset_targets(unit_key, base_keys, reset_keys)
 
-def get_submissions_models():
-    """Import edx-submissions models lazily.
+    before_count = StudentModule.objects.filter(
+        student=user,
+        course_id=course_key,
+        module_state_key__in=list(reset_keys),
+    ).count()
+    missing_student_modules = 0
 
-    CAPA/problem state can survive a StudentModule delete because graded answer
-    submissions and scores are stored in the edx-submissions app.  The reset
-    operation must remove those rows for the current learner + course + problem
-    usage keys so a retake renders like a fresh attempt, without green feedback
-    or a previously revealed answer.
-    """
-    try:
-        from submissions.models import StudentItem, Submission, Score
-        return StudentItem, Submission, Score
-    except Exception as exc:  # pragma: no cover - depends on edx-platform install
-        log.warning("Could not import edx-submissions models; reset will continue without submissions cleanup", exc_info=True)
-        return None, None, None
-
-
-def _field_names(model):
-    try:
-        return {field.name for field in model._meta.get_fields()}
-    except Exception:
-        return set()
-
-
-def get_anonymous_student_ids(user, course_key):
-    """Return possible submissions.StudentItem.student_id values for this user.
-
-    Open edX submissions normally uses the course-scoped anonymous id, not
-    auth_user.id.  Different releases expose anonymous_id_for_user from slightly
-    different modules/signatures, so this is intentionally defensive.
-    """
-    values = []
-
-    for module_path in ("common.djangoapps.student.models", "student.models"):
+    for target in targets:
         try:
-            module = __import__(module_path, fromlist=["anonymous_id_for_user"])
-            fn = getattr(module, "anonymous_id_for_user", None)
-            if not fn:
-                continue
-            for args in ((user, course_key), (user, str(course_key)), (user.id, course_key), (user.id, str(course_key)), (user,)):
-                try:
-                    value = fn(*args)
-                except TypeError:
-                    continue
-                except Exception:
-                    continue
-                if value:
-                    values.append(str(value))
-        except Exception:
-            continue
+            reset_student_attempts(
+                course_key,
+                user,
+                target,
+                requesting_user=user,
+                delete_module=True,
+                emit_signals_and_events=True,
+            )
+        except StudentModule.DoesNotExist:
+            # The API resets submissions before fetching StudentModule. Unit
+            # roots commonly have no row, after descendants were processed.
+            missing_student_modules += 1
 
-    # Conservative fallbacks for non-standard deployments.  They are only used
-    # together with exact course_id + item_id filters.
-    for value in (
-        getattr(user, "anonymous_id", None),
-        getattr(user, "username", None),
-        getattr(user, "email", None),
-        str(getattr(user, "id", "") or ""),
-    ):
-        if value:
-            values.append(str(value))
+    # Remove only leftover container/randomized state from this Unit. Scored
+    # blocks have already gone through the official signal-emitting reset API.
+    remaining_deleted, _ = StudentModule.objects.filter(
+        student=user,
+        course_id=course_key,
+        module_state_key__in=list(reset_keys),
+    ).delete()
+    after_count = StudentModule.objects.filter(
+        student=user,
+        course_id=course_key,
+        module_state_key__in=list(reset_keys),
+    ).count()
 
-    deduped = []
-    seen = set()
-    for value in values:
-        if value and value not in seen:
-            seen.add(value)
-            deduped.append(value)
-    return deduped
-
-
-def clear_user_submissions(user, course_key, reset_keys):
-    """Delete edx-submissions rows for this learner and the reset problem keys.
-
-    Returns counts and diagnostics.  If submissions models are unavailable the
-    reset continues because StudentModule is still the primary state store, but
-    the caller receives a clear diagnostic.
-    """
-    result = {
-        "student_items": 0,
-        "submissions": 0,
-        "scores": 0,
-        "student_id_candidates": [],
-        "skipped": False,
-        "message": "",
+    return {
+        "student_modules_deleted": max(before_count - after_count, 0),
+        "remaining_student_modules_deleted": remaining_deleted,
+        "official_reset_targets": [str(target) for target in targets],
+        "missing_student_modules": missing_student_modules,
     }
 
-    StudentItem, Submission, Score = get_submissions_models()
-    if not StudentItem or not Submission or not Score:
-        result["skipped"] = True
-        result["message"] = "Không import được submissions.models; chỉ xóa StudentModule/grade cache."
-        return result
 
-    item_ids = [str(key) for key in reset_keys]
-    if not item_ids:
-        result["skipped"] = True
-        result["message"] = "Không có problem usage key để xóa submissions."
-        return result
-
-    student_ids = get_anonymous_student_ids(user, course_key)
-    result["student_id_candidates"] = student_ids
-    if not student_ids:
-        result["skipped"] = True
-        result["message"] = "Không tìm được anonymous student_id để xóa submissions an toàn."
-        return result
-
+def recalculate_user_course_grade(user, course_key):
+    """Synchronously rebuild grades while preserving all other Unit scores."""
     try:
-        item_fields = _field_names(StudentItem)
-        filters = {}
-        if "course_id" in item_fields:
-            filters["course_id"] = str(course_key)
-        if "item_id" in item_fields:
-            filters["item_id__in"] = item_ids
-        elif "item" in item_fields:
-            filters["item__in"] = item_ids
-        else:
-            result["skipped"] = True
-            result["message"] = "StudentItem không có item_id/item field phù hợp."
-            return result
-        if "student_id" in item_fields:
-            filters["student_id__in"] = student_ids
-        elif "student" in item_fields:
-            filters["student__in"] = student_ids
-        else:
-            result["skipped"] = True
-            result["message"] = "StudentItem không có student_id/student field phù hợp."
-            return result
+        from lms.djangoapps.grades.course_grade_factory import CourseGradeFactory
+        from lms.djangoapps.grades.models_api import clear_prefetched_course_grades
+    except Exception as exc:  # pragma: no cover - depends on Open edX runtime
+        raise UnitResetError(
+            "Không import được API tính lại điểm của Open edX.",
+            "OPENEDX_GRADE_API_IMPORT_FAILED",
+            500,
+        ) from exc
 
-        student_items = StudentItem.objects.filter(**filters)
-        student_item_ids = list(student_items.values_list("id", flat=True))
-        if not student_item_ids:
-            result["message"] = "Không tìm thấy StudentItem tương ứng để xóa."
-            return result
-
-        # Delete Score first, then Submission, then StudentItem.  Try the common
-        # relationship paths used by edx-submissions across releases.
-        score_deleted = 0
-        for kwargs in (
-            {"submission__student_item_id__in": student_item_ids},
-            {"student_item_id__in": student_item_ids},
-        ):
-            try:
-                count, _ = Score.objects.filter(**kwargs).delete()
-                score_deleted += count
-                break
-            except Exception:
-                continue
-        result["scores"] = score_deleted
-
-        submission_deleted = 0
-        for kwargs in (
-            {"student_item_id__in": student_item_ids},
-            {"student_item__id__in": student_item_ids},
-        ):
-            try:
-                count, _ = Submission.objects.filter(**kwargs).delete()
-                submission_deleted += count
-                break
-            except Exception:
-                continue
-        result["submissions"] = submission_deleted
-
-        item_deleted, _ = StudentItem.objects.filter(id__in=student_item_ids).delete()
-        result["student_items"] = item_deleted
-        result["message"] = "Đã xóa submissions/score của learner cho các problem trong Unit."
-        return result
-    except Exception:
-        log.exception("Could not delete edx-submissions rows during unit reset user_id=%s course_id=%s", user.id, course_key)
-        result["skipped"] = True
-        result["message"] = "Lỗi khi xóa submissions; xem LMS log để biết chi tiết."
-        return result
+    clear_prefetched_course_grades(course_key)
+    course_grade = CourseGradeFactory().update(
+        user=user,
+        course_key=course_key,
+        force_update_subsections=True,
+    )
+    clear_prefetched_course_grades(course_key)
+    return {
+        "percent": getattr(course_grade, "percent", None),
+        "letter_grade": getattr(course_grade, "letter_grade", None),
+    }
 
 
 def audit_reset(request, course_key, unit_key, **kwargs):
@@ -554,7 +422,7 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
     assert_user_can_reset(request, course_key)
 
     base_keys = collect_unit_usage_keys(unit_key)
-    reset_keys = expand_randomized_selected_keys(request.user, course_key, base_keys)
+    reset_keys = expand_randomized_selected_keys(request.user, course_key, set(base_keys))
     if cooldown_seconds_override is None:
         cooldown_seconds = get_block_cooldown_seconds(reset_keys)
     else:
@@ -605,15 +473,15 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
                 ])
                 raise ResetCooldownError(wait_seconds, computed_next_allowed_at, record.reset_count, cooldown_seconds)
 
-        StudentModule = get_student_module_model()
-        deleted_count, _ = StudentModule.objects.filter(
-            student=request.user,
-            course_id=course_key,
-            module_state_key__in=list(reset_keys),
-        ).delete()
-
-        grade_cache_deleted = clear_user_grade_cache(request.user, course_key)
-        submissions_deleted = clear_user_submissions(request.user, course_key, reset_keys)
+        reset_state = reset_unit_attempt_state(
+            request.user,
+            course_key,
+            unit_key,
+            base_keys,
+            reset_keys,
+        )
+        grade_recalculation = recalculate_user_course_grade(request.user, course_key)
+        deleted_count = reset_state["student_modules_deleted"]
 
         record.reset_count += 1
         record.last_reset_at = now
@@ -636,13 +504,13 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
     )
 
     log.warning(
-        "Unit reset OK user_id=%s course_id=%s unit=%s deleted=%s grade_cache_deleted=%s submissions_deleted=%s reset_keys=%s cooldown=%s reset_count=%s",
+        "Unit reset OK user_id=%s course_id=%s unit=%s deleted=%s reset_state=%s grade_recalculation=%s reset_keys=%s cooldown=%s reset_count=%s",
         request.user.id,
         course_key,
         unit_key,
         deleted_count,
-        grade_cache_deleted,
-        submissions_deleted,
+        reset_state,
+        grade_recalculation,
         len(reset_keys),
         cooldown_seconds,
         record.reset_count,
@@ -653,8 +521,8 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
         "code": "RESET_OK",
         "message": "Đã reset Unit. Hệ thống sẽ random lại bộ câu hỏi mới.",
         "deleted_count": deleted_count,
-        "grade_cache_deleted": grade_cache_deleted,
-        "submissions_deleted": submissions_deleted,
+        "reset_state": reset_state,
+        "grade_recalculation": grade_recalculation,
         "reset_keys_count": len(reset_keys),
         "reload_required": True,
         "reload_unit": True,
