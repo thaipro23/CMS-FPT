@@ -54,6 +54,8 @@ def test_presence_widget_uses_supported_header_slots_without_touching_authn():
     assert "org.openedx.frontend.layout.learning_header_actions.v1" in tutor_source
     assert "org.openedx.frontend.layout.studio_header_actions.v1" in tutor_source
     assert "org.openedx.frontend.layout.header_desktop_secondary_menu.v2" in tutor_source
+    assert '_read_patch("legacy_presence.patch")' in tutor_source
+    assert '_read_patch("legacy_cms_presence.patch")' in tutor_source
 
     assert "FPT_PRESENCE_HEADER_SLOTS_V2" in presence_source
     assert "/api/fpt-presence/v1/count" in presence_source
