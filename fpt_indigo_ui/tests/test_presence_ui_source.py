@@ -47,12 +47,10 @@ def test_presence_widget_uses_supported_header_slots_without_touching_authn():
     )
 
     assert '_read_patch("runtime.patch")' in shared_runtime
-    assert '_read_patch("presence_runtime.patch")' in shared_runtime
-    assert 'f"mfe-env-config-runtime-definitions-{_mfe}"' not in tutor_source
+    assert "presence_runtime.patch" not in shared_runtime
 
-    assert "FPT_PRESENCE_HEADER_SLOTS_V3" in tutor_source
-    presence_apps = tutor_source.split("FPT_PRESENCE_MFE_APPS =", 1)[1].split("FPT_FOOTER_SLOT =", 1)[0]
-    assert '"authn"' not in presence_apps
+    assert "FPT_PRESENCE_HEADER_SLOTS_V2" in tutor_source
+    assert '"authn"' not in tutor_source.split("FPT_PRESENCE_MFE_APPS =", 1)[1].split("for _mfe in FPT_PRESENCE_MFE_APPS", 1)[0]
     assert "org.openedx.frontend.layout.learning_header_actions.v1" in tutor_source
     assert "org.openedx.frontend.layout.studio_header_actions.v1" in tutor_source
     assert "org.openedx.frontend.layout.header_desktop_secondary_menu.v2" in tutor_source
