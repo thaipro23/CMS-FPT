@@ -1,4 +1,4 @@
-// FPT_PRESENCE_LEARNING_ONLY_V1
+// FPT_PRESENCE_HEADER_SLOTS_V2
 // Aggregate backend activity only. There is intentionally no browser heartbeat.
 const FptPresenceBadge = () => {
   const [onlineCount, setOnlineCount] = useState(null);
