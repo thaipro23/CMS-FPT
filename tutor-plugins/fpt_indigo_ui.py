@@ -228,5 +228,7 @@ hooks.Filters.ENV_PATCHES.add_item((
         + _read_patch("native_logo.patch")
         + "\n"
         + _read_patch("legacy_presence.patch")
+        + "\n"
+        + _read_patch("legacy_cms_presence.patch")
     ),
 ))
