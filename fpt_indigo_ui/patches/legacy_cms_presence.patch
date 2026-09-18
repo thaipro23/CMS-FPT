@@ -1,0 +1,77 @@
+# Add the online-presence badge to authenticated legacy Studio/CMS pages.
+# Legacy Studio does not expose Frontend Plugin Framework header slots, so use
+# a narrow, fail-fast template patch while modern Authoring uses the official
+# studio_header_actions slot.
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path('/openedx/edx-platform/cms/templates/widgets/header.html')
+if not path.exists():
+    raise RuntimeError(f'Legacy Studio header template not found: {path}')
+
+text = path.read_text(encoding='utf-8')
+marker = '<!-- FPT_PRESENCE_LEGACY_CMS_HEADER_V1 -->'
+
+if marker not in text:
+    anchor = '          <li class="nav-item nav-account-user">\n'
+    if anchor not in text:
+        raise RuntimeError('Legacy Studio account header anchor not found for FPT presence badge')
+
+    block = r'''          <!-- FPT_PRESENCE_LEGACY_CMS_HEADER_V1 -->
+          <li class="nav-item fpt-presence-cms-item">
+            <span id="fpt-presence-cms" class="fpt-presence-cms" hidden aria-live="polite">
+              <span class="fpt-presence-cms__dot" aria-hidden="true"></span>
+              <span id="fpt-presence-cms-count"></span>
+            </span>
+            <style>
+              .fpt-presence-cms-item{display:flex;align-items:center}
+              .fpt-presence-cms{display:inline-flex;align-items:center;gap:7px;padding:5px 8px;color:#34495E;font-size:13px;font-weight:650;line-height:1;white-space:nowrap}
+              .fpt-presence-cms[hidden]{display:none!important}
+              .fpt-presence-cms__dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22C55E;box-shadow:0 0 0 2px rgba(34,197,94,.12)}
+              @media(max-width:767px){.fpt-presence-cms{padding:5px 4px;font-size:12px}.fpt-presence-cms__dot{width:7px;height:7px}}
+            </style>
+            <script>
+            (function(){
+              var root = document.getElementById('fpt-presence-cms');
+              var countNode = document.getElementById('fpt-presence-cms-count');
+              if (!root || !countNode) return;
+
+              var formatter;
+              try { formatter = new Intl.NumberFormat('vi-VN'); } catch (e) { formatter = null; }
+
+              function render(value) {
+                if (!Number.isFinite(value) || value < 0) {
+                  root.hidden = true;
+                  return;
+                }
+                countNode.textContent = (formatter ? formatter.format(value) : String(value)) + ' online';
+                root.hidden = false;
+              }
+
+              function refresh() {
+                fetch('/api/fpt-presence/v1/count', {
+                  credentials: 'same-origin',
+                  headers: { 'Accept': 'application/json' }
+                })
+                  .then(function(response) {
+                    if (!response.ok) throw new Error('presence count HTTP ' + response.status);
+                    return response.json();
+                  })
+                  .then(function(payload) {
+                    render(Number(payload && payload.online));
+                  })
+                  .catch(function() {
+                    root.hidden = true;
+                  });
+              }
+
+              refresh();
+              window.setInterval(refresh, 60000);
+            })();
+            </script>
+          </li>
+'''
+
+    text = text.replace(anchor, block + anchor, 1)
+    path.write_text(text, encoding='utf-8')
+PY
