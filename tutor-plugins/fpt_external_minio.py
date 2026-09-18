@@ -78,13 +78,7 @@ _fpt_grades_location = (
 ).lstrip("/")
 
 GRADES_DOWNLOAD = {
-    "STORAGE_CLASS": (
-        "openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage"
-        {% if FPT_REPORT_PROXY_ENABLED %}
-        {% else %}
-        "storages.backends.s3boto3.S3Boto3Storage"
-        {% endif %}
-    ),
+    "STORAGE_CLASS": "{% if FPT_REPORT_PROXY_ENABLED %}openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage{% else %}storages.backends.s3boto3.S3Boto3Storage{% endif %}",
     "STORAGE_KWARGS": {
         "location": _fpt_grades_location,
         "bucket_name": "{{ FPT_MINIO_GRADES_BUCKET_NAME }}",
