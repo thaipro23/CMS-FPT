@@ -13,6 +13,7 @@ PRESENCE_SETTINGS = (
 )
 AUTHN_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "authn.patch"
 AUTHN_LABELS_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "authn_labels.patch"
+LEGACY_PRESENCE_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "legacy_presence.patch"
 
 
 def _hook_block(source: str, hook_name: str) -> str:
@@ -33,30 +34,36 @@ def test_tutor_presence_integration_markers():
     assert "org.openedx.frontend.layout.learning_header_actions.v1" in tutor_source
 
 
-def test_presence_widget_is_learning_only_and_not_in_shared_mfe_runtime():
+def test_presence_widget_uses_supported_header_slots_without_touching_authn():
     tutor_source = TUTOR_PLUGIN.read_text(encoding="utf-8")
     presence_source = PRESENCE_PATCH.read_text(encoding="utf-8")
+    legacy_source = LEGACY_PRESENCE_PATCH.read_text(encoding="utf-8")
 
     shared_runtime = _hook_block(
         tutor_source,
         "mfe-env-config-runtime-definitions",
     )
-    learning_runtime = _hook_block(
-        tutor_source,
-        "mfe-env-config-runtime-definitions-learning",
-    )
 
     assert '_read_patch("runtime.patch")' in shared_runtime
     assert "presence_runtime.patch" not in shared_runtime
-    assert '_read_patch("presence_runtime.patch")' in learning_runtime
 
-    assert "FPT_PRESENCE_LEARNING_ONLY_V1" in presence_source
+    assert "FPT_PRESENCE_HEADER_SLOTS_V2" in tutor_source
+    assert '"authn"' not in tutor_source.split("FPT_PRESENCE_MFE_APPS =", 1)[1].split("for _mfe in FPT_PRESENCE_MFE_APPS", 1)[0]
+    assert "org.openedx.frontend.layout.learning_header_actions.v1" in tutor_source
+    assert "org.openedx.frontend.layout.studio_header_actions.v1" in tutor_source
+    assert "org.openedx.frontend.layout.header_desktop_secondary_menu.v2" in tutor_source
+
+    assert "FPT_PRESENCE_HEADER_SLOTS_V2" in presence_source
     assert "/api/fpt-presence/v1/count" in presence_source
     assert "credentials: 'include'" in presence_source
     assert "60000" in presence_source
     assert "Intl.NumberFormat('vi-VN')" in presence_source
     assert "fpt-presence-badge__dot" in presence_source
     assert "online" in presence_source
+
+    assert "FPT_PRESENCE_LEGACY_HEADER_V1" in legacy_source
+    assert "/api/fpt-presence/v1/count" in legacy_source
+    assert "setInterval(refresh, 60000)" in legacy_source
 
 
 def test_authn_login_labels_are_student_and_staff_without_changing_provider_routing():
