@@ -67,17 +67,35 @@ STORAGES["default"]["BACKEND"] = "storages.backends.s3boto3.S3Boto3Storage"
 VIDEO_IMAGE_SETTINGS["STORAGE_KWARGS"]["location"] = VIDEO_IMAGE_SETTINGS["STORAGE_KWARGS"]["location"].lstrip("/")
 VIDEO_TRANSCRIPTS_SETTINGS["STORAGE_KWARGS"]["location"] = VIDEO_TRANSCRIPTS_SETTINGS["STORAGE_KWARGS"]["location"].lstrip("/")
 
-GRADES_DOWNLOAD["STORAGE_KWARGS"] = {
-    "location": GRADES_DOWNLOAD["STORAGE_KWARGS"]["location"].lstrip("/"),
-    "bucket_name": "{{ FPT_MINIO_GRADES_BUCKET_NAME }}",
+# Open edX ReportStore has a legacy compatibility branch whenever
+# GRADES_DOWNLOAD["STORAGE_TYPE"] is present. That branch intentionally ignores
+# STORAGE_CLASS/STORAGE_KWARGS. Normalize the setting to the current Django
+# storage format so ReportStore.from_config() uses our configured storage class.
+_fpt_grades_location = (
+    GRADES_DOWNLOAD.get("STORAGE_KWARGS", {}).get("location")
+    or GRADES_DOWNLOAD.get("ROOT_PATH")
+    or "openedx/media/grades"
+).lstrip("/")
+
+GRADES_DOWNLOAD = {
+    "STORAGE_CLASS": (
+        "openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage"
+        {% if FPT_REPORT_PROXY_ENABLED %}
+        {% else %}
+        "storages.backends.s3boto3.S3Boto3Storage"
+        {% endif %}
+    ),
+    "STORAGE_KWARGS": {
+        "location": _fpt_grades_location,
+        "bucket_name": "{{ FPT_MINIO_GRADES_BUCKET_NAME }}",
+    },
 }
 
 {% if FPT_REPORT_PROXY_ENABLED %}
-# FPT_REPORT_PROXY_V1
-# Keep report I/O on the private MinIO endpoint. Only storage.url() is replaced,
-# so Instructor Dashboard links point back to the LMS and never expose the
-# 10.x MinIO address to a browser.
-GRADES_DOWNLOAD["STORAGE_CLASS"] = "openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage"
+# FPT_REPORT_PROXY_V2
+# The report store now uses Open edX's current STORAGE_CLASS/STORAGE_KWARGS
+# contract. File I/O remains on private MinIO; only storage.url() returns a
+# short-lived LMS URL.
 FPT_REPORT_PROXY_BASE_URL = "https://{{ LMS_HOST }}"
 FPT_REPORT_PROXY_DOWNLOAD_PATH = "/api/fpt-reports/v1/download"
 FPT_REPORT_PROXY_TOKEN_TTL_SECONDS = {{ FPT_REPORT_PROXY_TOKEN_TTL_SECONDS }}
