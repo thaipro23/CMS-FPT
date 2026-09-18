@@ -131,26 +131,17 @@ hooks.Filters.ENV_PATCHES.add_item((
     _jinja_raw(_read_patch("authoring.patch")),
 ))
 
-# Shared MFE runtime definitions must be emitted exactly once per generated
-# env.config.jsx. Tutor-MFE app-specific runtime patches are concatenated into the
-# same generated file; declaring FptPresenceBadge once per app would therefore
-# produce duplicate `const FptPresenceBadge` declarations and a blank MFE.
-# Define the component once here, while slot registration below still limits
-# where the badge is actually rendered. Authn receives the unused definition but
-# no presence slot, so its approved login UI remains untouched.
+# Shared MFE runtime remains exactly the same as before presence was introduced.
 hooks.Filters.ENV_PATCHES.add_item((
     "mfe-env-config-runtime-definitions",
-    _jinja_raw(
-        _read_patch("runtime.patch")
-        + "\n"
-        + _read_patch("presence_runtime.patch")
-    ),
+    _jinja_raw(_read_patch("runtime.patch")),
 ))
 
-# FPT_PRESENCE_HEADER_SLOTS_V3
+# FPT_PRESENCE_HEADER_SLOTS_V2
 # Open edX recommends extending MFEs through Frontend Plugin Framework slots
-# instead of forking application source. The widget is defined once above and
-# inserted only into authenticated MFEs that expose supported header slots.
+# instead of forking application source. Define the same small presence widget
+# only in authenticated MFEs that expose supported header slots. Authn remains
+# untouched so login layout/runtime cannot regress.
 FPT_PRESENCE_STANDARD_HEADER_MFES = [
     "account",
     "admin-console",
@@ -167,6 +158,12 @@ FPT_PRESENCE_MFE_APPS = [
     *FPT_PRESENCE_STANDARD_HEADER_MFES,
     *FPT_PRESENCE_STUDIO_HEADER_MFES,
 ]
+
+for _mfe in FPT_PRESENCE_MFE_APPS:
+    hooks.Filters.ENV_PATCHES.add_item((
+        f"mfe-env-config-runtime-definitions-{_mfe}",
+        _jinja_raw(_read_patch("presence_runtime.patch")),
+    ))
 
 
 FPT_FOOTER_SLOT = (
