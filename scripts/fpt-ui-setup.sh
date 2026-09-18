@@ -20,11 +20,11 @@ FPT_PLUGIN="$REPO_ROOT/tutor-plugins/fpt_indigo_ui.py"
 ALLOW_UNTESTED_BASELINE="${FPT_UI_ALLOW_UNTESTED_BASELINE:-0}"
 EXPECTED_COMMON_VERSION="release/ulmo.4"
 EXPECTED_TUTOR_VERSION="21.0.9"
-EXPECTED_TUTOR_MFE_VERSION="21.0.1"
+EXPECTED_TUTOR_MFE_VERSION="21.0.2"
 EXPECTED_TUTOR_INDIGO_VERSION="21.2.1"
 EXPECTED_ULMO4_COMMIT="46c543590c78aa1bfa846d47a4f1c5c6ec388490"
 LEARNING_REPO="${FPT_LEARNING_REPO:-/opt/openedx/frontend-app-learning}"
-LEARNING_BRANCH="${FPT_LEARNING_BRANCH:-mfe-unit-reset}"
+LEARNING_BRANCH="${FPT_LEARNING_BRANCH:-mfe-unit-reset-runtime-clean}"
 SKIP_LEARNING_GUARD="${FPT_UI_SKIP_LEARNING_GUARD:-0}"
 
 log "Repository: $REPO_ROOT"
@@ -165,6 +165,9 @@ if [ "$SKIP_LEARNING_GUARD" != "1" ]; then
   if ! git -C "$LEARNING_REPO" diff --quiet || ! git -C "$LEARNING_REPO" diff --cached --quiet; then
     fail "Learning repo has tracked local modifications. Commit/stash them before rebuilding the shared MFE image."
   fi
+  python "$REPO_ROOT/scripts/fpt_learning_runtime_guard.py" \
+    "$LEARNING_REPO/package-lock.json" \
+    || fail "Learning runtime compatibility guard failed"
   UNIT_RESET_MARKER="$LEARNING_REPO/src/courseware/course/sequence/unit-reset/UnitResetButton.jsx"
   [ -s "$UNIT_RESET_MARKER" ] || fail "Unit Reset frontend marker is missing: $UNIT_RESET_MARKER"
   grep -Fq 'function getLmsBaseUrl()' "$UNIT_RESET_MARKER" || fail "Unit Reset marker file does not contain the expected implementation"
@@ -282,7 +285,20 @@ grep -Fq 'getConfig as getFptConfig' "$MFE_ENV_CONFIG" || fail "Generated MFE en
 grep -Fq 'const FptHeaderLogo' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT header runtime"
 grep -Fq 'const FptFooter' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT footer runtime"
 grep -Fq 'const FptLearnerBanner' "$MFE_ENV_CONFIG" || fail "Generated MFE env.config.jsx is missing FPT learner banner runtime"
+grep -Fq "org.openedx.frontend.layout.learning_header_actions.v1" "$MFE_ENV_CONFIG" || fail "Generated MFE config is missing the Learning presence slot"
+grep -Fq "org.openedx.frontend.layout.studio_header_search_button_slot.v1" "$MFE_ENV_CONFIG" || fail "Generated MFE config is missing the Ulmo.4 Authoring presence slot"
+grep -Fq "org.openedx.frontend.layout.header_desktop_secondary_menu.v1" "$MFE_ENV_CONFIG" || fail "Generated MFE config is missing the Ulmo.4 standard header presence slot"
+if grep -Fq "org.openedx.frontend.layout.header_desktop_secondary_menu.v2" "$MFE_ENV_CONFIG"; then
+  fail "Generated MFE config contains the unsupported standard header v2 slot"
+fi
 log "Rendered MFE runtime configuration PASS"
+
+grep -Fq '"STORAGE_CLASS": "openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage"' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings do not route grade-report URLs through the FPT proxy storage"
+grep -Fq 'FPT_REPORT_PROXY_BASE_URL = "https://' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings are missing FPT_REPORT_PROXY_BASE_URL"
+if grep -Fq 'GRADES_DOWNLOAD["STORAGE_TYPE"]' "$GENERATED_LMS_SETTINGS"; then
+  fail "Rendered LMS settings reintroduced legacy GRADES_DOWNLOAD STORAGE_TYPE"
+fi
+log "Rendered report-proxy configuration PASS"
 
 if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
   grep -Fq 'ADD --keep-git-dir=true https://github.com/openedx/frontend-app-authn.git#release/ulmo.4 .' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile is not sourcing Authn from release/ulmo.4"

@@ -6,10 +6,10 @@ Mục tiêu là giữ nguyên nghiệp vụ Open edX, FEID, Unit Reset, Indigo v
 
 ## Baseline đã kiểm chứng
 
-- Tutor: `21.x` (UAT hiện tại: 21.0.6).
-- Open edX: `OPENEDX_COMMON_VERSION=release/ulmo.3`.
-- Authn: tag `release/ulmo.3`, dùng DefaultLayout; `ENABLE_IMAGE_LAYOUT=False`.
-- Custom Learning MFE: `/opt/openedx/frontend-app-learning`, branch `mfe-unit-reset`.
+- Tutor: `21.0.9`; Tutor MFE `21.0.2`; Tutor Indigo `21.2.1`.
+- Open edX: `OPENEDX_COMMON_VERSION=release/ulmo.4`.
+- Authn: tag `release/ulmo.4`, dùng DefaultLayout; `ENABLE_IMAGE_LAYOUT=False`.
+- Custom Learning MFE: `/opt/openedx/frontend-app-learning`, branch `mfe-unit-reset-runtime-clean`.
 - Unit Reset backend: package `openedx-unit-reset` từ `CMS-FPT/openedx_unit_reset`.
 
 Script setup sẽ fail-fast nếu baseline khác, source tracked bị sửa chưa commit, custom Learning mất marker Unit Reset hoặc Learning không được Tutor map vào build context `mfe -> learning-src`.
@@ -20,7 +20,7 @@ Chỉ dùng các override sau cho compatibility test có chủ đích, không d�
 FPT_UI_ALLOW_UNTESTED_BASELINE=1
 FPT_UI_SKIP_LEARNING_GUARD=1
 FPT_LEARNING_REPO=/duong/dan/frontend-app-learning
-FPT_LEARNING_BRANCH=mfe-unit-reset
+FPT_LEARNING_BRANCH=mfe-unit-reset-runtime-clean
 ```
 
 ## Phạm vi UI
@@ -101,8 +101,8 @@ Pipeline hiện thực hiện theo thứ tự:
 
 1. Kiểm tra Git/Tutor/Docker và Docker daemon.
 2. Chạy static/fixture validator.
-3. Kiểm tra Tutor 21.x + `release/ulmo.3` + clean tracked source.
-4. Kiểm tra custom Learning branch `mfe-unit-reset`, UnitResetButton marker và clean tracked source.
+3. Kiểm tra Tutor 21.0.9 + Tutor MFE 21.0.2 + `release/ulmo.4` + clean tracked source.
+4. Kiểm tra custom Learning branch `mfe-unit-reset-runtime-clean`, `frontend-component-header >= 8.2.1`, UnitResetButton marker và clean tracked source.
 5. Tự thêm mount edx-platform/Learning nếu thiếu.
 6. Enable/link `openedx_connector`, `openedx_unit_reset`, `fpt_indigo_ui`.
 7. `tutor config save` và kiểm tra generated LMS settings + MFE `env.config.jsx`.

@@ -5,7 +5,7 @@ log() { printf '[fpt-ulmo-upgrade] %s\n' "$*"; }
 fail() { printf '[fpt-ulmo-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 
 TUTOR_VERSION_TARGET="21.0.9"
-TUTOR_MFE_VERSION_TARGET="21.0.1"
+TUTOR_MFE_VERSION_TARGET="21.0.2"
 TUTOR_INDIGO_VERSION_TARGET="21.2.1"
 OPENEDX_VERSION_TARGET="release/ulmo.4"
 
@@ -80,4 +80,4 @@ log "PASS OPENEDX_COMMON_VERSION=$COMMON_VERSION"
 log "PASS EDX_PLATFORM_VERSION=$EDX_VERSION"
 log "PASS MFE_COMMON_VERSION=$MFE_COMMON_VERSION"
 log "Ulmo.4 runtime upgrade complete; no containers/images were changed by this script."
-log "Next: FPT_MFE_BUILDER=mfe-builder-6g bash scripts/fpt-ui-build.sh --restart"
+log "Next: bash scripts/fpt-ui-build.sh --restart"

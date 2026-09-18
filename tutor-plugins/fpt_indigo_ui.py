@@ -192,19 +192,22 @@ PLUGIN_SLOTS.add_item((
     _FPT_PRESENCE_WIDGET,
 ))
 
-# Studio/Authoring exposes its own header actions slot.
+# Authoring Ulmo.4 locks frontend-component-header 8.1.0. That release does
+# not expose studio_header_actions.v1 yet; the search-button slot is the
+# supported insertion point immediately before the user menu.
 for _mfe in FPT_PRESENCE_STUDIO_HEADER_MFES:
     PLUGIN_SLOTS.add_item((
         _mfe,
-        "org.openedx.frontend.layout.studio_header_actions.v1",
+        "org.openedx.frontend.layout.studio_header_search_button_slot.v1",
         _FPT_PRESENCE_WIDGET,
     ))
 
-# Other authenticated MFEs use the standard desktop secondary-header slot.
+# Other authenticated Ulmo.4 MFEs lock frontend-component-header 6.4-6.6,
+# where the supported desktop secondary-header slot is v1 (not v2).
 for _mfe in FPT_PRESENCE_STANDARD_HEADER_MFES:
     PLUGIN_SLOTS.add_item((
         _mfe,
-        "org.openedx.frontend.layout.header_desktop_secondary_menu.v2",
+        "org.openedx.frontend.layout.header_desktop_secondary_menu.v1",
         _FPT_PRESENCE_WIDGET,
     ))
 
