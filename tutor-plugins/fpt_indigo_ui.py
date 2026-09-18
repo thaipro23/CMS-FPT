@@ -137,13 +137,33 @@ hooks.Filters.ENV_PATCHES.add_item((
     _jinja_raw(_read_patch("runtime.patch")),
 ))
 
-# FPT_PRESENCE_LEARNING_ONLY_V1
-# Tutor MFE renders app-specific runtime patches only for the matching APP_ID.
-# This keeps the presence component out of Authn/Profile/Account/etc. entirely.
-hooks.Filters.ENV_PATCHES.add_item((
-    "mfe-env-config-runtime-definitions-learning",
-    _jinja_raw(_read_patch("presence_runtime.patch")),
-))
+# FPT_PRESENCE_HEADER_SLOTS_V2
+# Open edX recommends extending MFEs through Frontend Plugin Framework slots
+# instead of forking application source. Define the same small presence widget
+# only in authenticated MFEs that expose supported header slots. Authn remains
+# untouched so login layout/runtime cannot regress.
+FPT_PRESENCE_STANDARD_HEADER_MFES = [
+    "account",
+    "admin-console",
+    "communications",
+    "discussions",
+    "gradebook",
+    "learner-dashboard",
+    "ora-grading",
+    "profile",
+]
+FPT_PRESENCE_STUDIO_HEADER_MFES = ["authoring"]
+FPT_PRESENCE_MFE_APPS = [
+    "learning",
+    *FPT_PRESENCE_STANDARD_HEADER_MFES,
+    *FPT_PRESENCE_STUDIO_HEADER_MFES,
+]
+
+for _mfe in FPT_PRESENCE_MFE_APPS:
+    hooks.Filters.ENV_PATCHES.add_item((
+        f"mfe-env-config-runtime-definitions-{_mfe}",
+        _jinja_raw(_read_patch("presence_runtime.patch")),
+    ))
 
 
 FPT_FOOTER_SLOT = (
@@ -159,15 +179,34 @@ FPT_FOOTER_SLOT = (
 for _mfe in ["learning", "learner-dashboard", "profile", "account", "discussions", "authoring", "authn"]:
     PLUGIN_SLOTS.add_item((_mfe, *FPT_FOOTER_SLOT))
 
-# The Learning header actions slot is immediately before the user menu in the
-# stock frontend header. FptPresenceBadge is defined only in Learning runtime.
+# Header presence uses only documented Open edX frontend-component-header
+# extension points. No DOM replacement and no core MFE source edits.
+_FPT_PRESENCE_WIDGET = """
+    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_presence_badge', type: DIRECT_PLUGIN, priority: 90, RenderWidget: FptPresenceBadge } },
+"""
+
+# Learning has a dedicated actions area immediately before the user menu.
 PLUGIN_SLOTS.add_item((
     "learning",
     "org.openedx.frontend.layout.learning_header_actions.v1",
-    """
-    { op: PLUGIN_OPERATIONS.Insert, widget: { id: 'fpt_presence_badge', type: DIRECT_PLUGIN, priority: 100, RenderWidget: FptPresenceBadge } },
-""",
+    _FPT_PRESENCE_WIDGET,
 ))
+
+# Studio/Authoring exposes its own header actions slot.
+for _mfe in FPT_PRESENCE_STUDIO_HEADER_MFES:
+    PLUGIN_SLOTS.add_item((
+        _mfe,
+        "org.openedx.frontend.layout.studio_header_actions.v1",
+        _FPT_PRESENCE_WIDGET,
+    ))
+
+# Other authenticated MFEs use the standard desktop secondary-header slot.
+for _mfe in FPT_PRESENCE_STANDARD_HEADER_MFES:
+    PLUGIN_SLOTS.add_item((
+        _mfe,
+        "org.openedx.frontend.layout.header_desktop_secondary_menu.v2",
+        _FPT_PRESENCE_WIDGET,
+    ))
 
 PLUGIN_SLOTS.add_item((
     "learner-dashboard",
@@ -187,5 +226,7 @@ hooks.Filters.ENV_PATCHES.add_item((
         + _read_patch("slider_images.patch")
         + "\n"
         + _read_patch("native_logo.patch")
+        + "\n"
+        + _read_patch("legacy_presence.patch")
     ),
 ))
