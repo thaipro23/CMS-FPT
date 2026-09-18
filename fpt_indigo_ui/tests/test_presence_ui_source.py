@@ -14,6 +14,7 @@ PRESENCE_SETTINGS = (
 AUTHN_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "authn.patch"
 AUTHN_LABELS_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "authn_labels.patch"
 LEGACY_PRESENCE_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "legacy_presence.patch"
+LEGACY_CMS_PRESENCE_PATCH = REPO_ROOT / "fpt_indigo_ui" / "patches" / "legacy_cms_presence.patch"
 
 
 def _hook_block(source: str, hook_name: str) -> str:
@@ -38,6 +39,7 @@ def test_presence_widget_uses_supported_header_slots_without_touching_authn():
     tutor_source = TUTOR_PLUGIN.read_text(encoding="utf-8")
     presence_source = PRESENCE_PATCH.read_text(encoding="utf-8")
     legacy_source = LEGACY_PRESENCE_PATCH.read_text(encoding="utf-8")
+    legacy_cms_source = LEGACY_CMS_PRESENCE_PATCH.read_text(encoding="utf-8")
 
     shared_runtime = _hook_block(
         tutor_source,
@@ -64,6 +66,10 @@ def test_presence_widget_uses_supported_header_slots_without_touching_authn():
     assert "FPT_PRESENCE_LEGACY_HEADER_V1" in legacy_source
     assert "/api/fpt-presence/v1/count" in legacy_source
     assert "setInterval(refresh, 60000)" in legacy_source
+
+    assert "FPT_PRESENCE_LEGACY_CMS_HEADER_V1" in legacy_cms_source
+    assert "/api/fpt-presence/v1/count" in legacy_cms_source
+    assert "setInterval(refresh, 60000)" in legacy_cms_source
 
 
 def test_authn_login_labels_are_student_and_staff_without_changing_provider_routing():
