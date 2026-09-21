@@ -7,6 +7,7 @@ user-resolution APIs.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import importlib
@@ -21,7 +22,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.101'
+CONNECTOR_VERSION = '25.9.16.5.102'
 CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.101'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
@@ -48,7 +49,7 @@ try:
     # student-insight builds referenced these names without importing them; the
     # broad exception guards then silently disabled Course completion / Detailed
     # grades fallback on UAT.
-    from .studio import _safe_str, _block_type, _display_name, _get_item_best_effort, _children_locations  # type: ignore
+    from .studio import _safe_str, _block_type, _display_name, _get_item_best_effort as _studio_get_item_best_effort, _children_locations  # type: ignore
 except Exception:  # pragma: no cover - defensive fallback for stripped plugin installs
     def _safe_str(value: Any) -> str:
         if value is None or callable(value):
@@ -67,7 +68,7 @@ except Exception:  # pragma: no cover - defensive fallback for stripped plugin i
     def _display_name(block: Any) -> str:
         return _safe_str(getattr(block, 'display_name', '') or getattr(block, 'name', '') or _block_type(block))
 
-    def _get_item_best_effort(store: Any, usage_key: Any) -> Any | None:
+    def _studio_get_item_best_effort(store: Any, usage_key: Any) -> Any | None:
         try:
             return store.get_item(usage_key)
         except Exception:
@@ -82,6 +83,32 @@ except Exception:  # pragma: no cover - defensive fallback for stripped plugin i
             return list(getattr(block, 'children', None) or [])
         except Exception:
             return []
+
+
+# A class-analytics request walks the same course tree from several helpers:
+# planned quiz components, problem->subsection grouping, and completion
+# denominator discovery.  On production COM1091 that meant 1,724 modulestore
+# get_item calls for ~575 unique XBlocks and ~28s spent almost entirely in
+# get_item.  Keep one request-local XBlock object cache so all read-only helpers
+# reuse the first lookup without making course edits stale across requests.
+_XBLOCK_REQUEST_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
+    'openedx_ai_connector_xblock_request_cache',
+    default=None,
+)
+
+
+def _get_item_best_effort(store: Any, usage_key: Any) -> Any | None:
+    cache = _XBLOCK_REQUEST_CACHE.get()
+    if cache is None:
+        return _studio_get_item_best_effort(store, usage_key)
+
+    cache_key = _safe_str(usage_key)
+    if cache_key in cache:
+        return cache[cache_key]
+
+    block = _studio_get_item_best_effort(store, usage_key)
+    cache[cache_key] = block
+    return block
 
 
 _COURSE_KEY_RE = re.compile(r"course-v1:([^+/\s?#]+)\+([^+/\s?#]+)\+([^+/\s?#]+)", re.IGNORECASE)
@@ -2083,7 +2110,7 @@ def _compact_progress_payload(progress: dict[str, Any]) -> dict[str, Any]:
     ]
     return {key: progress.get(key) for key in keys if key in progress and progress.get(key) is not None}
 
-def _student_learning_results_on_selected_database(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
+def _student_learning_results_on_selected_database_uncached(course_id: str, requested: list[dict[str, Any]], *, compact: bool = False, skip_course_home_progress: bool = False) -> list[dict[str, Any]]:
     course_key = _course_key_from_string(course_id)
     found_by_key = _student_insight_user_map(requested)
     users = []
@@ -2134,6 +2161,32 @@ def _student_learning_results_on_selected_database(course_id: str, requested: li
             'component_grades': components,
         })
     return results
+
+
+def _student_learning_results_on_selected_database(
+    course_id: str,
+    requested: list[dict[str, Any]],
+    *,
+    compact: bool = False,
+    skip_course_home_progress: bool = False,
+) -> list[dict[str, Any]]:
+    """Materialize one analytics response with one shared XBlock lookup cache.
+
+    The cache is deliberately request-local.  It deduplicates modulestore
+    get_item calls across component grades, StudentModule grouping, and
+    completion denominator traversal while guaranteeing the next request sees
+    the latest published course structure.
+    """
+    token = _XBLOCK_REQUEST_CACHE.set({})
+    try:
+        return _student_learning_results_on_selected_database_uncached(
+            course_id,
+            requested,
+            compact=compact,
+            skip_course_home_progress=skip_course_home_progress,
+        )
+    finally:
+        _XBLOCK_REQUEST_CACHE.reset(token)
 
 
 @replica_reads
