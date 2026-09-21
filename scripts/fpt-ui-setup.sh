@@ -257,6 +257,8 @@ fi
 
 GENERATED_LMS_SETTINGS="$TUTOR_ROOT/env/apps/openedx/settings/lms/production.py"
 [ -f "$GENERATED_LMS_SETTINGS" ] || fail "Generated LMS production settings not found: $GENERATED_LMS_SETTINGS"
+GENERATED_CMS_SETTINGS="$TUTOR_ROOT/env/apps/openedx/settings/cms/production.py"
+[ -f "$GENERATED_CMS_SETTINGS" ] || fail "Generated CMS production settings not found: $GENERATED_CMS_SETTINGS"
 grep -Fq 'MFE_CONFIG["ENABLE_IMAGE_LAYOUT"] = False' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive ENABLE_IMAGE_LAYOUT=False"
 grep -Fq 'MFE_CONFIG["FPT_SSO_ONLY_AUTH"] = True' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings did not receive FPT_SSO_ONLY_AUTH=True"
 log "Rendered LMS MFE configuration PASS"
@@ -299,6 +301,11 @@ if grep -Fq 'GRADES_DOWNLOAD["STORAGE_TYPE"]' "$GENERATED_LMS_SETTINGS"; then
   fail "Rendered LMS settings reintroduced legacy GRADES_DOWNLOAD STORAGE_TYPE"
 fi
 log "Rendered report-proxy configuration PASS"
+
+grep -Fq 'USER_TASKS_ARTIFACT_STORAGE = "openedx_fpt_report_proxy.storage.FPTUserTaskArtifactProxyS3Storage"' "$GENERATED_CMS_SETTINGS" || fail "Rendered CMS settings do not route user-task artifacts through the FPT proxy storage"
+grep -Fq 'FPT_ARTIFACT_PROXY_BASE_URL = "https://' "$GENERATED_CMS_SETTINGS" || fail "Rendered CMS settings are missing FPT_ARTIFACT_PROXY_BASE_URL"
+grep -Fq 'COURSE_IMPORT_EXPORT_STORAGE = USER_TASKS_ARTIFACT_STORAGE' "$GENERATED_CMS_SETTINGS" || fail "Rendered CMS settings do not route course exports through user-task artifact storage"
+log "Rendered CMS artifact-proxy configuration PASS"
 
 if [ "$ALLOW_UNTESTED_BASELINE" != "1" ]; then
   grep -Fq 'ADD --keep-git-dir=true https://github.com/openedx/frontend-app-authn.git#release/ulmo.4 .' "$MFE_DOCKERFILE" || fail "Generated MFE Dockerfile is not sourcing Authn from release/ulmo.4"

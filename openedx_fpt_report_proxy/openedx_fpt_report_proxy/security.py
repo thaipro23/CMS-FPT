@@ -22,6 +22,14 @@ def normalize_report_key(value: object) -> str:
     return "/".join(parts)
 
 
+def normalize_user_task_artifact_key(value: object) -> str:
+    """Return a safe key contained by the user-task artifact prefix."""
+    key = normalize_report_key(value)
+    if not key.startswith("user_tasks/"):
+        raise ValueError("artifact key must be inside user_tasks/")
+    return key
+
+
 def course_hash(course_id: object) -> str:
     """Mirror ``ReportStore.path_to`` SHA1 course-directory naming."""
     return hashlib.sha1(str(course_id).encode("utf-8")).hexdigest()

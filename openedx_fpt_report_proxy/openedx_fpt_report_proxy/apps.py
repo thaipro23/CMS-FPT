@@ -21,5 +21,11 @@ class FPTReportProxyConfig(AppConfig):
                 "regex": r"^api/fpt-reports/v1/",
                 "relative_path": "urls",
             },
+            "cms.djangoapp": {
+                "namespace": "fpt_artifact_proxy",
+                "app_name": "openedx_fpt_report_proxy",
+                "regex": r"^api/fpt-artifacts/v1/",
+                "relative_path": "artifact_urls",
+            },
         },
     }

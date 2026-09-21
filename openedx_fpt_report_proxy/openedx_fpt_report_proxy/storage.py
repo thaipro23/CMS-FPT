@@ -8,10 +8,12 @@ from django.conf import settings
 from django.core import signing
 from storages.backends.s3boto3 import S3Boto3Storage
 
-from .security import normalize_report_key
+from .security import normalize_report_key, normalize_user_task_artifact_key
 
 TOKEN_SALT = "openedx_fpt_report_proxy.download.v1"
 DEFAULT_DOWNLOAD_PATH = "/api/fpt-reports/v1/download"
+ARTIFACT_TOKEN_SALT = "openedx_fpt_report_proxy.artifact-download.v1"
+DEFAULT_ARTIFACT_DOWNLOAD_PATH = "/api/fpt-artifacts/v1/download"
 
 
 class FPTReportProxyS3Storage(S3Boto3Storage):
@@ -23,6 +25,25 @@ class FPTReportProxyS3Storage(S3Boto3Storage):
         base_url = str(getattr(settings, "FPT_REPORT_PROXY_BASE_URL", "")).rstrip("/")
         download_path = str(
             getattr(settings, "FPT_REPORT_PROXY_DOWNLOAD_PATH", DEFAULT_DOWNLOAD_PATH)
+        )
+        if not download_path.startswith("/"):
+            download_path = f"/{download_path}"
+        return f"{base_url}{download_path}?{urlencode({'token': token})}"
+
+
+class FPTUserTaskArtifactProxyS3Storage(S3Boto3Storage):
+    """Keep user-task artifacts private while returning a Studio proxy URL."""
+
+    def url(self, name, parameters=None, expire=None, http_method=None):  # pylint: disable=unused-argument
+        key = normalize_user_task_artifact_key(name)
+        token = signing.dumps({"key": key}, salt=ARTIFACT_TOKEN_SALT, compress=True)
+        base_url = str(getattr(settings, "FPT_ARTIFACT_PROXY_BASE_URL", "")).rstrip("/")
+        download_path = str(
+            getattr(
+                settings,
+                "FPT_ARTIFACT_PROXY_DOWNLOAD_PATH",
+                DEFAULT_ARTIFACT_DOWNLOAD_PATH,
+            )
         )
         if not download_path.startswith("/"):
             download_path = f"/{download_path}"

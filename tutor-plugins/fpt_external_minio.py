@@ -18,6 +18,7 @@ hooks.Filters.CONFIG_DEFAULTS.add_items([
     ("FPT_MINIO_QUERYSTRING_AUTH", True),
     ("FPT_REPORT_PROXY_ENABLED", True),
     ("FPT_REPORT_PROXY_TOKEN_TTL_SECONDS", 300),
+    ("FPT_ARTIFACT_PROXY_TOKEN_TTL_SECONDS", 300),
 ])
 
 
@@ -129,6 +130,22 @@ hooks.Filters.ENV_PATCHES.add_item((
     """
 {% if FPT_MINIO_ENABLED %}
 # FPT_EXTERNAL_MINIO_V1
+{% if FPT_REPORT_PROXY_ENABLED %}
+# FPT_ARTIFACT_PROXY_V1
+USER_TASKS_ARTIFACT_STORAGE = "openedx_fpt_report_proxy.storage.FPTUserTaskArtifactProxyS3Storage"
+STORAGES["user_task_artifacts"] = {
+    "BACKEND": USER_TASKS_ARTIFACT_STORAGE,
+    "OPTIONS": {
+        "bucket_name": "{{ FPT_MINIO_BUCKET_NAME }}",
+    },
+}
+FPT_ARTIFACT_STORAGE_KWARGS = {
+    "bucket_name": "{{ FPT_MINIO_BUCKET_NAME }}",
+}
+FPT_ARTIFACT_PROXY_BASE_URL = "https://{{ CMS_HOST }}"
+FPT_ARTIFACT_PROXY_DOWNLOAD_PATH = "/api/fpt-artifacts/v1/download"
+FPT_ARTIFACT_PROXY_TOKEN_TTL_SECONDS = {{ FPT_ARTIFACT_PROXY_TOKEN_TTL_SECONDS }}
+{% endif %}
 COURSE_IMPORT_EXPORT_STORAGE = USER_TASKS_ARTIFACT_STORAGE
 {% endif %}
 """,
