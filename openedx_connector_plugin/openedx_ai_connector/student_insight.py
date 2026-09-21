@@ -2268,6 +2268,8 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
         'connector_contract_version': CONNECTOR_CONTRACT_VERSION,
         'progress_contract': PROGRESS_CONTRACT,
         'active_http_namespace': '/api/ai-connector/v1',
+        'course_learning_index_mode': 'request_local_single_traversal',
+        'xblock_request_cache_enabled': True,
         'student_module_model_available': StudentModule is not None,
         'student_module_model_source': sm_source or None,
         'student_module_import_error': sm_error,
