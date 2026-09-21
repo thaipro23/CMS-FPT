@@ -48,7 +48,9 @@ class XBlockRequestCacheTests(TestCase):
 
     def test_selected_database_wrapper_restores_outer_cache_on_failure(self):
         outer_cache = {'existing': object()}
-        token = si._XBLOCK_REQUEST_CACHE.set(outer_cache)
+        outer_index = {'course-v1:outer': {'sentinel': True}}
+        xblock_token = si._XBLOCK_REQUEST_CACHE.set(outer_cache)
+        index_token = si._COURSE_LEARNING_INDEX_REQUEST_CACHE.set(outer_index)
         try:
             with patch.object(
                 si,
@@ -64,8 +66,10 @@ class XBlockRequestCacheTests(TestCase):
                     )
 
             self.assertIs(si._XBLOCK_REQUEST_CACHE.get(), outer_cache)
+            self.assertIs(si._COURSE_LEARNING_INDEX_REQUEST_CACHE.get(), outer_index)
         finally:
-            si._XBLOCK_REQUEST_CACHE.reset(token)
+            si._COURSE_LEARNING_INDEX_REQUEST_CACHE.reset(index_token)
+            si._XBLOCK_REQUEST_CACHE.reset(xblock_token)
 
 
 class CourseLearningIndexTests(TestCase):
