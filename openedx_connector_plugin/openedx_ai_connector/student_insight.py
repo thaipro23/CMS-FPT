@@ -22,7 +22,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.102'
+CONNECTOR_VERSION = '25.9.16.5.103'
 CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.101'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
@@ -93,6 +93,15 @@ except Exception:  # pragma: no cover - defensive fallback for stripped plugin i
 # reuse the first lookup without making course edits stale across requests.
 _XBLOCK_REQUEST_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
     'openedx_ai_connector_xblock_request_cache',
+    default=None,
+)
+
+# Unified per-request course structure.  The legacy implementation independently
+# walked the same course tree for planned quiz columns, problem->subsection
+# grouping, and completion denominator calculation.  This cache stores the
+# products of one traversal and is reset after every analytics request.
+_COURSE_LEARNING_INDEX_REQUEST_CACHE: ContextVar[dict[str, dict[str, Any]] | None] = ContextVar(
+    'openedx_ai_connector_course_learning_index_request_cache',
     default=None,
 )
 
@@ -1068,127 +1077,11 @@ def _student_module_sequential_state_has_position(value: Any) -> bool:
 
 
 
+
 def _completion_denominator_block_snapshot(course_key: Any) -> dict[str, Any]:
-    """Return the Course Home-compatible denominator for StudentModule fallback.
-
-    The LMS/CMS Course Home card in this deployment reports completion as
-    learner-visible learning units.  Example observed in production:
-    ``duongddph69321 = 5/8 = 62.5% -> 63%``.  Counting every raw XBlock under
-    the course tree produced the earlier false denominator 70.  This helper now
-    prefers reachable ``sequential`` blocks (subsections: Phần 1, Quiz 1, ...),
-    and maps every descendant video/problem/html StudentModule row back to its
-    parent subsection.  Only if a course has no sequentials do we fall back to
-    leaf learning components.
-    """
-    summary: dict[str, Any] = {
-        'denominator_source': 'lms_modulestore_reachable_subsections',
-        'denominator_rule': 'count_reachable_sequential_subsections_first_then_leaf_components',
-        'eligible_total': None,
-        'subsection_total': 0,
-        'leaf_eligible_total': 0,
-        'problem_total': 0,
-        'raw_reachable_blocks': 0,
-        'non_container_blocks': 0,
-        'container_blocks': 0,
-        'leaf_blocks': 0,
-        'breakdown_by_type': {},
-        'eligible_breakdown_by_type': {},
-        'excluded_breakdown_by_type': {},
-        'completion_unit_keys_sample': [],
-        # Full internal list is used only inside connector process for StudentModule
-        # sequential fallback; payloads expose only sample/count diagnostics.
-        'completion_unit_keys': [],
-        'visited_keys_sample': [],
-        # Internal map used by StudentModule fallback numerator. It is deliberately
-        # kept in the connector payload diagnostics only as counts/samples below.
-        'component_to_completion_unit': {},
-        'error': None,
-    }
-    if not course_key:
-        summary['error'] = 'missing_course_key'
-        return summary
-    try:
-        CourseKey, modulestore = _load_openedx_modules()
-        store = modulestore()
-        course = store.get_course(course_key)
-        if course is None:
-            summary['error'] = 'course_not_found'
-            return summary
-
-        visited: set[str] = set()
-        completion_units: set[str] = set()
-        leaf_eligible_units: set[str] = set()
-        component_to_unit: dict[str, str] = {}
-        stack: list[tuple[Any, str | None]] = [(child, None) for child in (getattr(course, 'children', []) or [])]
-        problem_total = 0
-
-        while stack:
-            key, current_unit = stack.pop()
-            raw_key = str(key)
-            if raw_key in visited:
-                continue
-            visited.add(raw_key)
-            if len(summary['visited_keys_sample']) < 20:
-                summary['visited_keys_sample'].append(raw_key)
-            block = _get_item_best_effort(store, key)
-            if block is None:
-                continue
-            block_type = _block_type(block) or 'unknown'
-            children = _children_locations(block)
-            has_children = bool(children)
-
-            summary['raw_reachable_blocks'] = int(summary.get('raw_reachable_blocks') or 0) + 1
-            breakdown = summary['breakdown_by_type']
-            breakdown[block_type] = int(breakdown.get(block_type) or 0) + 1
-
-            next_unit = current_unit
-            if block_type in _STUDENTMODULE_FALLBACK_UNIT_TYPES:
-                next_unit = raw_key
-                completion_units.add(raw_key)
-                component_to_unit[raw_key] = raw_key
-                if len(summary['completion_unit_keys_sample']) < 20:
-                    summary['completion_unit_keys_sample'].append(raw_key)
-
-            if children:
-                for child in children:
-                    stack.append((child, next_unit))
-
-            if block_type in _CONTAINER_STUDENT_MODULE_TYPES or has_children:
-                summary['container_blocks'] = int(summary.get('container_blocks') or 0) + 1
-            else:
-                summary['leaf_blocks'] = int(summary.get('leaf_blocks') or 0) + 1
-            if block_type not in _CONTAINER_STUDENT_MODULE_TYPES:
-                summary['non_container_blocks'] = int(summary.get('non_container_blocks') or 0) + 1
-
-            is_leaf_eligible = (not has_children) and block_type in _STUDENTMODULE_FALLBACK_DENOMINATOR_TYPES
-            if block_type == 'problem':
-                problem_total += 1
-            if is_leaf_eligible:
-                unit_key = next_unit or raw_key
-                component_to_unit[raw_key] = unit_key
-                leaf_eligible_units.add(unit_key if completion_units else raw_key)
-                eligible = summary['eligible_breakdown_by_type']
-                eligible[block_type] = int(eligible.get(block_type) or 0) + 1
-            else:
-                excluded = summary['excluded_breakdown_by_type']
-                excluded[block_type] = int(excluded.get(block_type) or 0) + 1
-            if next_unit:
-                component_to_unit.setdefault(raw_key, next_unit)
-
-        subsection_total = len(completion_units)
-        leaf_eligible_total = len(leaf_eligible_units)
-        summary['subsection_total'] = subsection_total
-        summary['leaf_eligible_total'] = leaf_eligible_total
-        summary['problem_total'] = problem_total
-        summary['eligible_total'] = subsection_total or leaf_eligible_total or problem_total or None
-        summary['completion_unit_keys'] = sorted(list(completion_units))
-        summary['component_to_completion_unit'] = component_to_unit
-        summary['component_to_completion_unit_count'] = len(component_to_unit)
-        summary['denominator_source'] = 'lms_modulestore_reachable_subsections' if subsection_total else 'lms_modulestore_reachable_leaf_learning_components'
-        return summary
-    except Exception as exc:
-        summary['error'] = f'{exc.__class__.__name__}: {_safe_str(exc)[:220]}'
-        return summary
+    """Return completion denominator materialized by the unified course index."""
+    index = _course_learning_index(course_key)
+    return dict(index.get('completion_denominator') or _empty_completion_denominator_snapshot())
 
 def _latest_datetime_iso(left: Any, right: Any) -> Any:
     if left is None:
@@ -1237,42 +1130,98 @@ def _looks_like_quiz_component(name: Any, block: Any | None = None) -> bool:
     return False
 
 
-def _course_outline_quiz_components(course_key: Any) -> list[dict[str, Any]]:
-    """Return planned quiz/graded components from course outline even if no grades exist yet.
 
-    This is intentionally best-effort. It exists so AI Server can render the
-    dynamic Quiz columns from the course itself instead of waiting for
-    PersistentSubsectionGrade to be populated.
-    """
+def _empty_completion_denominator_snapshot() -> dict[str, Any]:
+    return {
+        'denominator_source': 'lms_modulestore_reachable_subsections',
+        'denominator_rule': 'count_reachable_sequential_subsections_first_then_leaf_components',
+        'eligible_total': None,
+        'subsection_total': 0,
+        'leaf_eligible_total': 0,
+        'problem_total': 0,
+        'raw_reachable_blocks': 0,
+        'non_container_blocks': 0,
+        'container_blocks': 0,
+        'leaf_blocks': 0,
+        'breakdown_by_type': {},
+        'eligible_breakdown_by_type': {},
+        'excluded_breakdown_by_type': {},
+        'completion_unit_keys_sample': [],
+        'completion_unit_keys': [],
+        'visited_keys_sample': [],
+        'component_to_completion_unit': {},
+        'error': None,
+    }
+
+
+def _build_course_learning_index(course_key: Any) -> dict[str, Any]:
+    """Traverse one course tree once and materialize all analytics structure maps."""
+    index: dict[str, Any] = {
+        'planned_components': [],
+        'problem_to_subsection': {},
+        'display_names': {},
+        'completion_denominator': _empty_completion_denominator_snapshot(),
+        'error': None,
+    }
+    summary = index['completion_denominator']
     if not course_key:
-        return []
+        summary['error'] = 'missing_course_key'
+        index['error'] = summary['error']
+        return index
+
     try:
         CourseKey, modulestore = _load_openedx_modules()
         store = modulestore()
         course = store.get_course(course_key)
-    except Exception:
-        return []
-    components: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    stack: list[Any] = list(getattr(course, 'children', []) or [])
+        if course is None:
+            summary['error'] = 'course_not_found'
+            index['error'] = summary['error']
+            return index
+    except Exception as exc:
+        error = f'{exc.__class__.__name__}: {_safe_str(exc)[:220]}'
+        summary['error'] = error
+        index['error'] = error
+        return index
+
+    visited: set[str] = set()
+    completion_units: set[str] = set()
+    leaf_eligible_units: set[str] = set()
+    component_to_unit: dict[str, str] = {}
+    problem_to_subsection: dict[str, dict[str, Any]] = {}
+    display_names: dict[str, str] = {}
+    planned_candidates: list[dict[str, Any]] = []
+    problem_total = 0
+
+    stack: list[tuple[Any, dict[str, Any] | None, str | None]] = [
+        (child, None, None)
+        for child in reversed(list(getattr(course, 'children', []) or []))
+    ]
+
     while stack:
-        key = stack.pop(0)
+        key, current_subsection, current_unit = stack.pop()
         raw_key = _safe_str(key)
-        if not raw_key or raw_key in seen:
+        if not raw_key or raw_key in visited:
             continue
-        seen.add(raw_key)
+        visited.add(raw_key)
+
+        if len(summary['visited_keys_sample']) < 20:
+            summary['visited_keys_sample'].append(raw_key)
+
         block = _get_item_best_effort(store, key)
         if block is None:
             continue
-        block_type = _block_type(block)
+
+        block_type = _block_type(block) or 'unknown'
         children = _children_locations(block)
-        if children:
-            stack[0:0] = list(children)
+        has_children = bool(children)
         display = _display_name(block) or raw_key
+        display_names[raw_key] = display
+
+        # Planned Detailed-grade columns.
         if block_type in {'sequential', 'vertical', 'problem'} and _looks_like_quiz_component(display, block):
             name = (display or '').strip()
             category = 'quiz' if 'quiz' in name.lower() or block_type == 'sequential' else block_type
-            components.append({
+            planned_candidates.append({
                 'key': raw_key,
                 'usage_key': raw_key,
                 'name': name[:255] if name else '',
@@ -1284,25 +1233,115 @@ def _course_outline_quiz_components(course_key: Any) -> list[dict[str, Any]]:
                 'source': 'course_outline',
                 'block_type': block_type,
             })
-    # Prefer real quiz containers (sequential/vertical) over individual problem-bank
-    # children. Problem-bank/randomized items can have keys like `quiz-14` and would
-    # otherwise create phantom Quiz columns.
-    higher = [item for item in components if item.get('block_type') in {'sequential', 'vertical'}]
-    usable = higher or components
+
+        # Problem -> nearest subsection grouping used by StudentModule fallback.
+        next_subsection = current_subsection
+        if block_type == 'sequential':
+            next_subsection = {
+                'key': raw_key,
+                'name': display or raw_key,
+                'category': 'subsection',
+            }
+        if block_type == 'problem':
+            if next_subsection:
+                problem_to_subsection[raw_key] = dict(next_subsection)
+            else:
+                problem_to_subsection[raw_key] = {
+                    'key': raw_key,
+                    'name': display or raw_key,
+                    'category': 'problem',
+                }
+
+        # Completion denominator and descendant -> completion-unit map.
+        summary['raw_reachable_blocks'] = int(summary.get('raw_reachable_blocks') or 0) + 1
+        breakdown = summary['breakdown_by_type']
+        breakdown[block_type] = int(breakdown.get(block_type) or 0) + 1
+
+        next_unit = current_unit
+        if block_type in _STUDENTMODULE_FALLBACK_UNIT_TYPES:
+            next_unit = raw_key
+            completion_units.add(raw_key)
+            component_to_unit[raw_key] = raw_key
+            if len(summary['completion_unit_keys_sample']) < 20:
+                summary['completion_unit_keys_sample'].append(raw_key)
+
+        if block_type in _CONTAINER_STUDENT_MODULE_TYPES or has_children:
+            summary['container_blocks'] = int(summary.get('container_blocks') or 0) + 1
+        else:
+            summary['leaf_blocks'] = int(summary.get('leaf_blocks') or 0) + 1
+        if block_type not in _CONTAINER_STUDENT_MODULE_TYPES:
+            summary['non_container_blocks'] = int(summary.get('non_container_blocks') or 0) + 1
+
+        is_leaf_eligible = (not has_children) and block_type in _STUDENTMODULE_FALLBACK_DENOMINATOR_TYPES
+        if block_type == 'problem':
+            problem_total += 1
+        if is_leaf_eligible:
+            unit_key = next_unit or raw_key
+            component_to_unit[raw_key] = unit_key
+            leaf_eligible_units.add(unit_key if completion_units else raw_key)
+            eligible = summary['eligible_breakdown_by_type']
+            eligible[block_type] = int(eligible.get(block_type) or 0) + 1
+        else:
+            excluded = summary['excluded_breakdown_by_type']
+            excluded[block_type] = int(excluded.get(block_type) or 0) + 1
+        if next_unit:
+            component_to_unit.setdefault(raw_key, next_unit)
+
+        for child in reversed(children):
+            stack.append((child, next_subsection, next_unit))
+
+    higher = [item for item in planned_candidates if item.get('block_type') in {'sequential', 'vertical'}]
+    usable = higher or planned_candidates
     usable.sort(key=lambda item: (_safe_str(item.get('name')), _safe_str(item.get('key'))))
-    fixed: list[dict[str, Any]] = []
-    for index, item in enumerate(usable[:80], start=1):
+    planned_components: list[dict[str, Any]] = []
+    for position, item in enumerate(usable[:80], start=1):
         row = dict(item)
         numbers = _quiz_numbers_from_label(row.get('name'))
-        quiz_number = numbers[0] if numbers else index
+        quiz_number = numbers[0] if numbers else position
         row['quiz_number'] = quiz_number
         row['order'] = quiz_number
         name = _safe_str(row.get('name')).strip()
         if name.lower() in {'quiz', 'learning check', 'lc', ''}:
             name = f'Quiz {quiz_number}'
         row['name'] = name[:255]
-        fixed.append(row)
-    return fixed
+        planned_components.append(row)
+
+    subsection_total = len(completion_units)
+    leaf_eligible_total = len(leaf_eligible_units)
+    summary['subsection_total'] = subsection_total
+    summary['leaf_eligible_total'] = leaf_eligible_total
+    summary['problem_total'] = problem_total
+    summary['eligible_total'] = subsection_total or leaf_eligible_total or problem_total or None
+    summary['completion_unit_keys'] = sorted(list(completion_units))
+    summary['component_to_completion_unit'] = component_to_unit
+    summary['component_to_completion_unit_count'] = len(component_to_unit)
+    summary['denominator_source'] = (
+        'lms_modulestore_reachable_subsections'
+        if subsection_total
+        else 'lms_modulestore_reachable_leaf_learning_components'
+    )
+
+    index['planned_components'] = planned_components
+    index['problem_to_subsection'] = problem_to_subsection
+    index['display_names'] = display_names
+    return index
+
+
+def _course_learning_index(course_key: Any) -> dict[str, Any]:
+    """Return one request-local unified course learning index."""
+    cache = _COURSE_LEARNING_INDEX_REQUEST_CACHE.get()
+    if cache is None:
+        return _build_course_learning_index(course_key)
+
+    cache_key = _safe_str(course_key)
+    if cache_key not in cache:
+        cache[cache_key] = _build_course_learning_index(course_key)
+    return cache[cache_key]
+
+
+def _course_outline_quiz_components(course_key: Any) -> list[dict[str, Any]]:
+    index = _course_learning_index(course_key)
+    return [dict(item) for item in (index.get('planned_components') or [])]
 
 def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, list[dict[str, Any]]]:
     """Best-effort subsection/component grade breakdown.
@@ -1325,12 +1364,19 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     except Exception:
         return result
 
+    course_index = _course_learning_index(course_key)
+    indexed_display_names = course_index.get('display_names') or {}
     display_cache: dict[str, str] = {}
+
     def _display_name_for_usage(usage_key: Any) -> str:
         raw = _safe_str(usage_key)
         if not raw:
             return 'Điểm thành phần'
         if raw in display_cache:
+            return display_cache[raw]
+        indexed = indexed_display_names.get(raw)
+        if indexed:
+            display_cache[raw] = _safe_str(indexed)
             return display_cache[raw]
         display = raw
         try:
@@ -1404,46 +1450,14 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     return result
 
 
-def _subsection_problem_index(course_key: Any) -> dict[str, dict[str, Any]]:
-    """Map problem usage keys to their nearest subsection/sequential."""
-    index: dict[str, dict[str, Any]] = {}
-    if not course_key:
-        return index
-    try:
-        CourseKey, modulestore = _load_openedx_modules()
-        store = modulestore()
-        course = store.get_course(course_key)
-    except Exception:
-        return index
-    stack: list[tuple[Any, dict[str, Any] | None]] = [(child, None) for child in list(getattr(course, 'children', []) or [])]
-    visited: set[str] = set()
-    while stack:
-        key, current_subsection = stack.pop()
-        raw_key = _safe_str(key)
-        if not raw_key or raw_key in visited:
-            continue
-        visited.add(raw_key)
-        block = _get_item_best_effort(store, key)
-        if block is None:
-            continue
-        block_type = _block_type(block)
-        next_subsection = current_subsection
-        if block_type == 'sequential':
-            next_subsection = {
-                'key': raw_key,
-                'name': _display_name(block) or raw_key,
-                'category': 'subsection',
-            }
-        if block_type == 'problem':
-            if next_subsection:
-                index[raw_key] = dict(next_subsection)
-            else:
-                index[raw_key] = {'key': raw_key, 'name': _display_name(block) or raw_key, 'category': 'problem'}
-        children = _children_locations(block)
-        for child in reversed(children):
-            stack.append((child, next_subsection))
-    return index
 
+def _subsection_problem_index(course_key: Any) -> dict[str, dict[str, Any]]:
+    """Map problem usage keys to their nearest subsection from the unified index."""
+    index = _course_learning_index(course_key)
+    return {
+        key: dict(value)
+        for key, value in (index.get('problem_to_subsection') or {}).items()
+    }
 
 def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, list[dict[str, Any]]]:
     """Fallback component grades from StudentModule problem grade/max_grade."""
@@ -2177,7 +2191,8 @@ def _student_learning_results_on_selected_database(
     completion denominator traversal while guaranteeing the next request sees
     the latest published course structure.
     """
-    token = _XBLOCK_REQUEST_CACHE.set({})
+    xblock_token = _XBLOCK_REQUEST_CACHE.set({})
+    course_index_token = _COURSE_LEARNING_INDEX_REQUEST_CACHE.set({})
     try:
         return _student_learning_results_on_selected_database_uncached(
             course_id,
@@ -2186,7 +2201,8 @@ def _student_learning_results_on_selected_database(
             skip_course_home_progress=skip_course_home_progress,
         )
     finally:
-        _XBLOCK_REQUEST_CACHE.reset(token)
+        _COURSE_LEARNING_INDEX_REQUEST_CACHE.reset(course_index_token)
+        _XBLOCK_REQUEST_CACHE.reset(xblock_token)
 
 
 @replica_reads
