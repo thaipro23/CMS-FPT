@@ -22,7 +22,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.104'
+CONNECTOR_VERSION = '25.9.16.5.105'
 CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.101'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
@@ -1352,7 +1352,14 @@ def _build_course_learning_index(course_key: Any) -> dict[str, Any]:
     if not callable(bulk_operations):
         return _materialize_course_learning_index(course_key, store=store)
 
-    with bulk_operations(course_key):
+    try:
+        with bulk_operations(course_key):
+            return _materialize_course_learning_index(course_key, store=store)
+    except Exception:
+        # Keep the pre-optimization behavior as a safety net.  bulk_operations()
+        # is only a read-performance optimization; if a backend/context-manager
+        # implementation rejects it, fall back to the original traversal rather
+        # than turning class analytics into a hard 500.
         return _materialize_course_learning_index(course_key, store=store)
 
 def _course_learning_index(course_key: Any) -> dict[str, Any]:

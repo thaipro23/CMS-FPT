@@ -177,6 +177,10 @@ class CourseLearningIndexTests(TestCase):
                 return BulkContext()
 
         store = BulkStore(course, blocks)
+        baseline = si._materialize_course_learning_index(
+            'course-v1:FPL+DOM1021+FA26',
+            store=self.FakeStore(course, blocks),
+        )
 
         def get_item(_store, key):
             self.assertTrue(store.bulk_active)
@@ -192,3 +196,35 @@ class CourseLearningIndexTests(TestCase):
         self.assertEqual(lookup.call_count, 2)
         self.assertEqual(index['completion_denominator']['subsection_total'], 1)
         self.assertEqual(index['completion_denominator']['problem_total'], 1)
+        self.assertEqual(index, baseline)
+
+    def test_build_course_learning_index_falls_back_when_bulk_context_fails(self):
+        sequential_key = 'block-v1:FPL+DOM1021+FA26+type@sequential+block@quiz1'
+        problem_key = 'block-v1:FPL+DOM1021+FA26+type@problem+block@p1'
+        course = self.FakeBlock('course', 'DOM1021', [sequential_key])
+        blocks = {
+            sequential_key: self.FakeBlock('sequential', 'Quiz 1', [problem_key]),
+            problem_key: self.FakeBlock('problem', 'Question 1', []),
+        }
+
+        class BrokenBulkStore(self.FakeStore):
+            def bulk_operations(self, _course_key):
+                class BrokenContext:
+                    def __enter__(self):
+                        raise RuntimeError('bulk unavailable')
+
+                    def __exit__(self, exc_type, exc, tb):
+                        return False
+
+                return BrokenContext()
+
+        store = BrokenBulkStore(course, blocks)
+        baseline = si._materialize_course_learning_index(
+            'course-v1:FPL+DOM1021+FA26',
+            store=self.FakeStore(course, blocks),
+        )
+
+        with patch.object(si, '_load_openedx_modules', return_value=(object(), lambda: store)):
+            index = si._build_course_learning_index('course-v1:FPL+DOM1021+FA26')
+
+        self.assertEqual(index, baseline)
