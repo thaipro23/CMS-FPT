@@ -143,3 +143,52 @@ class CourseLearningIndexTests(TestCase):
             si._course_learning_index('course-v1:FPS+COM1091+FA26')
 
         self.assertEqual(build.call_count, 2)
+
+    def test_build_course_learning_index_uses_modulestore_bulk_operations(self):
+        sequential_key = 'block-v1:FPL+DOM1021+FA26+type@sequential+block@quiz1'
+        problem_key = 'block-v1:FPL+DOM1021+FA26+type@problem+block@p1'
+        course = self.FakeBlock('course', 'DOM1021', [sequential_key])
+        blocks = {
+            sequential_key: self.FakeBlock('sequential', 'Quiz 1', [problem_key]),
+            problem_key: self.FakeBlock('problem', 'Question 1', []),
+        }
+
+        class BulkStore(self.FakeStore):
+            def __init__(self, course, blocks):
+                super().__init__(course, blocks)
+                self.bulk_enter_count = 0
+                self.bulk_exit_count = 0
+                self.bulk_active = False
+
+            def bulk_operations(self, _course_key):
+                store = self
+
+                class BulkContext:
+                    def __enter__(self):
+                        store.bulk_enter_count += 1
+                        store.bulk_active = True
+                        return store
+
+                    def __exit__(self, exc_type, exc, tb):
+                        store.bulk_active = False
+                        store.bulk_exit_count += 1
+                        return False
+
+                return BulkContext()
+
+        store = BulkStore(course, blocks)
+
+        def get_item(_store, key):
+            self.assertTrue(store.bulk_active)
+            return blocks[str(key)]
+
+        with patch.object(si, '_load_openedx_modules', return_value=(object(), lambda: store)), \
+             patch.object(si, '_get_item_best_effort', side_effect=get_item) as lookup:
+            index = si._build_course_learning_index('course-v1:FPL+DOM1021+FA26')
+
+        self.assertEqual(store.bulk_enter_count, 1)
+        self.assertEqual(store.bulk_exit_count, 1)
+        self.assertFalse(store.bulk_active)
+        self.assertEqual(lookup.call_count, 2)
+        self.assertEqual(index['completion_denominator']['subsection_total'], 1)
+        self.assertEqual(index['completion_denominator']['problem_total'], 1)

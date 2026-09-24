@@ -22,7 +22,7 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.103'
+CONNECTOR_VERSION = '25.9.16.5.104'
 CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.101'
 PROGRESS_CONTRACT = {
     'completion_source': 'StudentModuleSequentialFallback',
@@ -1154,7 +1154,7 @@ def _empty_completion_denominator_snapshot() -> dict[str, Any]:
     }
 
 
-def _build_course_learning_index(course_key: Any) -> dict[str, Any]:
+def _materialize_course_learning_index(course_key: Any, *, store: Any | None = None) -> dict[str, Any]:
     """Traverse one course tree once and materialize all analytics structure maps."""
     index: dict[str, Any] = {
         'planned_components': [],
@@ -1170,8 +1170,9 @@ def _build_course_learning_index(course_key: Any) -> dict[str, Any]:
         return index
 
     try:
-        CourseKey, modulestore = _load_openedx_modules()
-        store = modulestore()
+        if store is None:
+            _CourseKey, modulestore = _load_openedx_modules()
+            store = modulestore()
         course = store.get_course(course_key)
         if course is None:
             summary['error'] = 'course_not_found'
@@ -1326,6 +1327,33 @@ def _build_course_learning_index(course_key: Any) -> dict[str, Any]:
     index['display_names'] = display_names
     return index
 
+
+
+def _build_course_learning_index(course_key: Any) -> dict[str, Any]:
+    """Build the analytics course index inside one modulestore bulk operation.
+
+    Large Split Modulestore courses can contain more than a thousand reachable
+    XBlocks. Calling get_item() for every block outside bulk_operations causes
+    repeated Mongo round-trips. The bulk context is request-scoped, so it keeps
+    published course data fresh while allowing the modulestore to prefetch/reuse
+    documents during this single traversal.
+    """
+    if not course_key:
+        return _materialize_course_learning_index(course_key)
+
+    try:
+        _CourseKey, modulestore = _load_openedx_modules()
+        store = modulestore()
+    except Exception:
+        # Preserve the structured error response produced by the materializer.
+        return _materialize_course_learning_index(course_key)
+
+    bulk_operations = getattr(store, 'bulk_operations', None)
+    if not callable(bulk_operations):
+        return _materialize_course_learning_index(course_key, store=store)
+
+    with bulk_operations(course_key):
+        return _materialize_course_learning_index(course_key, store=store)
 
 def _course_learning_index(course_key: Any) -> dict[str, Any]:
     """Return one request-local unified course learning index."""
