@@ -29,6 +29,28 @@ _PATH_RE = re.compile(r'^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$')
 _MEDIA_TOKEN_RE = re.compile(r'__ACMS_MEDIA_[A-Za-z0-9_-]+__')
 
 
+def _core_static_path(file_path: str) -> str:
+    """Normalize ACMS media to the Open edX Learning Core static namespace."""
+    path = str(file_path or '').strip().lstrip('/')
+    if not path:
+        raise ValueError('Media file_path rỗng.')
+    if '/library_assets/component_versions/' in path or path.startswith('static/acms-legacy/'):
+        raise ValueError(f'Media file_path legacy/authoring không hợp lệ: {path!r}.')
+    if not path.startswith('static/'):
+        path = f'static/{path}'
+    if not path.startswith('static/acms/'):
+        raise ValueError(f'Question media phải nằm trong static/acms/: {path!r}.')
+    # StagedContentFile.data_file uses Django FileField's default max_length=100
+    # and prepends this upload_to prefix before saving to S3.
+    staged_name = f'staged-content-temp/{path}'
+    if len(staged_name) > 100:
+        raise ValueError(
+            f'Question media path quá dài cho Open edX content_staging: '
+            f'len={len(staged_name)} path={path!r}.'
+        )
+    return path
+
+
 def _max_body_bytes() -> int:
     raw = studio._setting_or_env('AI_CONNECTOR_MAX_BODY_BYTES', 24 * 1024 * 1024)
     try:
@@ -126,6 +148,9 @@ def _decode_assets(raw_assets: object, olx: str) -> list[dict[str, Any]]:
         if total > _MAX_TOTAL_BYTES:
             raise ValueError('Tổng media vượt 16 MB.')
 
+        file_path = _core_static_path(file_path)
+        if file_path in seen_paths:
+            raise ValueError('Media file_path bị trùng sau khi normalize static/acms/.')
         seen_placeholders.add(placeholder)
         seen_paths.add(file_path)
         decoded.append(
@@ -155,20 +180,29 @@ def _upload_assets(usage_key, olx: str, assets: list[dict[str, Any]], user) -> t
     final_olx = str(olx or '')
     uploaded: list[dict[str, Any]] = []
     for asset in assets:
+        static_path = _core_static_path(asset['file_path'])
+        learner_ref = f'/{static_path}'
         static_file = add_library_block_static_asset_file(
             usage_key,
-            asset['file_path'],
+            static_path,
             asset['content'],
             user=user,
         )
-        url = str(getattr(static_file, 'url', '') or '').strip()
-        if not url:
-            raise RuntimeError('Open edX upload media không trả URL static asset.')
-        final_olx = final_olx.replace(asset['placeholder'], url)
+        returned_path = str(getattr(static_file, 'path', '') or static_path).strip().lstrip('/')
+        if returned_path != static_path:
+            raise RuntimeError(
+                f'Open edX upload media trả path ngoài dự kiến: '
+                f'expected={static_path!r}, actual={returned_path!r}.'
+            )
+        # static_file.url is a CMS authoring URL under /library_assets/... and
+        # intentionally requires Library permissions. Never persist it in OLX.
+        studio_url = str(getattr(static_file, 'url', '') or '').strip()
+        final_olx = final_olx.replace(asset['placeholder'], learner_ref)
         uploaded.append(
             {
-                'file_path': asset['file_path'],
-                'url': url,
+                'file_path': static_path,
+                'url': learner_ref,
+                'studio_url': studio_url,
                 'size': len(asset['content']),
                 'sha256': asset['sha256'],
             }
@@ -176,6 +210,10 @@ def _upload_assets(usage_key, olx: str, assets: list[dict[str, Any]], user) -> t
 
     if _MEDIA_TOKEN_RE.search(final_olx):
         raise ValueError('OLX còn media placeholder chưa được resolve.')
+    if '/library_assets/component_versions/' in final_olx:
+        raise ValueError('OLX learner không được chứa URL authoring /library_assets/component_versions/.')
+    if '/static/acms-legacy/' in final_olx:
+        raise ValueError('OLX learner không được chứa namespace acms-legacy.')
     return final_olx, uploaded
 
 
@@ -205,6 +243,7 @@ def _import_problem_olx_with_media(
         from openedx.core.djangoapps.content_libraries.api.blocks import (  # type: ignore
             create_library_block,
             set_library_block_olx,
+            publish_component_changes,
         )
         try:
             from openedx.core.djangoapps.content_libraries.api.exceptions import LibraryBlockAlreadyExists  # type: ignore
@@ -267,7 +306,14 @@ def _import_problem_olx_with_media(
         metadata,
         tag_names,
     )
-    publish_library_result = studio._publish_library_drafts_without_post_tasks(locator, user_id)
+    if user_id is None:
+        raise RuntimeError('Không xác định được user_id để publish Library component.')
+    publish_component_changes(usage_key, user_id)
+    publish_component_result = {
+        'mode': 'content_libraries.api.blocks.publish_component_changes',
+        'usage_key': studio._safe_str(usage_key),
+    }
+    publish_library_result = None
 
     return {
         'ok': True,
@@ -279,8 +325,8 @@ def _import_problem_olx_with_media(
         'openedx_library_problem_id': studio._safe_str(usage_key),
         'openedx_block_id': studio._safe_str(usage_key),
         'component_version': studio._safe_str(component_version),
-        'publish_component_result': None,
-        'publish_library_result': studio._metadata_obj_to_dict(publish_library_result),
+        'publish_component_result': publish_component_result,
+        'publish_library_result': publish_library_result,
         'publish_warnings': [
             {
                 'step': 'question_media_before_olx',
@@ -291,8 +337,8 @@ def _import_problem_olx_with_media(
                 'message': 'Tag được gắn trước publish để tránh trạng thái Unpublished changes giả.',
             },
             {
-                'step': 'post_publish_events',
-                'message': 'Giữ strategy publish Ulmo hiện tại: publish core drafts, không phụ thuộc post-publish task lỗi PublishLog.',
+                'step': 'core_component_publish',
+                'message': 'Publish đúng component bằng Open edX Content Libraries publish_component_changes().',
             },
         ],
         'tag_result': tag_result,
