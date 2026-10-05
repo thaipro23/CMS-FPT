@@ -1782,6 +1782,136 @@ def _native_create_or_reuse_itembank(
     return bank, created, diagnostics
 
 
+def _require_clean_static_file_notices(notices: Any, upstream_ref: str) -> None:
+    """Fail closed when Studio core reports course static asset conflicts/errors."""
+    conflicts = list(getattr(notices, 'conflicting_files', []) or [])
+    errors = list(getattr(notices, 'error_files', []) or [])
+    if conflicts or errors:
+        raise RuntimeError(
+            f'Core sync_library_content không copy sạch static assets cho {upstream_ref}: '
+            f'conflicting_files={conflicts} error_files={errors}'
+        )
+
+
+def _verify_core_synced_static_assets(downstream: Any, upstream_ref: str) -> dict:
+    """Verify every published Library static asset persisted in course Files & Uploads.
+
+    content_staging can log and swallow a storage exception before
+    sync_library_content() returns, so StaticFileNotices alone cannot prove that
+    the binary was copied. Recompute the exact destination AssetKey used by the
+    Open edX core helper and compare bytes.
+    """
+    import hashlib
+
+    try:
+        from openedx.core.djangoapps.content_libraries.api.blocks import get_component_from_usage_key  # type: ignore
+        from xmodule.contentstore.django import contentstore  # type: ignore
+        from xmodule.video_block.transcripts_utils import build_components_import_path  # type: ignore
+    except Exception as exc:
+        raise RuntimeError('Không import được Open edX core APIs để verify static asset sync.') from exc
+
+    upstream_key = _usage_key_from_value(upstream_ref)
+    if upstream_key is None:
+        raise RuntimeError(f'Không parse được upstream Library usage key: {upstream_ref!r}')
+
+    component = get_component_from_usage_key(upstream_key)
+    published = getattr(getattr(component, 'versioning', None), 'published', None)
+    if published is None:
+        raise RuntimeError(f'Library component chưa có published version: {upstream_ref}')
+
+    course_key = getattr(downstream, 'context_key', None)
+    usage_key = getattr(downstream, 'usage_key', None) or getattr(downstream, 'location', None)
+    if course_key is None or usage_key is None:
+        raise RuntimeError(f'Không xác định được downstream course/usage key: {downstream!r}')
+
+    verified: list[dict[str, Any]] = []
+    rows = (
+        published.componentversioncontent_set
+        .filter(content__has_file=True)
+        .select_related('content')
+        .order_by('key')
+    )
+
+    for row in rows:
+        source_name = _safe_str(getattr(row, 'key', '')).strip().lstrip('/')
+        if not source_name.startswith('static/'):
+            continue
+        if source_name.startswith('static/acms-legacy/'):
+            raise RuntimeError(
+                f'Published Library component còn obsolete acms-legacy asset: '
+                f'upstream={upstream_ref} asset={source_name}'
+            )
+
+        fh = row.content.read_file()
+        try:
+            source_data = fh.read()
+        finally:
+            try:
+                fh.close()
+            except Exception:
+                pass
+        if not source_data:
+            raise RuntimeError(
+                f'Published Library asset rỗng/không đọc được: upstream={upstream_ref} asset={source_name}'
+            )
+
+        file_path = source_name.removeprefix('static/')
+        import_path = build_components_import_path(usage_key, file_path)
+        asset_key = course_key.make_asset_key('asset', import_path.replace('/', '_'))
+
+        try:
+            stored = contentstore().find(asset_key)
+        except Exception as exc:
+            raise RuntimeError(
+                f'Core sync_library_content không tạo course asset: '
+                f'upstream={upstream_ref} downstream={usage_key} '
+                f'source={source_name!r} expected_asset={asset_key}'
+            ) from exc
+
+        stored_data = getattr(stored, 'data', None)
+        if not isinstance(stored_data, (bytes, bytearray)):
+            try:
+                stored_data = bytes(stored_data)
+            except Exception as exc:
+                raise RuntimeError(f'Không đọc được course asset sau core sync: {asset_key}') from exc
+
+        source_md5 = hashlib.md5(bytes(source_data)).hexdigest()
+        stored_md5 = hashlib.md5(bytes(stored_data)).hexdigest()
+        if source_md5 != stored_md5:
+            raise RuntimeError(
+                f'Course asset khác binary Library sau core sync: '
+                f'upstream={upstream_ref} downstream={usage_key} asset={asset_key} '
+                f'source_md5={source_md5} stored_md5={stored_md5}'
+            )
+
+        verified.append({
+            'source': source_name,
+            'course_asset': _safe_str(asset_key),
+            'md5': source_md5,
+            'size': len(source_data),
+        })
+
+    downstream_data = _safe_str(_field_value(downstream, 'data'))
+    forbidden = [
+        token for token in (
+            '/library_assets/component_versions/',
+            'scms.fpl.edu.vn/library_assets/',
+            '/static/acms-legacy/',
+        )
+        if token in downstream_data
+    ]
+    if forbidden:
+        raise RuntimeError(
+            f'Downstream còn reference không hợp lệ sau core sync: '
+            f'downstream={usage_key} forbidden={forbidden}'
+        )
+
+    return {
+        'verified_asset_count': len(verified),
+        'verified_assets': verified,
+    }
+
+
 def _native_add_library_problem_to_itembank(
     request: Any,
     create_xblock: Any,
@@ -1793,15 +1923,22 @@ def _native_add_library_problem_to_itembank(
     upstream_ref: str,
 ) -> tuple[Any, bool, list[dict]]:
     existing = _find_existing_upstream_child(store, bank, upstream_ref)
+    publish_request = _request_as_publish_user(request, user)
     if existing is not None:
+        notices = sync_library_content(existing, publish_request, store)
+        _require_clean_static_file_notices(notices, upstream_ref)
+        existing = _get_item_best_effort(store, getattr(existing, 'location', existing)) or existing
+        asset_verification = _verify_core_synced_static_assets(existing, upstream_ref)
         return existing, False, [{
             'phase': 'itembank.child.sync',
-            'mode': 'reuse_existing_upstream_child',
+            'mode': 'native_sync_library_content_existing_child',
             'status': 'ok',
             'upstream': upstream_ref,
+            'usage_key': _clean_usage_key(getattr(existing, 'location', existing)),
+            'static_file_notices': _to_jsonable(notices),
+            'static_asset_verification': asset_verification,
         }]
 
-    publish_request = _request_as_publish_user(request, user)
     child = None
     diagnostics: list[dict] = []
     try:
@@ -1815,7 +1952,9 @@ def _native_add_library_problem_to_itembank(
         child = _get_item_best_effort(store, getattr(child, 'location', child)) or child
         child.upstream = upstream_ref
         notices = sync_library_content(child, publish_request, store)
+        _require_clean_static_file_notices(notices, upstream_ref)
         child = _get_item_best_effort(store, getattr(child, 'location', child)) or child
+        asset_verification = _verify_core_synced_static_assets(child, upstream_ref)
         diagnostics.append({
             'phase': 'itembank.child.sync',
             'mode': 'native_create_xblock_plus_sync_library_content',
@@ -1823,6 +1962,7 @@ def _native_add_library_problem_to_itembank(
             'upstream': upstream_ref,
             'usage_key': _clean_usage_key(getattr(child, 'location', child)),
             'static_file_notices': _to_jsonable(notices),
+            'static_asset_verification': asset_verification,
         })
         return child, True, diagnostics
     except Exception as exc:
