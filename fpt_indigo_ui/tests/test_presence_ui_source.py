@@ -145,7 +145,6 @@ def test_presence_slots_match_versions_locked_by_ulmo4_mfes():
         "communications",
         "discussions",
         "gradebook",
-        "learner-dashboard",
         "ora-grading",
         "profile",
     ):
@@ -153,6 +152,7 @@ def test_presence_slots_match_versions_locked_by_ulmo4_mfes():
             "org.openedx.frontend.layout.header_desktop_secondary_menu.v1"
         )
 
+    assert "learner-dashboard" not in presence_slots
     assert "authn" not in presence_slots
 
 
