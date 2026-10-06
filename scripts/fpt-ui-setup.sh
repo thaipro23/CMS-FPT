@@ -267,7 +267,7 @@ GENERATED_OPENEDX="$TUTOR_ROOT/env/build/openedx/Dockerfile"
 [ -f "$GENERATED_OPENEDX" ] || fail "Generated Open edX Dockerfile not found: $GENERATED_OPENEDX"
 
 COPY_COUNT="$(grep -Fc 'COPY --from=edx-platform /fpt_indigo_ui/assets/' "$GENERATED_OPENEDX" || true)"
-[ "$COPY_COUNT" -eq 5 ] || fail "Expected 5 vendored FPT asset COPY statements, found $COPY_COUNT"
+[ "$COPY_COUNT" -eq 11 ] || fail "Expected 11 vendored FPT asset COPY statements (5 base + 6 slider), found $COPY_COUNT"
 
 if grep -Eq 'curl .*(caodang\.fpt\.edu\.vn|seeklogo\.com|wikimedia\.org|chungta\.vn)' "$GENERATED_OPENEDX"; then
   fail "Generated Open edX Dockerfile downloads FPT assets from the Internet"
