@@ -148,7 +148,6 @@ FPT_PRESENCE_STANDARD_HEADER_MFES = [
     "communications",
     "discussions",
     "gradebook",
-    "learner-dashboard",
     "ora-grading",
     "profile",
 ]
