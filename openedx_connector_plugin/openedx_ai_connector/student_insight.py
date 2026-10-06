@@ -22,10 +22,14 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.105'
-CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.101'
+CONNECTOR_VERSION = '25.9.16.5.106'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.106'
 PROGRESS_CONTRACT = {
-    'completion_source': 'StudentModuleSequentialFallback',
+    'completion_source': 'CourseHomeOfficialWithStudentModuleFallback',
+    'primary_source': 'lms.djangoapps.courseware.courses.get_course_blocks_completion_summary',
+    'primary_numerator': 'complete_count',
+    'primary_denominator': 'complete_count_plus_incomplete_count_plus_locked_count',
+    'fallback_source': 'StudentModuleSequentialFallback',
     'denominator': 'reachable_sequential_subsections',
     'numerator': 'studentmodule_sequential_position_rows',
     'ignored_studentmodule_types': ['itembank', 'problem', 'video', 'vertical', 'chapter', 'course'],
@@ -1788,159 +1792,56 @@ def _course_home_resolved_response(request: Any, course_id_text: str) -> tuple[A
 
 
 def _completion_api_progress_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[str, Any]]:
-    """Try Open edX completion APIs before falling back to diagnostic counts.
-
-    We use only functions exposed by the Open edX completion/course-home stack.
-    If a deployment exposes a summary API with completed/total counts, this gives
-    the same source family as the learner Course Home completion card instead of
-    our old unsafe StudentModule ratio.
-    """
+    """Read the exact completion summary used by the Open edX Course Home card."""
     result: dict[int, dict[str, Any]] = {}
     if not course_key or not users:
         return result
     try:
-        completion_api = importlib.import_module('completion.api')
+        courseware_courses = importlib.import_module('lms.djangoapps.courseware.courses')
+        get_summary = getattr(courseware_courses, 'get_course_blocks_completion_summary')
     except Exception:
         return result
-
-    candidate_names = [
-        'get_course_completion_summary',
-        'get_course_blocks_completion_summary',
-        'get_course_completion',
-        'get_completion_summary',
-        'get_course_progress',
-        'get_progress_summary',
-    ]
 
     for user in users:
         uid = int(getattr(user, 'id', 0) or 0)
         if uid <= 0:
             continue
-        for name in candidate_names:
-            func = getattr(completion_api, name, None)
-            if not callable(func):
-                continue
-            call_variants = [
-                lambda f=func: f(user, course_key),
-                lambda f=func: f(course_key, user),
-                lambda f=func: f(user=user, course_key=course_key),
-                lambda f=func: f(course_key=course_key, user=user),
-                lambda f=func: f(user=user, context_key=course_key),
-                lambda f=func: f(context_key=course_key, user=user),
-                lambda f=func: f(user.id, course_key),
-                lambda f=func: f(course_key, user.id),
-            ]
-            for call in call_variants:
-                try:
-                    payload = call()
-                except TypeError:
-                    continue
-                except Exception:
-                    continue
-                percent = _extract_completion_percent_from_payload(payload)
-                if percent is not None:
-                    result[uid] = {
-                        'percent': percent,
-                        'source': f'CompletionAPI:{name}',
-                        'payload': payload if isinstance(payload, dict) else {'value': _safe_str(payload)},
-                    }
-                    break
-            if uid in result:
-                break
+        try:
+            payload = get_summary(course_key, user)
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        summary = payload.get('completion_summary') if isinstance(payload.get('completion_summary'), dict) else payload
+        try:
+            completed = max(0, int(summary.get('complete_count') or 0))
+            incomplete = max(0, int(summary.get('incomplete_count') or 0))
+            locked = max(0, int(summary.get('locked_count') or 0))
+        except Exception:
+            continue
+        total = completed + incomplete + locked
+        if total <= 0:
+            continue
+        result[uid] = {
+            'percent': round(completed / total * 100.0, 2),
+            'source': 'CourseHomeOfficial:get_course_blocks_completion_summary',
+            'completed_blocks': completed,
+            'total_blocks': total,
+            'complete_count': completed,
+            'incomplete_count': incomplete,
+            'locked_count': locked,
+        }
     return result
 
 def _course_home_progress_snapshot(course_key: Any, users: list[Any]) -> dict[int, dict[str, Any]]:
-    """Best-effort read of the learner Course Home completion value.
+    """Return official completion without invoking synthetic HTTP/view routes.
 
-    Earlier builds tried a single kwarg name and silently returned no progress on
-    Ulmo/Indigo variants where the view expects ``course_key_string`` or a course
-    key object. This version tries the common view classes and signature variants
-    before falling back to completion.api.
+    Runtime measurements on Ulmo show the direct API returns 32 learners in
+    2.567 seconds cold, while RequestFactory route emulation took 19-23 seconds
+    and still fell back. StudentModule remains the explicit fallback in
+    ``_completion_snapshot`` when this API is unavailable.
     """
-    result: dict[int, dict[str, Any]] = {}
-    if not course_key or not users:
-        return result
-    view_candidates = [
-        ('lms.djangoapps.course_home_api.progress.views', 'CourseProgressView'),
-        ('lms.djangoapps.course_home_api.progress.views', 'ProgressTabView'),
-        ('lms.djangoapps.course_home_api.progress.views', 'CourseHomeProgressView'),
-        ('openedx.features.course_experience.views.course_home', 'CourseHomeProgressView'),
-        ('openedx.features.course_experience.views.course_home', 'CourseHomeProgressTabView'),
-    ]
-    view_classes: list[Any] = []
-    for module_name, attr in view_candidates:
-        try:
-            module = importlib.import_module(module_name)
-            view_cls = getattr(module, attr)
-            if view_cls not in view_classes:
-                view_classes.append(view_cls)
-        except Exception:
-            continue
-    try:
-        from django.test import RequestFactory  # type: ignore
-    except Exception:
-        view_classes = []
-        RequestFactory = None  # type: ignore
-
-    if RequestFactory is not None:
-        factory = RequestFactory()
-        course_id_text = _safe_str(course_key)
-        for user in users:
-            uid = int(getattr(user, 'id', 0) or 0)
-            if uid <= 0:
-                continue
-
-            # First use the exact route that the browser calls on Ulmo:
-            # /api/course_home/progress/<course_id>.  This is more reliable
-            # than guessing the view class name because deployments can patch or
-            # wrap course_home_api views.
-            try:
-                request = factory.get(f'/api/course_home/progress/{course_id_text}')
-                _authenticate_synthetic_request(request, user)
-                response, resolved_path = _course_home_resolved_response(request, course_id_text)
-                if response is not None:
-                    content = _serialize_response_payload(response)
-                    percent = _extract_completion_percent_from_payload(content)
-                    if percent is not None:
-                        source = 'CourseHomeProgressRoute:completion_summary' if _payload_has_completion_summary(content) else 'CourseHomeProgressRoute'
-                        result[uid] = {
-                            'percent': percent,
-                            'source': source,
-                            'payload': content if isinstance(content, dict) else {'value': _safe_str(content)},
-                            'resolved_path': resolved_path,
-                        }
-                        continue
-            except Exception:
-                pass
-
-            for view_cls in view_classes:
-                try:
-                    request = factory.get(f'/api/course_home/progress/{course_id_text}')
-                    _authenticate_synthetic_request(request, user)
-                    response = _course_home_view_response(view_cls, request, course_key, course_id_text)
-                    if response is None:
-                        continue
-                    content = _serialize_response_payload(response)
-                    percent = _extract_completion_percent_from_payload(content)
-                    if percent is not None:
-                        source = 'CourseHomeProgress:completion_summary' if _payload_has_completion_summary(content) else f'CourseHomeAPI:{getattr(view_cls, "__name__", "view")}'
-                        result[uid] = {
-                            'percent': percent,
-                            'source': source,
-                            'payload': content if isinstance(content, dict) else {'value': _safe_str(content)},
-                        }
-                        break
-                except Exception:
-                    continue
-            # If any Course Home view worked for this learner, do not try less
-            # specific APIs for the same learner.
-            if uid in result:
-                continue
-    if len(result) < len([u for u in users if int(getattr(u, 'id', 0) or 0) > 0]):
-        api_result = _completion_api_progress_snapshot(course_key, users)
-        for uid, item in api_result.items():
-            result.setdefault(uid, item)
-    return result
+    return _completion_api_progress_snapshot(course_key, users)
 
 def _completion_snapshot(course_key: Any, users: list[Any], *, skip_course_home_progress: bool = False) -> tuple[dict[int, dict[str, Any]], int | None]:
     result: dict[int, dict[str, Any]] = {}
@@ -2114,8 +2015,10 @@ def _completion_snapshot(course_key: Any, users: list[Any], *, skip_course_home_
             completed = item.get('completed_blocks')
             if completed is None:
                 completed = item.get('student_module_completed_blocks') or 0
-            item['total_blocks'] = total_blocks
             source_text = _safe_str(item.get('source')).lower()
+            official = ('coursehome' in source_text or 'completionapi' in source_text or 'courseprogress' in source_text)
+            if not official or item.get('total_blocks') is None:
+                item['total_blocks'] = total_blocks
             # Official Course Home/Completion API remains preferred. When it is
             # unavailable but StudentModule counts exist, expose a deliberate
             # fallback completion ratio. This is the production recovery path for
@@ -2264,6 +2167,12 @@ def _student_learning_results_primary(course_id: str, requested: list[dict[str, 
     )
 
 
+def _should_skip_course_home_progress(data: dict[str, Any]) -> bool:
+    """Keep legacy rollout safe while allowing v106 direct official progress."""
+    legacy_skip = bool(data.get('skip_course_home_progress') or data.get('fast_student_module'))
+    return legacy_skip and not bool(data.get('use_official_course_home_progress'))
+
+
 def _learning_connector_diagnostics() -> dict[str, Any]:
     CourseEnrollment, ce_source, ce_error = _course_enrollment_model()
     PersistentCourseGrade, pcg_source, pcg_error = _persistent_course_grade_model()
@@ -2285,17 +2194,10 @@ def _learning_connector_diagnostics() -> dict[str, Any]:
             continue
     completion_api_functions: list[str] = []
     try:
-        completion_api = importlib.import_module('completion.api')
-        for name in [
-            'get_course_completion_summary',
-            'get_course_blocks_completion_summary',
-            'get_course_completion',
-            'get_completion_summary',
-            'get_course_progress',
-            'get_progress_summary',
-        ]:
-            if callable(getattr(completion_api, name, None)):
-                completion_api_functions.append(name)
+        completion_api = importlib.import_module('lms.djangoapps.courseware.courses')
+        name = 'get_course_blocks_completion_summary'
+        if callable(getattr(completion_api, name, None)):
+            completion_api_functions.append(f'lms.djangoapps.courseware.courses.{name}')
     except Exception:
         pass
     return {
@@ -2365,7 +2267,7 @@ def student_insight_class_analytics(request):
     try:
         compact = bool(data.get('compact') or data.get('lite') or data.get('minimal'))
         include_diagnostics = bool(data.get('include_diagnostics'))
-        skip_course_home_progress = bool(data.get('skip_course_home_progress') or data.get('fast_student_module'))
+        skip_course_home_progress = _should_skip_course_home_progress(data)
         reader = _student_learning_results_primary if read_consistency == 'primary_after_enrollment' else _student_learning_results
         results = reader(course_id, requested, compact=compact, skip_course_home_progress=skip_course_home_progress)
     except ConnectorReplicaError as exc:
