@@ -42,3 +42,5 @@ def test_setup_validates_rendered_cms_artifact_proxy_settings():
     assert 'GENERATED_CMS_SETTINGS="$TUTOR_ROOT/env/apps/openedx/settings/cms/production.py"' in source
     assert "FPTUserTaskArtifactProxyS3Storage" in source
     assert "Rendered CMS artifact-proxy configuration PASS" in source
+    assert "Effective GRADES_DOWNLOAD override order PASS" in source
+    assert "legacy GRADES_DOWNLOAD STORAGE_TYPE is applied after the FPT override" in source
