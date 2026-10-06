@@ -297,9 +297,21 @@ log "Rendered MFE runtime configuration PASS"
 
 grep -Fq '"STORAGE_CLASS": "openedx_fpt_report_proxy.storage.FPTReportProxyS3Storage"' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings do not route grade-report URLs through the FPT proxy storage"
 grep -Fq 'FPT_REPORT_PROXY_BASE_URL = "https://' "$GENERATED_LMS_SETTINGS" || fail "Rendered LMS settings are missing FPT_REPORT_PROXY_BASE_URL"
-if grep -Fq 'GRADES_DOWNLOAD["STORAGE_TYPE"]' "$GENERATED_LMS_SETTINGS"; then
-  fail "Rendered LMS settings reintroduced legacy GRADES_DOWNLOAD STORAGE_TYPE"
-fi
+python - "$GENERATED_LMS_SETTINGS" <<'PYGRADES'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding='utf-8')
+override = text.rfind('GRADES_DOWNLOAD = {')
+if override < 0:
+    raise SystemExit('effective FPT GRADES_DOWNLOAD override is missing')
+if 'FPTReportProxyS3Storage' not in text[override:]:
+    raise SystemExit('effective GRADES_DOWNLOAD override does not use FPTReportProxyS3Storage')
+legacy_after_override = text.find('GRADES_DOWNLOAD["STORAGE_TYPE"]', override)
+if legacy_after_override >= 0:
+    raise SystemExit('legacy GRADES_DOWNLOAD STORAGE_TYPE is applied after the FPT override')
+print('[fpt-ui] Effective GRADES_DOWNLOAD override order PASS')
+PYGRADES
 log "Rendered report-proxy configuration PASS"
 
 grep -Fq 'USER_TASKS_ARTIFACT_STORAGE = "openedx_fpt_report_proxy.storage.FPTUserTaskArtifactProxyS3Storage"' "$GENERATED_CMS_SETTINGS" || fail "Rendered CMS settings do not route user-task artifacts through the FPT proxy storage"
