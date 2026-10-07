@@ -29,6 +29,7 @@ from .services import (
     start_quiz_session_for_current_user,
     timeout_quiz_session_for_current_user,
     upsert_unit_quiz_timer_config,
+    update_unit_quiz_duration,
 )
 
 log = logging.getLogger(__name__)
@@ -330,6 +331,24 @@ def quiz_timer_config_upsert(request):
             actor=getattr(request.user, 'username', '') or str(request.user.id),
             metadata_json=payload.get('metadata') or {},
         )
+        return JsonResponse(result, status=200)
+    except Exception as exc:
+        return _quiz_error_response(exc)
+
+
+@csrf_exempt
+@require_POST
+def quiz_timer_duration_update(request):
+    if not _connector_hmac_only(request):
+        return JsonResponse({'success': False, 'code': 'CONNECTOR_HMAC_REQUIRED',
+                             'message': 'Endpoint chỉ nhận HMAC server-to-server.'}, status=403)
+    payload = _json_body(request)
+    if not isinstance(payload, dict):
+        return JsonResponse({'success': False, 'code': 'INVALID_JSON_OBJECT'}, status=400)
+    try:
+        result = update_unit_quiz_duration(
+            course_id=payload.get('course_id'), unit_usage_key=payload.get('unit_usage_key'),
+            duration_seconds=payload.get('duration_seconds'), actor=payload.get('actor') or '')
         return JsonResponse(result, status=200)
     except Exception as exc:
         return _quiz_error_response(exc)

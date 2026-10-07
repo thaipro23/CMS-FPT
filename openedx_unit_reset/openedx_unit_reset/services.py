@@ -743,6 +743,32 @@ def upsert_unit_quiz_timer_config(
     return {'success': True, 'created': created, 'config': _serialize_timer_config(config)}
 
 
+def update_unit_quiz_duration(*, course_id, unit_usage_key, duration_seconds, actor=''):
+    """Change only the duration used by future sessions of an existing quiz."""
+    if type(duration_seconds) is not int or not 1 <= duration_seconds <= 18000:
+        raise UnitResetError('Thời lượng phải từ 1 đến 18000 giây.', 'INVALID_DURATION_SECONDS', 400)
+    course_key, unit_key = parse_keys(course_id, unit_usage_key)
+    with transaction.atomic():
+        try:
+            config = UnitQuizTimerConfig.objects.select_for_update().get(
+                course_id=str(course_key), unit_usage_key=str(unit_key))
+        except UnitQuizTimerConfig.DoesNotExist as exc:
+            raise UnitResetError('Quiz chưa có cấu hình timer.', 'QUIZ_TIMER_CONFIG_NOT_FOUND', 404) from exc
+        if not config.enabled or config.native_timed_exam:
+            raise UnitResetError('Chỉ sửa timer tự luyện đang bật.', 'QUIZ_TIMER_NOT_EDITABLE', 409)
+        previous_duration = config.duration_seconds
+        config.duration_seconds = duration_seconds
+        config.updated_by = str(actor or '')[:255]
+        config.save(update_fields=['duration_seconds', 'updated_by', 'updated_at'])
+        # Every learner session keeps its original duration_seconds/expires_at.
+        return {
+            'success': True, 'previous_duration_seconds': previous_duration,
+            'applies_to': 'new_sessions',
+            'config': {'id': config.id, 'course_id': config.course_id,
+                       'unit_usage_key': config.unit_usage_key, 'duration_seconds': config.duration_seconds},
+        }
+
+
 def _get_timer_config(course_id, unit_usage_key):
     try:
         return UnitQuizTimerConfig.objects.get(course_id=str(course_id), unit_usage_key=str(unit_usage_key), enabled=True)

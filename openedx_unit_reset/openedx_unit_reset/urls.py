@@ -8,6 +8,7 @@ from .views import (
     quiz_session_status,
     quiz_session_timeout,
     quiz_timer_config_upsert,
+    quiz_timer_duration_update,
     reset_unit_attempt,
     reset_unit_status,
 )
@@ -27,5 +28,7 @@ urlpatterns = [
     path("v1/quiz-session/reset/", quiz_session_reset, name="quiz_session_reset_slash"),
     path("v1/quiz-config/upsert", quiz_timer_config_upsert, name="quiz_timer_config_upsert"),
     path("v1/quiz-config/upsert/", quiz_timer_config_upsert, name="quiz_timer_config_upsert_slash"),
+    path("v1/quiz-config/duration", quiz_timer_duration_update, name="quiz_timer_duration_update"),
+    path("v1/quiz-config/duration/", quiz_timer_duration_update, name="quiz_timer_duration_update_slash"),
     path("v1/quiz-session/runtime.js", quiz_session_runtime_js, name="quiz_session_runtime_js"),
 ]
