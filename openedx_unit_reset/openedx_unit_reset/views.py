@@ -266,7 +266,11 @@ def quiz_session_start(request):
     if error:
         return error
     try:
-        return JsonResponse(start_quiz_session_for_current_user(request, course_id, unit_usage_key), status=200)
+        result = start_quiz_session_for_current_user(request, course_id, unit_usage_key)
+        if getattr(settings, 'UNIT_RESET_QUIZ_ANALYTICS_ENABLED', True):
+            from .analytics import emit_quiz_session_start
+            emit_quiz_session_start(result)
+        return JsonResponse(result, status=200)
     except Exception as exc:
         return _quiz_error_response(exc)
 
@@ -305,7 +309,11 @@ def quiz_session_reset(request):
     if error:
         return error
     try:
-        return JsonResponse(reset_quiz_session_for_current_user(request, course_id, unit_usage_key), status=200)
+        result = reset_quiz_session_for_current_user(request, course_id, unit_usage_key)
+        if getattr(settings, 'UNIT_RESET_QUIZ_ANALYTICS_ENABLED', True):
+            from .analytics import emit_quiz_session_start
+            emit_quiz_session_start(result, reset=True)
+        return JsonResponse(result, status=200)
     except Exception as exc:
         return _quiz_error_response(exc)
 
@@ -769,4 +777,3 @@ def quiz_session_runtime_js(request):
     response = HttpResponse(js, content_type='application/javascript; charset=utf-8')
     response['Cache-Control'] = 'no-store, max-age=0'
     return response
-
