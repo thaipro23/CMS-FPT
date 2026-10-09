@@ -13,6 +13,17 @@ class UnitResetConfig(AppConfig):
     name = "openedx_unit_reset"
     verbose_name = "Open edX Unit Reset"
 
+    def ready(self):
+        from django.conf import settings
+        if not getattr(settings, 'UNIT_RESET_QUIZ_ANALYTICS_ENABLED', True):
+            return
+        try:
+            from .analytics import install_capa_tracking
+            install_capa_tracking()
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning('Quiz analytics hook is unavailable', exc_info=True)
+
     plugin_app = {
         "url_config": {
             "lms.djangoapp": {
