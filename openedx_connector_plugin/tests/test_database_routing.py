@@ -158,6 +158,88 @@ class DjangoReplicaIntegrationTests(unittest.TestCase):
         with self.assertRaises(self.db.ConnectorReplicaError):
             report()
 
+    def test_optional_progress_dependency_cannot_write_primary_but_allows_grade_report(self):
+        @self.db.replica_reads
+        def report():
+            with self.db.optional_reporting_dependency() as refused:
+                try:
+                    self.Grade.objects.using('default').create(score=12)
+                except self.db.ConnectorReplicaError:
+                    pass
+            return self.Grade.objects.get().score, bool(refused)
+
+        before = self.Grade.objects.using('default').count()
+        self.assertEqual(report(), (75, True))
+        self.assertEqual(self.Grade.objects.using('default').count(), before)
+
+    def test_optional_progress_does_not_hide_broken_replica(self):
+        @self.db.replica_reads
+        def report():
+            with self.db.optional_reporting_dependency():
+                try:
+                    with self.connections['read_replica'].cursor() as cursor:
+                        cursor.execute('SELECT * FROM missing_grade_table')
+                except self.db.ConnectorReplicaError:
+                    pass
+            return []
+
+        with self.assertRaises(self.db.ConnectorReplicaError):
+            report()
+
+    def test_optional_dependency_scope_restores_strict_guard(self):
+        @self.db.replica_reads
+        def report():
+            with self.db.optional_reporting_dependency():
+                pass
+            try:
+                self.Grade.objects.using('default').get()
+            except self.db.ConnectorReplicaError:
+                pass
+            return 'must fail'
+
+        with self.assertRaises(self.db.ConnectorReplicaError):
+            report()
+
+    def test_official_progress_with_missing_block_structure_does_not_discard_grades(self):
+        import ast
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        policy_path = MODULE.parents[2] / 'lms/djangoapps/course_blocks/transformers/itembank_read_only.py'
+        spec = importlib.util.spec_from_file_location('report_itembank_policy', policy_path)
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        tree = ast.parse((MODULE.parent / 'student_insight.py').read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == '_completion_api_progress_snapshot')
+
+        def summary(_course, _user):
+            # Simulate BlockStructureStore initializing a missing structure.
+            self.Grade.objects.using('default').create(score=12)
+            return {'complete_count': 99, 'incomplete_count': 1}
+
+        namespace = {
+            'Any': object, 'optional_reporting_dependency': self.db.optional_reporting_dependency,
+            'importlib': SimpleNamespace(import_module=lambda _name: SimpleNamespace(
+                get_course_blocks_completion_summary=summary)),
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'progress_collector', 'exec'), namespace)
+        @self.db.replica_reads
+        def report():
+            progress = namespace['_completion_api_progress_snapshot']('course', [SimpleNamespace(id=1)])
+            return progress[1], self.Grade.objects.get().score
+
+        before = self.Grade.objects.using('default').count()
+        with patch.dict(sys.modules, {
+            'lms.djangoapps.course_blocks.transformers.itembank_read_only': policy,
+        }):
+            progress, grade = report()
+        self.assertEqual(grade, 75)
+        self.assertEqual(progress['official_progress_status'], 'unavailable')
+        self.assertNotIn('percent', progress)
+        self.assertEqual(self.Grade.objects.using('default').count(), before)
+
     def test_missing_alias_fails_before_report_body_runs(self):
         from django.test import override_settings
         @self.db.replica_reads

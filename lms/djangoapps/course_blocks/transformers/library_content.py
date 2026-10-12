@@ -22,6 +22,10 @@ from xmodule.item_bank_block import ItemBankMixin  # lint-amnesty, pylint: disab
 from xmodule.modulestore.django import modulestore  # lint-amnesty, pylint: disable=wrong-import-order
 
 from ..utils import get_student_module_as_dict
+from .itembank_read_only import (
+    current_itembank_read_only_observation,
+    resolve_stored_selection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,52 +94,78 @@ class ContentLibraryTransformer(FilteringTransformerMixin, BlockStructureTransfo
             library_children = block_structure.get_children(block_key)
             if library_children:
                 all_library_children.update(library_children)
-                selected = []
                 max_count = block_structure.get_xblock_field(block_key, 'max_count')
                 if max_count < 0:
                     max_count = len(library_children)
 
                 # Retrieve "selected" json from LMS MySQL database.
                 state_dict = get_student_module_as_dict(usage_info.user, usage_info.course_key, block_key)
-                for selected_block in state_dict.get('selected', []):
-                    # Add all selected entries for this user for this
-                    # library block to the selected list.
-                    block_type, block_id = selected_block
-                    usage_key = usage_info.course_key.make_usage_key(block_type, block_id)
-                    if usage_key in library_children:
-                        selected.append(selected_block)
+                stored_selected = state_dict.get('selected', [])
+                read_only_observation = current_itembank_read_only_observation()
+                if read_only_observation is None:
+                    selected = []
+                    for selected_block in stored_selected:
+                        # Add all selected entries for this user for this
+                        # library block to the selected list.
+                        block_type, block_id = selected_block
+                        usage_key = usage_info.course_key.make_usage_key(block_type, block_id)
+                        if usage_key in library_children:
+                            selected.append(selected_block)
+                else:
+                    resolution = resolve_stored_selection(
+                        stored_selected,
+                        {(child.block_type, child.block_id) for child in library_children},
+                        max_count,
+                    )
+                    selected = resolution.selected
+                    if resolution.requires_write:
+                        reason = 'selection_missing' if resolution.missing_count else 'selection_stale'
+                        read_only_observation.record(
+                            block_key,
+                            reason=reason,
+                            missing_count=resolution.missing_count,
+                            invalid=resolution.invalid,
+                            overlimit=resolution.overlimit,
+                        )
 
-                # Update selected
                 previous_count = len(selected)
                 # Get the cached block class to call make_selection
                 block_class = XBlock.load_class(block_key.block_type)
                 if block_class is None:
                     logger.error('Failed to load block class for %s', block_key)
                     continue
-                block_keys = block_class.make_selection(selected, library_children, max_count)
-                selected = block_keys['selected']
+                if read_only_observation is None:
+                    block_keys = block_class.make_selection(selected, library_children, max_count)
+                    selected = block_keys['selected']
+                else:
+                    block_keys = {
+                        'selected': selected,
+                        'invalid': resolution.invalid,
+                        'overlimit': resolution.overlimit,
+                        'added': [],
+                    }
 
                 # Save back any changes
-                if any(block_keys[changed] for changed in ('invalid', 'overlimit', 'added')):
-                    state_dict['selected'] = selected
-                    StudentModule.save_state(
-                        student=usage_info.user,
-                        course_id=usage_info.course_key,
-                        module_state_key=block_key,
-                        defaults={
-                            'state': json.dumps(state_dict),
-                        },
-                    )
+                if read_only_observation is None:
+                    if any(block_keys[changed] for changed in ('invalid', 'overlimit', 'added')):
+                        state_dict['selected'] = selected
+                        StudentModule.save_state(
+                            student=usage_info.user,
+                            course_id=usage_info.course_key,
+                            module_state_key=block_key,
+                            defaults={
+                                'state': json.dumps(state_dict),
+                            },
+                        )
 
-                # publish events for analytics
-                self._publish_events(
-                    block_structure,
-                    block_key,
-                    previous_count,
-                    max_count,
-                    block_keys,
-                    usage_info.user.id,
-                )
+                    self._publish_events(
+                        block_structure,
+                        block_key,
+                        previous_count,
+                        max_count,
+                        block_keys,
+                        usage_info.user.id,
+                    )
                 all_selected_children.update(usage_info.course_key.make_usage_key(s[0], s[1]) for s in selected)
 
         def check_child_removal(block_key):

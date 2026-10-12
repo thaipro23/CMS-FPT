@@ -11,6 +11,7 @@ class ConnectorReplicaError(RuntimeError):
 
 
 _read_alias = ContextVar('connector_read_alias', default=None)
+_optional_dependency_refusals = ContextVar('connector_optional_dependency_refusals', default=None)
 ROUTER = 'openedx_ai_connector.database.ConnectorDatabaseRouter'
 
 
@@ -38,6 +39,23 @@ def database_scope(alias):
         yield
     finally:
         _read_alias.reset(token)
+
+
+@contextmanager
+def optional_reporting_dependency():
+    """Observe refused SQL from optional official progress only.
+
+    The guard still refuses SQL on every non-replica connection BEFORE execution.
+    A refused optional call can use the existing progress fallback without
+    discarding separately-read grades. Actual replica/database failures remain
+    fatal even if an Open edX helper catches them internally.
+    """
+    refused = []
+    token = _optional_dependency_refusals.set(refused)
+    try:
+        yield refused
+    finally:
+        _optional_dependency_refusals.reset(token)
 
 
 def primary_reads(func):
@@ -88,7 +106,11 @@ def replica_reads(func):
         def guard(execute, sql, params, many, context):
             if context['connection'].alias != alias:
                 error = ConnectorReplicaError('A reporting dependency attempted SQL outside the configured replica.')
-                failures.append(error)
+                refused = _optional_dependency_refusals.get()
+                if refused is not None:
+                    refused.append(error)
+                else:
+                    failures.append(error)
                 raise error
             try:
                 return execute(sql, params, many, context)

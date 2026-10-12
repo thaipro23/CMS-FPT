@@ -12,6 +12,7 @@ from openedx.core.djangoapps.content.block_structure.api import clear_course_fro
 from openedx.core.djangoapps.content.block_structure.transformers import BlockStructureTransformers
 
 from ...api import get_course_blocks
+from ..itembank_read_only import observe_itembank_selections_read_only
 from ..library_content import ContentLibraryOrderTransformer, ContentLibraryTransformer
 from .helpers import CourseStructureTestCase
 
@@ -176,6 +177,25 @@ class ContentLibraryTransformerTestCase(CourseStructureTestCase):
                                                                                          f'{block_type}1',
                                                                                          selected_vertical,
                                                                                          selected_child), f"Expected 'selected' equality failed in iteration {i}."  # pylint: disable=line-too-long
+
+    @mock.patch('lms.djangoapps.course_blocks.transformers.library_content.StudentModule.save_state')
+    def test_read_only_report_does_not_initialize_missing_selection(self, save_state):
+        """Reporting may observe missing ItemBank state but must never create it."""
+        clear_course_from_cache(self.course.id)
+
+        with observe_itembank_selections_read_only() as observation:
+            block_structure = get_course_blocks(
+                self.user,
+                self.course.location,
+                self.transformers,
+            )
+
+        save_state.assert_not_called()
+        assert observation.status == 'selection_missing'
+        assert observation.requires_write
+        assert set(block_structure.get_block_keys()) == self.get_block_key_set(
+            self.blocks, 'course', 'chapter1', 'lesson1', 'vertical1', 'library_content1'
+        )
 
 
 @ddt

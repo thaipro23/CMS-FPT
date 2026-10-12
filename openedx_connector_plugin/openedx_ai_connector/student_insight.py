@@ -22,8 +22,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.106'
-CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.106'
+CONNECTOR_VERSION = '25.9.16.5.108'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.108'
 PROGRESS_CONTRACT = {
     'completion_source': 'CourseHomeOfficialWithStudentModuleFallback',
     'primary_source': 'lms.djangoapps.courseware.courses.get_course_blocks_completion_summary',
@@ -34,6 +34,7 @@ PROGRESS_CONTRACT = {
     'numerator': 'studentmodule_sequential_position_rows',
     'ignored_studentmodule_types': ['itembank', 'problem', 'video', 'vertical', 'chapter', 'course'],
     'zero_progress_rule': 'students_with_only_itembank_rows_return_0_over_total_sequential',
+    'itembank_selection_policy': 'reporting_is_read_only_and_never_initializes_selection',
 }
 
 from .auth import (
@@ -44,7 +45,7 @@ from .auth import (
     _setting_or_env,
 )
 from .runtime import _load_openedx_modules
-from .database import ConnectorReplicaError, primary_reads, replica_reads
+from .database import ConnectorReplicaError, optional_reporting_dependency, primary_reads, replica_reads
 from .read_consistency import normalize_analytics_read_consistency
 from .staff_provisioning import cms_staff_requested, ensure_required_cms_staff
 
@@ -1163,6 +1164,8 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
     index: dict[str, Any] = {
         'planned_components': [],
         'problem_to_subsection': {},
+        'problem_to_itembank': {},
+        'itembanks': {},
         'display_names': {},
         'completion_denominator': _empty_completion_denominator_snapshot(),
         'error': None,
@@ -1197,13 +1200,13 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
     planned_candidates: list[dict[str, Any]] = []
     problem_total = 0
 
-    stack: list[tuple[Any, dict[str, Any] | None, str | None]] = [
-        (child, None, None)
+    stack: list[tuple[Any, dict[str, Any] | None, str | None, dict | None]] = [
+        (child, None, None, None)
         for child in reversed(list(getattr(course, 'children', []) or []))
     ]
 
     while stack:
-        key, current_subsection, current_unit = stack.pop()
+        key, current_subsection, current_unit, current_itembank = stack.pop()
         raw_key = _safe_str(key)
         if not raw_key or raw_key in visited:
             continue
@@ -1221,6 +1224,14 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
         has_children = bool(children)
         display = _display_name(block) or raw_key
         display_names[raw_key] = display
+        is_itembank = block_type in {'itembank', 'library_content'}
+        if is_itembank:
+            index['itembanks'][raw_key] = {
+                'children': [_safe_str(child) for child in children],
+                'max_count': getattr(block, 'max_count', None),
+            }
+        if block_type == 'problem' and current_itembank:
+            index['problem_to_itembank'][raw_key] = dict(current_itembank)
 
         # Planned Detailed-grade columns.
         if block_type in {'sequential', 'vertical', 'problem'} and _looks_like_quiz_component(display, block):
@@ -1293,13 +1304,14 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
             component_to_unit.setdefault(raw_key, next_unit)
 
         for child in reversed(children):
-            stack.append((child, next_subsection, next_unit))
+            bank = {'key': raw_key, 'selected_child': _safe_str(child)} if is_itembank else current_itembank
+            stack.append((child, next_subsection, next_unit, bank))
 
     higher = [item for item in planned_candidates if item.get('block_type') in {'sequential', 'vertical'}]
     usable = higher or planned_candidates
     usable.sort(key=lambda item: (_safe_str(item.get('name')), _safe_str(item.get('key'))))
     planned_components: list[dict[str, Any]] = []
-    for position, item in enumerate(usable[:80], start=1):
+    for position, item in enumerate(usable, start=1):
         row = dict(item)
         numbers = _quiz_numbers_from_label(row.get('name'))
         quiz_number = numbers[0] if numbers else position
@@ -1396,12 +1408,13 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     planned_components = _course_outline_quiz_components(course_key)
     try:
         PersistentSubsectionGrade, _source, _import_error = _persistent_subsection_grade_model()
-        if PersistentSubsectionGrade is None:
-            return result
         user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
-        rows = PersistentSubsectionGrade.objects.filter(course_id=course_key, user_id__in=user_ids)
+        rows = (
+            PersistentSubsectionGrade.objects.filter(course_id=course_key, user_id__in=user_ids)
+            if PersistentSubsectionGrade is not None else []
+        )
     except Exception:
-        return result
+        rows = []
 
     course_index = _course_learning_index(course_key)
     indexed_display_names = course_index.get('display_names') or {}
@@ -1463,15 +1476,24 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     for items in result.values():
         items.sort(key=lambda item: _safe_str(item.get('name') or item.get('key')))
     # Ulmo deployments do not always have PersistentSubsectionGrade populated.
-    # When subsection rows are missing for a learner, fall back to StudentModule
-    # problem scores grouped by the nearest sequential/subsection. This keeps
+    # Fill missing subsection scores by usage key, even for learners whose
+    # persistent gradebook is only partially populated. Keep valid persisted
+    # scores (including zero) authoritative. This keeps
     # Student Progress useful without fabricating a score when Open edX really
     # has no saved grade state.
     try:
         fallback = _student_module_problem_grade_snapshot(course_key, users)
         for uid, items in fallback.items():
-            if not result.get(uid):
-                result[uid] = items
+            merged = {
+                _safe_str(item.get('usage_key') or item.get('key')): item
+                for item in result.get(uid, [])
+            }
+            for item in items:
+                key = _safe_str(item.get('usage_key') or item.get('key'))
+                existing = merged.get(key)
+                if existing is None or existing.get('percent') is None:
+                    merged[key] = item
+            result[uid] = sorted(merged.values(), key=lambda item: _safe_str(item.get('name') or item.get('key')))
     except Exception:
         pass
     if planned_components:
@@ -1483,9 +1505,9 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
                 # learner, do not supplement with planned outline shells because
                 # that can create phantom columns (for example Quiz 14 when the
                 # gradebook currently exposes only Quiz 1 and Quiz 2).
-                result[uid] = existing[:80]
+                result[uid] = existing
                 continue
-            result[uid] = [dict(item) for item in planned_components[:80]]
+            result[uid] = [dict(item) for item in planned_components]
     return result
 
 
@@ -1498,6 +1520,56 @@ def _subsection_problem_index(course_key: Any) -> dict[str, dict[str, Any]]:
         for key, value in (index.get('problem_to_subsection') or {}).items()
     }
 
+def _stored_itembank_grade_scope(course_key: Any, user_ids: list, problem_rows: list, index: dict, StudentModule: Any) -> dict:
+    """Read persisted selections; never promote stale/incomplete random scores."""
+    banks = index.get('itembanks') or {}
+    problem_banks = index.get('problem_to_itembank') or {}
+    if not banks:
+        return {}
+    state_rows = StudentModule.objects.filter(
+        course_id=course_key, student_id__in=user_ids, module_state_key__in=list(banks),
+    )
+    states = {(int(row.student_id), _safe_str(row.module_state_key)): row.state for row in state_rows}
+    scored = set()
+    for row in problem_rows:
+        try:
+            if row.grade is not None and row.max_grade is not None and float(row.max_grade) > 0:
+                scored.add((int(row.student_id), _safe_str(row.module_state_key)))
+        except (TypeError, ValueError):
+            continue
+    scopes = {}
+    for uid in user_ids:
+        for bank_key, bank in banks.items():
+            identity = (int(uid), bank_key)
+            scopes[identity] = None
+            try:
+                state = states.get(identity)
+                state = json.loads(state) if isinstance(state, str) else state
+                selected = state.get('selected') if isinstance(state, dict) else None
+                if not isinstance(selected, list):
+                    continue
+                children = set(bank['children'])
+                count = int(bank['max_count'])
+                target = len(children) if count < 0 else min(count, len(children))
+                keys = []
+                for entry in selected:
+                    if not isinstance(entry, (list, tuple)) or len(entry) != 2 or not all(isinstance(part, str) for part in entry):
+                        raise ValueError('invalid stored selection')
+                    keys.append(_safe_str(course_key.make_usage_key(*entry)))
+                if len(keys) != target or len(set(keys)) != len(keys) or not set(keys).issubset(children):
+                    continue
+                selected_problems = {
+                    key for key, metadata in problem_banks.items()
+                    if metadata['key'] == bank_key and metadata['selected_child'] in keys
+                }
+                if not all((int(uid), key) in scored for key in selected_problems):
+                    continue
+                scopes[identity] = selected_problems
+            except (AttributeError, KeyError, TypeError, ValueError):
+                continue
+    return scopes
+
+
 def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, list[dict[str, Any]]]:
     """Fallback component grades from StudentModule problem grade/max_grade."""
     result: dict[int, list[dict[str, Any]]] = {}
@@ -1508,10 +1580,18 @@ def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) ->
         if StudentModule is None:
             return result
         user_ids = [getattr(user, 'id', None) for user in users if getattr(user, 'id', None) is not None]
-        rows = StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids, module_type='problem')
+        rows = list(StudentModule.objects.filter(course_id=course_key, student_id__in=user_ids, module_type='problem'))
     except Exception:
         return result
     problem_index = _subsection_problem_index(course_key)
+    course_index = _course_learning_index(course_key)
+    problem_banks = course_index.get('problem_to_itembank') or {}
+    scopes = _stored_itembank_grade_scope(course_key, user_ids, rows, course_index, StudentModule)
+    blocked_subsections = {
+        (int(uid), _safe_str((problem_index.get(key) or {}).get('key')))
+        for uid in user_ids for key, metadata in problem_banks.items()
+        if scopes.get((int(uid), metadata['key'])) is None
+    }
     buckets: dict[tuple[int, str], dict[str, Any]] = {}
     for row in rows:
         try:
@@ -1527,6 +1607,11 @@ def _student_module_problem_grade_snapshot(course_key: Any, users: list[Any]) ->
             earned = float(grade)
             group = problem_index.get(problem_key) or {'key': problem_key or 'problem_grade', 'name': problem_key or 'Problem grades', 'category': 'problem'}
             bucket_key = (uid, _safe_str(group.get('key') or group.get('name')))
+            if bucket_key in blocked_subsections:
+                continue
+            bank = problem_banks.get(problem_key)
+            if bank and problem_key not in (scopes.get((uid, bank['key'])) or set()):
+                continue
             bucket = buckets.setdefault(bucket_key, {
                 'key': _safe_str(group.get('key') or group.get('name')),
                 'usage_key': _safe_str(group.get('key') or group.get('name')),
@@ -1799,6 +1884,9 @@ def _completion_api_progress_snapshot(course_key: Any, users: list[Any]) -> dict
     try:
         courseware_courses = importlib.import_module('lms.djangoapps.courseware.courses')
         get_summary = getattr(courseware_courses, 'get_course_blocks_completion_summary')
+        from lms.djangoapps.course_blocks.transformers.itembank_read_only import (
+            observe_itembank_selections_read_only,
+        )
     except Exception:
         return result
 
@@ -1807,8 +1895,28 @@ def _completion_api_progress_snapshot(course_key: Any, users: list[Any]) -> dict
         if uid <= 0:
             continue
         try:
-            payload = get_summary(course_key, user)
+            with optional_reporting_dependency() as refused_sql, observe_itembank_selections_read_only() as selection_observation:
+                payload = get_summary(course_key, user)
         except Exception:
+            result[uid] = {
+                'official_progress_status': 'unavailable',
+                'fallback_reason': 'official_progress_unavailable_read_only',
+            }
+            continue
+        if refused_sql:
+            result[uid] = {
+                'official_progress_status': 'unavailable',
+                'fallback_reason': 'official_progress_requires_primary_sql',
+            }
+            continue
+        if selection_observation.requires_write:
+            result[uid] = {
+                'itembank_selection_status': selection_observation.status,
+                'itembank_selection_issue_count': len(selection_observation.issues),
+                'itembank_selection_issues': selection_observation.issues,
+                'official_progress_status': 'unavailable',
+                'fallback_reason': 'itembank_selection_not_ready_read_only',
+            }
             continue
         if not isinstance(payload, dict):
             continue
@@ -1830,6 +1938,7 @@ def _completion_api_progress_snapshot(course_key: Any, users: list[Any]) -> dict
             'complete_count': completed,
             'incomplete_count': incomplete,
             'locked_count': locked,
+            'itembank_selection_status': 'ready',
         }
     return result
 
@@ -2027,7 +2136,7 @@ def _completion_snapshot(course_key: Any, users: list[Any], *, skip_course_home_
             if item.get('percent') is None and item.get('has_student_module_fallback'):
                 item['percent'] = round(max(0.0, min(100.0, float(completed or 0) / float(total_blocks) * 100.0)), 2)
                 item['source'] = item.get('source') or 'StudentModuleSequentialFallback'
-                item['fallback_reason'] = 'course_home_progress_unavailable_student_module_sequential_counts'
+                item.setdefault('fallback_reason', 'course_home_progress_unavailable_student_module_sequential_counts')
             elif item.get('percent') is None and source_text.startswith('coursehomeapi'):
                 item['percent'] = round(max(0.0, min(100.0, float(completed or 0) / float(total_blocks) * 100.0)), 2)
     return result, total_blocks
@@ -2059,6 +2168,9 @@ def _compact_progress_payload(progress: dict[str, Any]) -> dict[str, Any]:
         'student_module_fallback_rule',
         'student_module_denominator_rule',
         'fallback_reason',
+        'official_progress_status',
+        'itembank_selection_status',
+        'itembank_selection_issue_count',
     ]
     return {key: progress.get(key) for key in keys if key in progress and progress.get(key) is not None}
 
@@ -2105,6 +2217,8 @@ def _student_learning_results_on_selected_database_uncached(course_id: str, requ
             'passed': grade.get('passed'),
             'completed_blocks': progress.get('completed_blocks'),
             'total_blocks': progress.get('total_blocks') or total_blocks,
+            'itembank_selection_status': progress.get('itembank_selection_status'),
+            'itembank_selection_issue_count': progress.get('itembank_selection_issue_count'),
             'last_activity_at': progress.get('last_activity_at') or grade.get('modified'),
             'enrollment': enroll,
             'progress': progress_payload,
