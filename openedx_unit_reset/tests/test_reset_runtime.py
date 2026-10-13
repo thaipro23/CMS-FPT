@@ -230,6 +230,101 @@ class ResetRuntimeTests(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertEqual(UnitQuizSession.objects.filter(user=self.user, config=config, status='ACTIVE').count(), 1)
 
+    def _new_guard_session(self, config, status, attempt):
+        return UnitQuizSession.objects.create(
+            user=self.user,
+            config=config,
+            course_id=str(COURSE),
+            unit_usage_key=str(self.unit),
+            status=status,
+            attempt_no=attempt,
+            started_at=timezone.now() - timedelta(hours=2),
+            expires_at=timezone.now() - timedelta(hours=1),
+            reset_available_at=timezone.now() - timedelta(minutes=30),
+        )
+
+    def test_guard_memoizes_xblock_lookups_and_session_queries(self):
+        """Historical attempts must not deserialize the same Unit per session."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        config = UnitQuizTimerConfig.objects.create(
+            course_id=str(COURSE), unit_usage_key=str(self.unit), cooldown_seconds=0,
+        )
+        for i in range(1, 13):
+            self._new_guard_session(config, UnitQuizSession.STATUS_RESET_READY, i)
+
+        reads = []
+        def get_item(key):
+            reads.append(key)
+            return self.blocks[key]
+
+        with patch.object(
+            services, 'get_modulestore',
+            return_value=SimpleNamespace(get_item=get_item),
+        ), CaptureQueriesContext(connection) as recorded:
+            blocked, session = services.is_late_submit_blocked(
+                self.user, str(COURSE), str(self.other),
+            )
+
+        self.assertFalse(blocked)
+        self.assertIsNone(session)
+        # One structural walk, and the active walk reuses its block objects.
+        self.assertCountEqual(reads, [self.unit, self.bank, self.selected, self.unselected])
+        # The latest attempt for the same config is queried once, not 12 times.
+        session_reads = [
+            q for q in recorded.captured_queries
+            if 'openedx_unit_reset_unitquizsession' in q['sql'].lower()
+        ]
+        self.assertLessEqual(len(session_reads), 3)
+
+    def test_guard_blocks_selected_problem_but_not_unselected_bank_child(self):
+        config = UnitQuizTimerConfig.objects.create(
+            course_id=str(COURSE), unit_usage_key=str(self.unit), cooldown_seconds=0,
+        )
+        expired = self._new_guard_session(config, UnitQuizSession.STATUS_RESET_READY, 1)
+
+        blocked, session = services.is_late_submit_blocked(
+            self.user, str(COURSE), str(self.selected),
+        )
+        self.assertTrue(blocked)
+        self.assertEqual(session.id, expired.id)
+
+        blocked, session = services.is_late_submit_blocked(
+            self.user, str(COURSE), str(self.unselected),
+        )
+        self.assertFalse(blocked)
+        self.assertIsNone(session)
+
+    def test_guard_does_not_block_new_active_retaken_quiz(self):
+        config = UnitQuizTimerConfig.objects.create(
+            course_id=str(COURSE), unit_usage_key=str(self.unit), cooldown_seconds=0,
+        )
+        self._new_guard_session(config, UnitQuizSession.STATUS_RESET_READY, 1)
+        self._new_guard_session(config, UnitQuizSession.STATUS_ACTIVE, 2)
+
+        # An active newer attempt skips historical expired/reset-ready sessions.
+        with patch.object(services, 'collect_active_unit_usage_keys') as traversal:
+            blocked, session = services.is_late_submit_blocked(
+                self.user, str(COURSE), str(self.selected),
+            )
+        self.assertFalse(blocked)
+        self.assertIsNone(session)
+        traversal.assert_not_called()
+
+    def test_guard_preserves_auto_submit_grace_window(self):
+        config = UnitQuizTimerConfig.objects.create(
+            course_id=str(COURSE), unit_usage_key=str(self.unit), cooldown_seconds=0,
+        )
+        self._new_guard_session(config, UnitQuizSession.STATUS_EXPIRED, 1)
+
+        with patch.object(services, '_session_allows_auto_submit_grace', return_value=True):
+            blocked, session = services.is_late_submit_blocked(
+                self.user, str(COURSE), str(self.selected),
+            )
+        self.assertFalse(blocked)
+        self.assertIsNone(session)
+
     def factory_modules(self, update):
         module = ModuleType('lms.djangoapps.grades.course_grade_factory')
         module.CourseGradeFactory = lambda: SimpleNamespace(update=update)
