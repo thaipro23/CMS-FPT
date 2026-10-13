@@ -278,6 +278,48 @@ class ResetRuntimeTests(unittest.TestCase):
         ]
         self.assertLessEqual(len(session_reads), 3)
 
+    def test_guard_keeps_read_only_bulk_scope_for_complete_traversal(self):
+        """SplitMongo course structure is decoded only within one scoped read."""
+        from contextlib import contextmanager
+
+        config = UnitQuizTimerConfig.objects.create(
+            course_id=str(COURSE), unit_usage_key=str(self.unit), cooldown_seconds=0,
+        )
+        for attempt in range(1, 6):
+            self._new_guard_session(config, UnitQuizSession.STATUS_RESET_READY, attempt)
+
+        events = []
+        @contextmanager
+        def bulk_operations(course_key, emit_signals=True):
+            self.assertEqual(str(course_key), str(COURSE))
+            self.assertFalse(emit_signals)
+            events.append('enter')
+            try:
+                yield
+            finally:
+                events.append('exit')
+
+        def get_item(key):
+            self.assertEqual(events[-1], 'enter')
+            events.append(str(key))
+            return self.blocks[key]
+
+        store = SimpleNamespace(
+            get_item=get_item,
+            bulk_operations=bulk_operations,
+        )
+        with patch.object(services, 'get_modulestore', return_value=store):
+            blocked, session = services.is_late_submit_blocked(
+                self.user, str(COURSE), str(self.other),
+            )
+
+        self.assertFalse(blocked)
+        self.assertIsNone(session)
+        self.assertEqual(events.count('enter'), 1)
+        self.assertEqual(events.count('exit'), 1)
+        self.assertEqual(events[-1], 'exit')
+        self.assertEqual(len(events) - 2, 4)
+
     def test_guard_blocks_selected_problem_but_not_unselected_bank_child(self):
         config = UnitQuizTimerConfig.objects.create(
             course_id=str(COURSE), unit_usage_key=str(self.unit), cooldown_seconds=0,
