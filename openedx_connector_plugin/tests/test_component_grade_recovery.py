@@ -138,6 +138,17 @@ class ComponentGradeRecoveryTests(unittest.TestCase):
         self.assertEqual(grades['quiz-1']['percent'], 0)
         self.assertEqual(grades['quiz-1']['source'], 'PersistentSubsectionGrade')
 
+    def test_plan_identity_preserves_zero_actual_grade_and_does_not_mark_it_planned(self):
+        grades = self.collect(
+            [subsection('quiz-1', earned=0)], [],
+            planned=[{'key': 'quiz-1', 'name': 'Quiz 1', 'quiz_number': 1,
+                      'assessment_type': 'quiz', 'planned': True, 'percent': None}],
+        )
+        self.assertEqual(grades['quiz-1']['percent'], 0)
+        self.assertEqual(grades['quiz-1']['source'], 'PersistentSubsectionGrade')
+        self.assertFalse(grades['quiz-1']['planned'])
+        self.assertEqual(grades['quiz-1']['assessment_type'], 'quiz')
+
     def test_null_persistent_score_is_filled_for_the_same_usage_key(self):
         grades = self.collect([subsection('quiz-5', earned=None)], [problem('problem-5', earned=8)])
 
@@ -161,7 +172,10 @@ class ComponentGradeRecoveryTests(unittest.TestCase):
             planned=[{'key': 'quiz-5', 'name': 'Quiz 5', 'percent': None, 'planned': True}],
         )
 
-        self.assertEqual(set(grades), {'quiz-1'})
+        self.assertEqual(set(grades), {'quiz-1', 'quiz-5'})
+        self.assertIsNone(grades['quiz-5']['percent'])
+        self.assertIsNone(grades['quiz-5'].get('earned'))
+        self.assertTrue(grades['quiz-5']['planned'])
 
     def test_missing_final_test_does_not_create_a_final_grade(self):
         grades = self.collect([subsection('quiz-1')], [problem('problem-5')])

@@ -22,8 +22,8 @@ VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
-CONNECTOR_VERSION = '25.9.16.5.108'
-CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.108'
+CONNECTOR_VERSION = '25.9.16.5.109'
+CONNECTOR_CONTRACT_VERSION = 'learning-sync/v25.9.16.5.109'
 PROGRESS_CONTRACT = {
     'completion_source': 'CourseHomeOfficialWithStudentModuleFallback',
     'primary_source': 'lms.djangoapps.courseware.courses.get_course_blocks_completion_summary',
@@ -1163,6 +1163,7 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
     """Traverse one course tree once and materialize all analytics structure maps."""
     index: dict[str, Any] = {
         'planned_components': [],
+        'assessment_plan_complete': False,
         'problem_to_subsection': {},
         'problem_to_itembank': {},
         'itembanks': {},
@@ -1198,6 +1199,7 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
     problem_to_subsection: dict[str, dict[str, Any]] = {}
     display_names: dict[str, str] = {}
     planned_candidates: list[dict[str, Any]] = []
+    structure_complete = True
     problem_total = 0
 
     stack: list[tuple[Any, dict[str, Any] | None, str | None, dict | None]] = [
@@ -1217,6 +1219,7 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
 
         block = _get_item_best_effort(store, key)
         if block is None:
+            structure_complete = False
             continue
 
         block_type = _block_type(block) or 'unknown'
@@ -1233,22 +1236,29 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
         if block_type == 'problem' and current_itembank:
             index['problem_to_itembank'][raw_key] = dict(current_itembank)
 
-        # Planned Detailed-grade columns.
-        if block_type in {'sequential', 'vertical', 'problem'} and _looks_like_quiz_component(display, block):
+        # Open edX grades assignments at subsection level. Unit/problem names
+        # (often just "Quiz") must never become additional grade columns.
+        if block_type == 'sequential' and getattr(block, 'graded', False):
             name = (display or '').strip()
-            category = 'quiz' if 'quiz' in name.lower() or block_type == 'sequential' else block_type
-            planned_candidates.append({
-                'key': raw_key,
-                'usage_key': raw_key,
-                'name': name[:255] if name else '',
-                'category': category,
-                'earned': None,
-                'possible': None,
-                'percent': None,
-                'planned': True,
-                'source': 'course_outline',
-                'block_type': block_type,
-            })
+            assignment_format = _safe_str(getattr(block, 'format', '')).strip().lower()
+            numbers = _quiz_numbers_from_label(name)
+            is_final = assignment_format == 'final test' or name.lower() == 'final test'
+            is_quiz = assignment_format == 'quiz' or bool(numbers) or name.lower() in {'quiz', 'learning check', 'lc'}
+            if is_final or is_quiz:
+                planned_candidates.append({
+                    'key': raw_key,
+                    'usage_key': raw_key,
+                    'name': 'Final test' if is_final else name[:255],
+                    'category': 'final_test' if is_final else 'quiz',
+                    'assessment_type': 'final_test' if is_final else 'quiz',
+                    'quiz_number': None if is_final else numbers[0] if numbers else None,
+                    'earned': None,
+                    'possible': None,
+                    'percent': None,
+                    'planned': True,
+                    'source': 'course_outline',
+                    'block_type': block_type,
+                })
 
         # Problem -> nearest subsection grouping used by StudentModule fallback.
         next_subsection = current_subsection
@@ -1307,20 +1317,21 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
             bank = {'key': raw_key, 'selected_child': _safe_str(child)} if is_itembank else current_itembank
             stack.append((child, next_subsection, next_unit, bank))
 
-    higher = [item for item in planned_candidates if item.get('block_type') in {'sequential', 'vertical'}]
-    usable = higher or planned_candidates
-    usable.sort(key=lambda item: (_safe_str(item.get('name')), _safe_str(item.get('key'))))
     planned_components: list[dict[str, Any]] = []
-    for position, item in enumerate(usable, start=1):
+    reserved_numbers = {item['quiz_number'] for item in planned_candidates if item['quiz_number'] is not None}
+    next_number = 1
+    for position, item in enumerate(planned_candidates, start=1):
         row = dict(item)
-        numbers = _quiz_numbers_from_label(row.get('name'))
-        quiz_number = numbers[0] if numbers else position
-        row['quiz_number'] = quiz_number
-        row['order'] = quiz_number
-        name = _safe_str(row.get('name')).strip()
-        if name.lower() in {'quiz', 'learning check', 'lc', ''}:
-            name = f'Quiz {quiz_number}'
-        row['name'] = name[:255]
+        # Preserve course order; unnamed graded Quiz subsections use only the
+        # unused Quiz numbers, never positions occupied by Final/Unit children.
+        if row['assessment_type'] == 'quiz':
+            if row['quiz_number'] is None:
+                while next_number in reserved_numbers:
+                    next_number += 1
+                row['quiz_number'] = next_number
+                reserved_numbers.add(next_number)
+            row['name'] = f"Quiz {row['quiz_number']}"
+        row['order'] = position
         planned_components.append(row)
 
     subsection_total = len(completion_units)
@@ -1339,6 +1350,7 @@ def _materialize_course_learning_index(course_key: Any, *, store: Any | None = N
     )
 
     index['planned_components'] = planned_components
+    index['assessment_plan_complete'] = structure_complete
     index['problem_to_subsection'] = problem_to_subsection
     index['display_names'] = display_names
     return index
@@ -1499,15 +1511,21 @@ def _component_grade_snapshot(course_key: Any, users: list[Any]) -> dict[int, li
     if planned_components:
         user_ids = [int(getattr(user, 'id', 0) or 0) for user in users if getattr(user, 'id', None) is not None]
         for uid in user_ids:
-            existing = result.get(uid) or []
-            if existing:
-                # If CMS/Open edX already returned actual Detailed grades for the
-                # learner, do not supplement with planned outline shells because
-                # that can create phantom columns (for example Quiz 14 when the
-                # gradebook currently exposes only Quiz 1 and Quiz 2).
-                result[uid] = existing
-                continue
-            result[uid] = [dict(item) for item in planned_components]
+            merged = {
+                _safe_str(item.get('usage_key') or item.get('key')): dict(item)
+                for item in result.get(uid, [])
+            }
+            for planned in planned_components:
+                key = _safe_str(planned.get('usage_key') or planned.get('key'))
+                existing = merged.get(key)
+                merged[key] = {**planned, **(existing or {})}
+                merged[key]['planned'] = bool(existing.get('planned', False)) if existing else True
+                # Use the current subsection identity while preserving actual
+                # points/source. Unattempted assignments remain null shells.
+                for field in ('name', 'assessment_type', 'quiz_number', 'order', 'block_type'):
+                    if field in planned:
+                        merged[key][field] = planned[field]
+            result[uid] = sorted(merged.values(), key=lambda item: _safe_str(item.get('name') or item.get('key')))
     return result
 
 
@@ -2189,6 +2207,7 @@ def _student_learning_results_on_selected_database_uncached(course_id: str, requ
     enrollment = _enrollment_snapshot(course_key, users)
     grades = _persistent_grade_snapshot(course_key, users)
     component_grades = _component_grade_snapshot(course_key, users)
+    assessment_plan_complete = _course_learning_index(course_key).get('assessment_plan_complete') is True
     completion, total_blocks = _completion_snapshot(course_key, users, skip_course_home_progress=skip_course_home_progress)
     results: list[dict[str, Any]] = []
     for item in requested:
@@ -2225,6 +2244,7 @@ def _student_learning_results_on_selected_database_uncached(course_id: str, requ
             'grade': {**grade, 'components': components},
             'component_scores': components,
             'component_grades': components,
+            'assessment_plan_complete': assessment_plan_complete,
         })
     return results
 

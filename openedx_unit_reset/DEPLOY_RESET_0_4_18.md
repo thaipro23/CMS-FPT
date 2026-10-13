@@ -1,7 +1,7 @@
 # Combined reset and score-report fix
 
 This change extends the existing `fpt-indigo-ui` score-report fix (`c85b701`),
-without replacing Connector `25.9.16.5.108` or its read-only ItemBank policy.
+while preserving the Connector's read-only ItemBank policy.
 Dash CMS-AI score refresh remains at `9a04bd2`; no extra Dash change is required
 for the Unit Reset API additions.
 
@@ -38,7 +38,7 @@ The underlying management command inside the new image is:
 ./manage.py lms migrate openedx_unit_reset 0003_unitresetgradereconciliation --settings=tutor.production
 ```
 
-Verify Unit Reset version `0.4.18`, Connector runtime `25.9.16.5.108`, migration
+Verify Unit Reset version `0.4.18`, Connector runtime `25.9.16.5.109`, migration
 applied, and task registration `openedx_unit_reset.tasks.reconcile_unit_reset_grade`.
 No MFE rebuild is required for this server/plugin patch. The previously pushed
 Dash score button fix still requires deploying the corresponding Dash image.
