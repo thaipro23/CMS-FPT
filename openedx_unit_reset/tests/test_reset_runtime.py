@@ -289,18 +289,23 @@ class ResetRuntimeTests(unittest.TestCase):
             self._new_guard_session(config, UnitQuizSession.STATUS_RESET_READY, attempt)
 
         events = []
+        scope_active = [False]
+
         @contextmanager
         def bulk_operations(course_key, emit_signals=True):
             self.assertEqual(str(course_key), str(COURSE))
             self.assertFalse(emit_signals)
+            self.assertFalse(scope_active[0])
+            scope_active[0] = True
             events.append('enter')
             try:
                 yield
             finally:
+                scope_active[0] = False
                 events.append('exit')
 
         def get_item(key):
-            self.assertEqual(events[-1], 'enter')
+            self.assertTrue(scope_active[0])
             events.append(str(key))
             return self.blocks[key]
 
@@ -318,6 +323,7 @@ class ResetRuntimeTests(unittest.TestCase):
         self.assertEqual(events.count('enter'), 1)
         self.assertEqual(events.count('exit'), 1)
         self.assertEqual(events[-1], 'exit')
+        self.assertFalse(scope_active[0])
         self.assertEqual(len(events) - 2, 4)
 
     def test_guard_blocks_selected_problem_but_not_unselected_bank_child(self):
