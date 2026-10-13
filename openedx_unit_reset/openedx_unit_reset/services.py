@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import nullcontext
 from datetime import timedelta
 
 from django.conf import settings
@@ -1269,7 +1270,7 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
             UnitQuizSession.STATUS_RESET_WAIT,
             UnitQuizSession.STATUS_RESET_READY,
         ],
-    ).select_related('config').order_by('-created_at')[:20]
+    ).order_by('-created_at')[:20]
     if not guarded_sessions:
         return False, None
 
@@ -1317,8 +1318,6 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
                     # Hold one outer read-only scope for the Unit traversal to
                     # reuse the deserialized course structure across all children.
                     # Without this, Redis pickle.loads runs once per child.
-                    from contextlib import nullcontext
-
                     bulk = getattr(store, 'bulk_operations', None)
                     if (
                         bulk is not None
