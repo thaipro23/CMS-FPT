@@ -1313,10 +1313,25 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
                 if store is None:
                     store = get_modulestore()
                 if course_key is not None:
-                    reset_keys, _container_keys = collect_active_unit_usage_keys(
-                        user, course_key, unit_key,
-                        store=store, block_cache=block_cache,
-                    )
+                    # SplitMongo get_item() opens its own bulk_operations context.
+                    # Hold one outer read-only scope for the Unit traversal to
+                    # reuse the deserialized course structure across all children.
+                    # Without this, Redis pickle.loads runs once per child.
+                    from contextlib import nullcontext
+
+                    bulk = getattr(store, 'bulk_operations', None)
+                    if (
+                        bulk is not None
+                        and getattr(settings, 'UNIT_RESET_QUIZ_GUARD_BULK_READ_ENABLED', True)
+                    ):
+                        scope = bulk(course_key, emit_signals=False)
+                    else:
+                        scope = nullcontext()
+                    with scope:
+                        reset_keys, _container_keys = collect_active_unit_usage_keys(
+                            user, course_key, unit_key,
+                            store=store, block_cache=block_cache,
+                        )
                 else:
                     reset_keys = collect_unit_usage_keys(
                         unit_key, store=store, block_cache=block_cache,
