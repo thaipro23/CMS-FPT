@@ -151,9 +151,23 @@ def assert_user_can_reset(request, course_key):
             raise UnitResetError("Bạn không thuộc khóa học này.", "NOT_ENROLLED", 403)
 
 
-def collect_unit_usage_keys(unit_key):
-    """Collect Unit root + descendant usage keys from modulestore."""
-    store = get_modulestore()
+def _get_cached_modulestore_item(store, key, block_cache=None):
+    """Memoize successful XBlock lookups only for the current operation.
+
+    A cached exception could hide a recovered modulestore lookup and change
+    reset/submit safety decisions, so only successfully loaded blocks are saved.
+    """
+    if block_cache is None:
+        return store.get_item(key)
+    if key not in block_cache:
+        block_cache[key] = store.get_item(key)
+    return block_cache[key]
+
+
+def collect_unit_usage_keys(unit_key, *, store=None, block_cache=None):
+    """Collect Unit root + descendant keys, optionally reusing a local block cache."""
+    if store is None:
+        store = get_modulestore()
     keys = set()
 
     def walk(key):
@@ -161,7 +175,7 @@ def collect_unit_usage_keys(unit_key):
             return
         keys.add(key)
         try:
-            block = store.get_item(key)
+            block = _get_cached_modulestore_item(store, key, block_cache)
         except Exception as exc:
             # Root unit not found should be a hard error. Child not found can be ignored.
             if key == unit_key:
@@ -222,7 +236,10 @@ def _is_item_bank_block(block):
     return getattr(block, "category", None) in {"itembank", "library_content"}
 
 
-def collect_active_unit_usage_keys(user, course_key, unit_key, lock_state=False):
+def collect_active_unit_usage_keys(
+    user, course_key, unit_key, lock_state=False, *,
+    store=None, block_cache=None, structural_keys=None,
+):
     """Collect the Unit path visible in the learner's current attempt.
 
     Ordinary containers traverse all children. ItemBank containers traverse
@@ -232,8 +249,12 @@ def collect_active_unit_usage_keys(user, course_key, unit_key, lock_state=False)
     Returns ``(active_keys, container_keys)``.
     """
     StudentModule = get_student_module_model()
-    store = get_modulestore()
-    structural_keys = collect_unit_usage_keys(unit_key)
+    if store is None:
+        store = get_modulestore()
+    if structural_keys is None:
+        structural_keys = collect_unit_usage_keys(
+            unit_key, store=store, block_cache=block_cache,
+        )
     modules = StudentModule.objects.filter(
         student=user, course_id=course_key, module_state_key__in=list(structural_keys),
     )
@@ -251,7 +272,7 @@ def collect_active_unit_usage_keys(user, course_key, unit_key, lock_state=False)
             return
         active_keys.add(key)
         try:
-            block = store.get_item(key)
+            block = _get_cached_modulestore_item(store, key, block_cache)
         except Exception as exc:
             # A stale selected child can still have submissions/StudentModule
             # state. Only a verified not-found error allows treating it as a
@@ -1263,15 +1284,24 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
     except Exception:
         course_key = None
 
+    # This function runs on every problem_check. Never persist these caches
+    # beyond one invocation: selections and session state are learner-specific.
+    latest_by_config = {}
+    active_keys_by_unit = {}
+    block_cache = {}
+    store = None
+
     for session in guarded_sessions:
         try:
             # If a newer ACTIVE/SUBMITTING attempt exists for the same timer config,
             # allow the submit. This is the normal state after the learner clicks
             # "Làm lại bài" and the Unit has been randomized again.
-            latest_for_config = UnitQuizSession.objects.filter(
-                user=user,
-                config=session.config,
-            ).order_by('-attempt_no', '-created_at').first()
+            if session.config_id not in latest_by_config:
+                latest_by_config[session.config_id] = UnitQuizSession.objects.filter(
+                    user=user,
+                    config_id=session.config_id,
+                ).order_by('-attempt_no', '-created_at').first()
+            latest_for_config = latest_by_config[session.config_id]
             if latest_for_config and latest_for_config.id != session.id and latest_for_config.status in (
                 UnitQuizSession.STATUS_ACTIVE,
                 UnitQuizSession.STATUS_SUBMITTING,
@@ -1279,10 +1309,23 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
                 continue
 
             unit_key = UsageKey.from_string(session.unit_usage_key)
-            reset_keys = collect_unit_usage_keys(unit_key)
-            if course_key is not None:
-                reset_keys, _container_keys = collect_active_unit_usage_keys(user, course_key, unit_key)
-            reset_key_strings = {str(k) for k in reset_keys}
+            if unit_key not in active_keys_by_unit:
+                if store is None:
+                    store = get_modulestore()
+                if course_key is not None:
+                    reset_keys, _container_keys = collect_active_unit_usage_keys(
+                        user, course_key, unit_key,
+                        store=store, block_cache=block_cache,
+                    )
+                else:
+                    reset_keys = collect_unit_usage_keys(
+                        unit_key, store=store, block_cache=block_cache,
+                    )
+                active_keys_by_unit[unit_key] = (
+                    reset_keys,
+                    {str(key) for key in reset_keys},
+                )
+            reset_keys, reset_key_strings = active_keys_by_unit[unit_key]
             if problem_key is not None and problem_key in reset_keys:
                 if _session_allows_auto_submit_grace(session):
                     log.info('Allowing timed quiz auto-submit during grace window session_id=%s user_id=%s', session.id, user.id)
