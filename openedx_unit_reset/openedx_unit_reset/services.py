@@ -8,8 +8,15 @@ from django.db.models import Max
 from django.utils import timezone
 from opaque_keys.edx.keys import CourseKey, UsageKey
 
-from .models import UnitQuizSession, UnitQuizTimerConfig, UnitResetAudit, UnitResetControl
-from .reset_scope import official_reset_targets
+from .models import (
+    UnitQuizSession,
+    UnitQuizTimerConfig,
+    UnitResetAudit,
+    UnitResetControl,
+    UnitResetGradeReconciliation,
+    UnitResetCourseGradeLock,
+)
+from .reset_scope import active_child_keys, partition_persisted_reset_keys
 
 log = logging.getLogger(__name__)
 
@@ -170,53 +177,115 @@ def collect_unit_usage_keys(unit_key):
     return keys
 
 
-def extract_usage_keys_from_state(state_text):
-    """Find selected randomized/library problem usage keys stored inside StudentModule.state."""
-    keys = set()
+def extract_selected_usage_keys_from_state(state_text, course_key):
+    """Read only the ItemBank ``selected`` field from learner state.
+
+    Older code recursively scanned every string in the JSON document. That
+    could accidentally pull unrelated usage keys into the reset scope. ItemBank
+    stores selection as ``[[block_type, block_id], ...]``; no other state field
+    is accepted here.
+    """
     if not state_text:
-        return keys
+        return []
     try:
         data = json.loads(state_text)
-    except Exception:
-        return keys
+    except (TypeError, ValueError):
+        return []
 
-    def scan(obj):
-        if isinstance(obj, dict):
-            for value in obj.values():
-                scan(value)
-        elif isinstance(obj, list):
-            for item in obj:
-                scan(item)
-        elif isinstance(obj, str):
-            if "block-v1:" in obj or "+type@" in obj:
-                try:
-                    keys.add(UsageKey.from_string(obj))
-                except Exception:
-                    pass
-
-    scan(data)
+    selected = data.get("selected", []) if isinstance(data, dict) else []
+    keys = []
+    seen = set()
+    for entry in selected:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            continue
+        block_type, block_id = entry
+        if not isinstance(block_type, str) or not isinstance(block_id, str):
+            continue
+        try:
+            usage_key = course_key.make_usage_key(block_type, block_id)
+        except Exception:
+            continue
+        if usage_key not in seen:
+            keys.append(usage_key)
+            seen.add(usage_key)
     return keys
 
 
-def expand_randomized_selected_keys(user, course_key, reset_keys):
-    """
-    Problem Bank / Randomized Content Block can store selected child problems in state.
-    Expand reset_keys with those selected child keys before deleting StudentModule rows.
+def _is_item_bank_block(block):
+    """Return whether a block selects a learner-specific subset of children."""
+    try:
+        from xmodule.item_bank_block import ItemBankMixin
+        if isinstance(block, ItemBankMixin):
+            return True
+    except Exception:  # pragma: no cover - release-specific import fallback
+        pass
+    return getattr(block, "category", None) in {"itembank", "library_content"}
+
+
+def collect_active_unit_usage_keys(user, course_key, unit_key, lock_state=False):
+    """Collect the Unit path visible in the learner's current attempt.
+
+    Ordinary containers traverse all children. ItemBank containers traverse
+    only the persisted ``selected`` children, so unselected questions cannot be
+    reset. Missing selection remains missing and is never initialized here.
+
+    Returns ``(active_keys, container_keys)``.
     """
     StudentModule = get_student_module_model()
+    store = get_modulestore()
+    structural_keys = collect_unit_usage_keys(unit_key)
     modules = StudentModule.objects.filter(
-        student=user,
-        course_id=course_key,
-        module_state_key__in=list(reset_keys),
+        student=user, course_id=course_key, module_state_key__in=list(structural_keys),
     )
+    if lock_state:
+        modules = modules.select_for_update()
+    state_by_key = {
+        module.module_state_key: module.state
+        for module in modules.only("module_state_key", "state")
+    }
+    active_keys = set()
+    container_keys = set()
 
-    for module in modules:
+    def walk(key):
+        if key in active_keys:
+            return
+        active_keys.add(key)
         try:
-            reset_keys.update(extract_usage_keys_from_state(module.state))
-        except Exception:
-            log.exception("Could not inspect StudentModule state for reset: %s", module.id)
+            block = store.get_item(key)
+        except Exception as exc:
+            # A stale selected child can still have submissions/StudentModule
+            # state. Only a verified not-found error allows treating it as a
+            # stale leaf; a transient lookup failure must never broaden scope.
+            try:
+                from xmodule.modulestore.exceptions import ItemNotFoundError
+            except ImportError:
+                ItemNotFoundError = ()
+            if isinstance(exc, ItemNotFoundError) and getattr(key, "block_type", None) == "problem":
+                return
+            raise UnitResetError(
+                "Không xác minh được phạm vi câu hỏi. Chưa reset dữ liệu bài làm.",
+                "RESET_SCOPE_LOOKUP_FAILED",
+                503,
+            ) from exc
 
-    return reset_keys
+        if key not in structural_keys:
+            raise UnitResetError(
+                "Selection cũ trỏ tới block nằm ngoài Unit này. Chưa reset dữ liệu bài làm.",
+                "RESET_SELECTION_OUTSIDE_UNIT",
+                409,
+            )
+
+        children = list(getattr(block, "children", None) or [])
+        if not children and not getattr(block, "has_children", False):
+            return
+        container_keys.add(key)
+        dynamic = _is_item_bank_block(block)
+        selected = extract_selected_usage_keys_from_state(state_by_key.get(key), course_key) if dynamic else []
+        for child_key in active_child_keys(children, selected, dynamic=dynamic):
+            walk(child_key)
+
+    walk(unit_key)
+    return active_keys, container_keys
 
 
 def get_block_cooldown_seconds(usage_keys):
@@ -272,18 +341,42 @@ def get_reset_student_attempts():
         ) from exc
 
 
-def reset_unit_attempt_state(user, course_key, unit_key, base_keys, reset_keys):
-    """Reset one Unit through Open edX so score-reset signals are emitted."""
+def reset_unit_attempt_state(user, course_key, reset_keys, container_keys):
+    """Reset active leaf state once, without recursive per-problem signals."""
     StudentModule = get_student_module_model()
     reset_student_attempts = get_reset_student_attempts()
+    reset_completion = get_completion_reset_handler()
     reset_keys = set(reset_keys)
-    targets = official_reset_targets(unit_key, base_keys, reset_keys)
+    container_keys = set(container_keys)
+    if StudentModule.objects.select_for_update().filter(
+        student=user,
+        course_id=course_key,
+        module_state_key__in=list(container_keys),
+        grade__isnull=False,
+        max_grade__gt=0,
+    ).exists():
+        raise UnitResetError(
+            "Container có dữ liệu điểm bất thường. Chưa reset dữ liệu bài làm.",
+            "RESET_SCORED_CONTAINER",
+            409,
+        )
 
-    before_count = StudentModule.objects.filter(
+    persisted_keys = set(StudentModule.objects.select_for_update().filter(
         student=user,
         course_id=course_key,
         module_state_key__in=list(reset_keys),
-    ).count()
+    ).values_list("module_state_key", flat=True))
+    persisted_leaf_targets, container_cleanup = partition_persisted_reset_keys(
+        persisted_keys,
+        container_keys,
+    )
+    # Scores can exist in submissions without a StudentModule row. Include all
+    # active leaves so the supported API clears both storage systems.
+    targets = sorted(
+        set(persisted_leaf_targets) | (reset_keys - container_keys - persisted_keys),
+        key=str,
+    )
+    before_count = len(persisted_keys)
     missing_student_modules = 0
 
     for target in targets:
@@ -294,20 +387,31 @@ def reset_unit_attempt_state(user, course_key, unit_key, base_keys, reset_keys):
                 target,
                 requesting_user=user,
                 delete_module=True,
-                emit_signals_and_events=True,
+                emit_signals_and_events=False,
             )
         except StudentModule.DoesNotExist:
-            # The API resets submissions before fetching StudentModule. Unit
-            # roots commonly have no row, after descendants were processed.
+            # The API resets submissions before fetching StudentModule, so a
+            # missing row here does not mean the submission reset was skipped.
             missing_student_modules += 1
+        # Bulk grade signalling is suppressed above. Preserve the official
+        # completion handler separately so reset does not leave old completion=1.
+        reset_completion(
+            sender=None,
+            user_id=user.id,
+            course_id=str(course_key),
+            usage_id=str(target),
+            score_deleted=True,
+        )
 
-    # Remove only leftover container/randomized state from this Unit. Scored
-    # blocks have already gone through the official signal-emitting reset API.
-    remaining_deleted, _ = StudentModule.objects.filter(
-        student=user,
-        course_id=course_key,
-        module_state_key__in=list(reset_keys),
-    ).delete()
+    # Container rows only hold navigation/randomization state. Never directly
+    # delete a leaf row because it may own score/submission state.
+    remaining_deleted = 0
+    if container_cleanup:
+        remaining_deleted, _ = StudentModule.objects.filter(
+            student=user,
+            course_id=course_key,
+            module_state_key__in=container_cleanup,
+        ).delete()
     after_count = StudentModule.objects.filter(
         student=user,
         course_id=course_key,
@@ -322,29 +426,36 @@ def reset_unit_attempt_state(user, course_key, unit_key, base_keys, reset_keys):
     }
 
 
-def recalculate_user_course_grade(user, course_key):
-    """Synchronously rebuild grades while preserving all other Unit scores."""
+def get_completion_reset_handler():
+    """Use the official completion policy without per-problem grade tasks."""
     try:
-        from lms.djangoapps.grades.course_grade_factory import CourseGradeFactory
-        from lms.djangoapps.grades.models_api import clear_prefetched_course_grades
-    except Exception as exc:  # pragma: no cover - depends on Open edX runtime
+        from completion.handlers import scorable_block_completion
+        return scorable_block_completion
+    except Exception as exc:
         raise UnitResetError(
-            "Không import được API tính lại điểm của Open edX.",
-            "OPENEDX_GRADE_API_IMPORT_FAILED",
+            "Không import được API completion của Open edX.",
+            "OPENEDX_COMPLETION_API_IMPORT_FAILED",
             500,
         ) from exc
 
-    clear_prefetched_course_grades(course_key)
-    course_grade = CourseGradeFactory().update(
-        user=user,
-        course_key=course_key,
-        force_update_subsections=True,
-    )
-    clear_prefetched_course_grades(course_key)
-    return {
-        "percent": getattr(course_grade, "percent", None),
-        "letter_grade": getattr(course_grade, "letter_grade", None),
-    }
+
+def dispatch_grade_reconciliation(reconciliation_id):
+    """Publish the durable grade task after the reset transaction commits."""
+    try:
+        from .tasks import reconcile_unit_reset_grade
+        result = reconcile_unit_reset_grade.delay(reconciliation_id)
+        UnitResetGradeReconciliation.objects.filter(pk=reconciliation_id).update(
+            task_id=str(result.id or ""),
+            updated_at=timezone.now(),
+        )
+    except Exception as exc:  # pragma: no cover - broker/runtime dependent
+        UnitResetGradeReconciliation.objects.filter(pk=reconciliation_id).update(
+            status=UnitResetGradeReconciliation.STATUS_FAILED,
+            last_error=f"Task publish failed: {exc}"[:8000],
+            completed_at=timezone.now(),
+            updated_at=timezone.now(),
+        )
+        log.exception("Could not publish Unit reset grade reconciliation id=%s", reconciliation_id)
 
 
 def audit_reset(request, course_key, unit_key, **kwargs):
@@ -380,12 +491,30 @@ def get_or_create_control(user, course_key, unit_key, cooldown_seconds):
     )
 
 
+def get_latest_grade_reconciliation(user, course_key, unit_key):
+    """Return the latest durable grade status for reset-status polling."""
+    reconciliation = UnitResetGradeReconciliation.objects.filter(
+        user=user,
+        course_id=str(course_key),
+        unit_usage_key=str(unit_key),
+    ).order_by("-created_at").first()
+    if reconciliation is None:
+        return None
+    return {
+        "id": reconciliation.id,
+        "status": reconciliation.status,
+        "attempts": reconciliation.attempts,
+        "last_error": reconciliation.last_error or None,
+        "created_at": reconciliation.created_at.isoformat(),
+        "completed_at": reconciliation.completed_at.isoformat() if reconciliation.completed_at else None,
+    }
+
+
 def get_status_for_current_user(request, course_id, unit_usage_key):
     course_key, unit_key = parse_keys(course_id, unit_usage_key)
     assert_user_can_reset(request, course_key)
 
-    reset_keys = collect_unit_usage_keys(unit_key)
-    reset_keys = expand_randomized_selected_keys(request.user, course_key, reset_keys)
+    reset_keys, _container_keys = collect_active_unit_usage_keys(request.user, course_key, unit_key)
     cooldown_seconds = get_block_cooldown_seconds(reset_keys)
 
     record, _ = get_or_create_control(request.user, course_key, unit_key, cooldown_seconds)
@@ -414,6 +543,7 @@ def get_status_for_current_user(request, course_id, unit_usage_key):
         "last_reset_at": record.last_reset_at.isoformat() if record.last_reset_at else None,
         "next_reset_allowed_at": next_allowed_at.isoformat() if next_allowed_at else None,
         "reset_keys_count": len(reset_keys),
+        "grade_reconciliation": get_latest_grade_reconciliation(request.user, course_key, unit_key),
     }
 
 
@@ -421,14 +551,9 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
     course_key, unit_key = parse_keys(course_id, unit_usage_key)
     assert_user_can_reset(request, course_key)
 
-    base_keys = collect_unit_usage_keys(unit_key)
-    reset_keys = expand_randomized_selected_keys(request.user, course_key, set(base_keys))
-    if cooldown_seconds_override is None:
-        cooldown_seconds = get_block_cooldown_seconds(reset_keys)
-    else:
-        cooldown_seconds = int(cooldown_seconds_override)
-
-    now = timezone.now()
+    cooldown_seconds = int(cooldown_seconds_override) if cooldown_seconds_override is not None else int(
+        getattr(settings, "UNIT_RESET_DEFAULT_COOLDOWN_SECONDS", 600)
+    )
     max_resets = int(getattr(settings, "UNIT_RESET_MAX_RESETS_PER_UNIT", 0) or 0)
 
     with transaction.atomic():
@@ -438,6 +563,13 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
             unit_usage_key=str(unit_key),
             defaults={"cooldown_seconds": cooldown_seconds},
         )
+        UnitResetCourseGradeLock.acquire(request.user.id, str(course_key))
+        # Read the selection only after taking the per-user/Unit lock. A waiting
+        # reset must not delete the selection from a newer attempt.
+        reset_keys, container_keys = collect_active_unit_usage_keys(request.user, course_key, unit_key, lock_state=True)
+        if cooldown_seconds_override is None:
+            cooldown_seconds = get_block_cooldown_seconds(reset_keys)
+        now = timezone.now()
 
         latest_attempt_at = None
         if getattr(settings, "UNIT_RESET_USE_LATEST_STUDENTMODULE_MODIFIED_AS_ATTEMPT_TIME", True):
@@ -476,12 +608,21 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
         reset_state = reset_unit_attempt_state(
             request.user,
             course_key,
-            unit_key,
-            base_keys,
             reset_keys,
+            container_keys,
         )
-        grade_recalculation = recalculate_user_course_grade(request.user, course_key)
         deleted_count = reset_state["student_modules_deleted"]
+
+        reconciliation = UnitResetGradeReconciliation.objects.create(
+            user=request.user,
+            course_id=str(course_key),
+            unit_usage_key=str(unit_key),
+        )
+        grade_reconciliation = {
+            "id": reconciliation.id,
+            "status": UnitResetGradeReconciliation.STATUS_PENDING,
+        }
+        transaction.on_commit(lambda: dispatch_grade_reconciliation(reconciliation.id))
 
         record.reset_count += 1
         record.last_reset_at = now
@@ -504,13 +645,13 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
     )
 
     log.warning(
-        "Unit reset OK user_id=%s course_id=%s unit=%s deleted=%s reset_state=%s grade_recalculation=%s reset_keys=%s cooldown=%s reset_count=%s",
+        "Unit reset OK user_id=%s course_id=%s unit=%s deleted=%s reset_state=%s grade_reconciliation=%s reset_keys=%s cooldown=%s reset_count=%s",
         request.user.id,
         course_key,
         unit_key,
         deleted_count,
         reset_state,
-        grade_recalculation,
+        grade_reconciliation,
         len(reset_keys),
         cooldown_seconds,
         record.reset_count,
@@ -522,7 +663,10 @@ def reset_unit_for_current_user(request, course_id, unit_usage_key, cooldown_sec
         "message": "Đã reset Unit. Hệ thống sẽ random lại bộ câu hỏi mới.",
         "deleted_count": deleted_count,
         "reset_state": reset_state,
-        "grade_recalculation": grade_recalculation,
+        "grade_reconciliation": grade_reconciliation,
+        # Backward-compatible key. Its status is explicitly asynchronous; this
+        # response never claims the course grade was already recalculated.
+        "grade_recalculation": grade_reconciliation,
         "reset_keys_count": len(reset_keys),
         "reload_required": True,
         "reload_unit": True,
@@ -769,9 +913,10 @@ def update_unit_quiz_duration(*, course_id, unit_usage_key, duration_seconds, ac
         }
 
 
-def _get_timer_config(course_id, unit_usage_key):
+def _get_timer_config(course_id, unit_usage_key, for_update=False):
     try:
-        return UnitQuizTimerConfig.objects.get(course_id=str(course_id), unit_usage_key=str(unit_usage_key), enabled=True)
+        configs = UnitQuizTimerConfig.objects.select_for_update() if for_update else UnitQuizTimerConfig.objects
+        return configs.get(course_id=str(course_id), unit_usage_key=str(unit_usage_key), enabled=True)
     except UnitQuizTimerConfig.DoesNotExist as exc:
         raise UnitResetError('Unit này chưa được cấu hình thời gian làm quiz.', 'QUIZ_TIMER_CONFIG_NOT_FOUND', 404) from exc
 
@@ -809,8 +954,9 @@ def get_legacy_compatible_timer_status_for_current_user(request, course_id, unit
     }
 
 
-def _latest_quiz_session(user, config):
-    return UnitQuizSession.objects.filter(user=user, config=config).order_by('-attempt_no', '-created_at').first()
+def _latest_quiz_session(user, config, for_update=False):
+    sessions = UnitQuizSession.objects.select_for_update() if for_update else UnitQuizSession.objects
+    return sessions.filter(user=user, config=config).order_by('-attempt_no', '-created_at').first()
 
 
 def _update_expired_session(session):
@@ -866,6 +1012,9 @@ def start_quiz_session_for_current_user(request, course_id, unit_usage_key):
     config = _get_timer_config(str(course_key), str(unit_key))
     now = timezone.now()
     with transaction.atomic():
+        UnitResetControl.objects.select_for_update().get_or_create(
+            user=request.user, course_id=str(course_key), unit_usage_key=str(unit_key),
+        )
         session = UnitQuizSession.objects.select_for_update().filter(user=request.user, config=config).order_by('-attempt_no', '-created_at').first()
         if session:
             session = _update_expired_session(session)
@@ -993,8 +1142,19 @@ def lock_quiz_session_for_current_user(request, course_id, unit_usage_key, paylo
 def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     course_key, unit_key = parse_keys(course_id, unit_usage_key)
     assert_user_can_reset(request, course_key)
-    config = _get_timer_config(str(course_key), str(unit_key))
-    latest = _latest_quiz_session(request.user, config)
+    return _reset_quiz_session_attempt(request, course_key, unit_key)
+
+
+@transaction.atomic
+def _reset_quiz_session_attempt(request, course_key, unit_key):
+    # Serialize with generic Unit resets and session start, including the case
+    # where no timer session exists yet. Keep reset + new session in one commit.
+    UnitResetControl.objects.select_for_update().get_or_create(
+        user=request.user, course_id=str(course_key), unit_usage_key=str(unit_key),
+    )
+    UnitResetCourseGradeLock.acquire(request.user.id, str(course_key))
+    config = _get_timer_config(str(course_key), str(unit_key), for_update=True)
+    latest = _latest_quiz_session(request.user, config, for_update=True)
     now = timezone.now()
 
     if latest:
@@ -1033,7 +1193,7 @@ def reset_quiz_session_for_current_user(request, course_id, unit_usage_key):
     # Now create a fresh timed attempt. Because previous sessions are not ACTIVE
     # and their reset_available_at is in the past, this creates attempt_no + 1.
     # Temporarily bypass the refresh guard by creating directly.
-    previous = _latest_quiz_session(request.user, config)
+    previous = _latest_quiz_session(request.user, config, for_update=True)
     attempt_no = (previous.attempt_no + 1) if previous else 1
     new_session = UnitQuizSession.objects.create(
         user=request.user,
@@ -1121,7 +1281,7 @@ def is_late_submit_blocked(user, course_id, problem_usage_key):
             unit_key = UsageKey.from_string(session.unit_usage_key)
             reset_keys = collect_unit_usage_keys(unit_key)
             if course_key is not None:
-                reset_keys = expand_randomized_selected_keys(user, course_key, reset_keys)
+                reset_keys, _container_keys = collect_active_unit_usage_keys(user, course_key, unit_key)
             reset_key_strings = {str(k) for k in reset_keys}
             if problem_key is not None and problem_key in reset_keys:
                 if _session_allows_auto_submit_grace(session):

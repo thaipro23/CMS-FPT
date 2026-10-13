@@ -1,6 +1,26 @@
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
+
+
+class UnitResetCourseGradeLock(models.Model):
+    """Serialize plugin resets and grade rebuilds for one learner/course."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    course_id = models.CharField(max_length=255)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        unique_together = (("user", "course_id"),)
+
+    @classmethod
+    def acquire(cls, user_id, course_id):
+        if not transaction.get_connection().in_atomic_block:
+            raise RuntimeError("Course grade lock requires an active transaction")
+        # The first read must be a locking/current read. A plain read before
+        # waiting could establish an obsolete snapshot under MySQL REPEATABLE READ.
+        lock, _ = cls.objects.select_for_update().get_or_create(user_id=user_id, course_id=str(course_id))
+        return lock
 
 
 class UnitResetControl(models.Model):
@@ -65,6 +85,44 @@ class UnitResetAudit(models.Model):
 
     def __str__(self):
         return f"{self.user_id} {self.course_id} {self.unit_usage_key} {self.code}"
+
+
+class UnitResetGradeReconciliation(models.Model):
+    """Durable status for the one grade rebuild queued after a Unit reset."""
+
+    STATUS_PENDING = "PENDING"
+    STATUS_RUNNING = "RUNNING"
+    STATUS_RETRYING = "RETRYING"
+    STATUS_COMPLETED = "COMPLETED"
+    STATUS_FAILED = "FAILED"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, STATUS_PENDING),
+        (STATUS_RUNNING, STATUS_RUNNING),
+        (STATUS_RETRYING, STATUS_RETRYING),
+        (STATUS_COMPLETED, STATUS_COMPLETED),
+        (STATUS_FAILED, STATUS_FAILED),
+    )
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    course_id = models.CharField(max_length=255, db_index=True)
+    unit_usage_key = models.CharField(max_length=255, db_index=True)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    task_id = models.CharField(max_length=255, blank=True, default="")
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["status", "created_at"], name="unit_reset_recon_status_idx"),
+            models.Index(fields=["user", "course_id"], name="unit_reset_recon_user_idx"),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} {self.course_id} {self.unit_usage_key} {self.status}"
 
 
 

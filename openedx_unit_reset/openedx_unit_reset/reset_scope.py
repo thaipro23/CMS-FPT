@@ -1,15 +1,34 @@
-"""Pure helpers that keep a Unit reset scoped to the requested Unit."""
+"""Pure helpers that keep a Unit reset scoped to the learner's active attempt."""
 
 
-def official_reset_targets(unit_key, structural_keys, expanded_keys):
-    """Return the smallest target set for Open edX's recursive reset API.
+def active_child_keys(structural_children, selected_children, dynamic=False):
+    """Return children that belong to the learner's active block path.
 
-    ``reset_student_attempts`` recursively resets the structural descendants of
-    ``unit_key``. Problem-bank selections discovered in learner state are not
-    necessarily structural descendants, so they are appended as explicit
-    targets. Keys from unrelated Units are never introduced here.
+    Ordinary containers expose every structural child. Item-bank containers
+    expose only the children already stored in the learner's ``selected``
+    state. An empty selection stays empty: reset must never randomize a new set.
     """
-    structural = set(structural_keys)
-    expanded = set(expanded_keys)
-    selected_dynamic_keys = sorted(expanded - structural, key=str)
-    return [unit_key, *selected_dynamic_keys]
+    structural_children = list(structural_children)
+    if not dynamic:
+        return structural_children
+
+    selected_children = list(selected_children)
+    selected = set(selected_children)
+    structural = set(structural_children)
+    # Keep stale selected keys too. A selected problem can have score/submission
+    # state even after an author removes it from the current bank structure.
+    return [key for key in selected_children if key in structural] + sorted(selected - structural, key=str)
+
+
+def partition_persisted_reset_keys(persisted_keys, container_keys):
+    """Split learner state into official leaf resets and container cleanup.
+
+    Leaf state must pass through Open edX's supported reset API so submissions
+    and score state are removed together. Container rows only hold navigation
+    or ItemBank selection state and may be deleted directly after leaf resets.
+    """
+    persisted = set(persisted_keys)
+    containers = set(container_keys)
+    official = sorted(persisted - containers, key=str)
+    cleanup = sorted(persisted & containers, key=str)
+    return official, cleanup

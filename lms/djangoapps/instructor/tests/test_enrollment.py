@@ -711,6 +711,20 @@ class TestInstructorEnrollmentStudentModule(SharedModuleStoreTestCase):
         assert unrelated_state['attempts'] == 12
         assert unrelated_state['brains'] == 'zombie'
 
+    @patch('lms.djangoapps.instructor.enrollment.sub_api.reset_score')
+    def test_recursive_delete_preserves_disabled_signal_policy(self, reset_score):
+        reset_student_attempts(
+            self.course_key,
+            self.user,
+            self.parent.location,
+            requesting_user=self.user,
+            delete_module=True,
+            emit_signals_and_events=False,
+        )
+
+        assert reset_score.call_count >= 2
+        assert all(call.kwargs['emit_signal'] is False for call in reset_score.call_args_list)
+
 
 class TestStudentModuleGrading(SharedModuleStoreTestCase):
     """

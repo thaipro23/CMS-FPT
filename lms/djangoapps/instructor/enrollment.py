@@ -324,7 +324,14 @@ def reset_student_attempts(
         if block.has_children:
             for child in block.children:
                 try:
-                    reset_student_attempts(course_id, student, child, requesting_user, delete_module=delete_module)
+                    reset_student_attempts(
+                        course_id,
+                        student,
+                        child,
+                        requesting_user,
+                        delete_module=delete_module,
+                        emit_signals_and_events=emit_signals_and_events,
+                    )
                 except StudentModule.DoesNotExist:
                     # If a particular child doesn't have any state, no big deal, as long as the parent does.
                     pass

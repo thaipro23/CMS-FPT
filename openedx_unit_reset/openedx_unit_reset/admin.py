@@ -1,6 +1,12 @@
 from django.contrib import admin
 
-from .models import UnitQuizSession, UnitQuizTimerConfig, UnitResetAudit, UnitResetControl
+from .models import (
+    UnitQuizSession,
+    UnitQuizTimerConfig,
+    UnitResetAudit,
+    UnitResetControl,
+    UnitResetGradeReconciliation,
+)
 
 
 @admin.register(UnitResetControl)
@@ -38,6 +44,20 @@ class UnitResetAuditAdmin(admin.ModelAdmin):
     search_fields = ("user__username", "user__email", "course_id", "unit_usage_key", "code")
     list_filter = ("success", "code", "course_id")
     readonly_fields = ("created_at",)
+
+
+@admin.register(UnitResetGradeReconciliation)
+class UnitResetGradeReconciliationAdmin(admin.ModelAdmin):
+    list_display = (
+        "id", "user", "course_id", "unit_usage_key", "status", "attempts",
+        "task_id", "created_at", "completed_at",
+    )
+    search_fields = ("user__username", "user__email", "course_id", "unit_usage_key", "task_id")
+    list_filter = ("status", "course_id")
+    readonly_fields = (
+        "user", "course_id", "unit_usage_key", "status", "attempts", "task_id",
+        "last_error", "created_at", "started_at", "completed_at", "updated_at",
+    )
 
 
 
