@@ -63,6 +63,11 @@ jobs:
           python -m py_compile tutor-plugins/fpt_haproxy_ingress.py scripts/fpt-ui-validate-haproxy-ingress.py
           python scripts/fpt-ui-validate-haproxy-ingress.py
 
+      - name: Install standalone Unit Reset test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check \
+            'Django>=4.2,<5' 'celery>=5.3,<6' 'opaque-keys>=2,<3'
+
       - name: Validate FPT UI source and fixtures
         run: bash scripts/fpt-ui-validate-static.sh
 
