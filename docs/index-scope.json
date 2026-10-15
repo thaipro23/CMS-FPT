@@ -1,0 +1,25 @@
+{
+  "focus": [
+    "AGENTS.md",
+    "README.md",
+    "CODE_INDEX.md",
+    "docs/FPT",
+    "docs/HOTFIX",
+    "docs/INSTALL",
+    "docs/CURRENT",
+    "docs/INDEX",
+    "docs/REPO_INDEX",
+    "docs/index-scope",
+    "docs/history/",
+    "docs/superpowers/",
+    "openedx_connector_plugin/",
+    "openedx_unit_reset/",
+    "openedx_fpt_",
+    "fpt_indigo_ui/",
+    "tutor-plugins/",
+    "frontend-snippets/",
+    "scripts/fpt",
+    "scripts/repo_index.py",
+    "scripts/tests/"
+  ]
+}

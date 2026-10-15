@@ -10,7 +10,9 @@ Mục tiêu là giữ nguyên nghiệp vụ Open edX, FEID, Unit Reset, Indigo v
 - Open edX: `OPENEDX_COMMON_VERSION=release/ulmo.4`.
 - Authn: tag `release/ulmo.4`, dùng DefaultLayout; `ENABLE_IMAGE_LAYOUT=False`.
 - Custom Learning MFE: `/opt/openedx/frontend-app-learning`, branch `mfe-unit-reset-runtime-clean`.
-- Unit Reset backend: package `openedx-unit-reset` `0.4.16` từ `CMS-FPT/openedx_unit_reset`.
+- Unit Reset backend: source package `openedx-unit-reset` `0.4.19` từ `CMS-FPT/openedx_unit_reset` (kiểm tra `setup.py` tại `c68efc2`; không suy ra image đã rollout).
+- Migration/reset contract: [0003 + reconciliation](../openedx_unit_reset/DEPLOY_RESET_0_4_18.md); guard/rollout hiện hành: [0.4.19](../openedx_unit_reset/QUIZ_GUARD_PERF_0_4_19.md).
+- Snapshot có nguồn và giới hạn xác minh: [CURRENT_STATE](CURRENT_STATE.md).
 
 Script setup sẽ fail-fast nếu baseline khác, source tracked bị sửa chưa commit, custom Learning mất marker Unit Reset hoặc Learning không được Tutor map vào build context `mfe -> learning-src`.
 
