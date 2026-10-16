@@ -12,6 +12,25 @@ Source snapshot, không tự cập nhật theo catalog và không xác nhận de
 | Unit Reset schema | [0003 reconciliation](../openedx_unit_reset/openedx_unit_reset/migrations/0003_unitresetgradereconciliation.py) | Chưa kiểm tra migration DB production trong đợt tổng hợp docs |
 | UI build baseline theo guide | Tutor `21.0.9`, Tutor MFE `21.0.2`, Indigo `21.2.1`, `release/ulmo.4` | Baseline tài liệu, không phải kiểm kê runtime vừa chạy |
 
+## Cập nhật quy trình — 16/10/2026 (Asia/Ho_Chi_Minh)
+
+Nguồn đọc trước thay đổi docs này: [`d1be98a171883ace245def277dcbe3d15cef03eb`](https://github.com/thaipro23/CMS-FPT/commit/d1be98a171883ace245def277dcbe3d15cef03eb).
+Giữ nguyên mốc nguồn/nghiệp vụ và bằng chứng kiểm thử ở các phần bên dưới.
+
+- Ghi rõ vai trò Principal Architect / Tech Lead / Senior Engineer trong `AGENTS.md`;
+  quy tắc chuẩn ở [ENGINEERING_STANDARDS](ENGINEERING_STANDARDS.md).
+- Mỗi phiên bản/hotfix/bàn giao phải cập nhật snapshot, tài liệu bị ảnh hưởng và
+  catalog; chất lượng và tuyên bố hiệu năng cần bằng chứng, rủi ro phải được bàn giao.
+- Phạm vi lần này: docs/hướng dẫn và catalog metadata; không thay đổi source ứng dụng,
+  schema, VERSION/package, cấu hình runtime hoặc deploy. Hiệu năng ứng dụng: **KHÔNG
+  ÁP DỤNG** cho thay đổi docs; không có số đo mới hoặc acceptance production mới.
+- Kiểm chứng đã thực hiện: đối chiếu catalog nền với Git tree tại mốc nguồn trên;
+  kiểm tra target của link Markdown, JSON và whitespace của tài liệu thay đổi.
+  Không chạy lại test ứng dụng cho thay đổi thuần docs. Đối chiếu SHA/inventory
+  catalog mới và HEAD sau publish là điều kiện bàn giao, kết quả ghi ở bàn giao cuối.
+- Việc tiếp theo: áp dụng tiêu chuẩn cho thay đổi kế tiếp; các acceptance/deploy còn
+  mở bên dưới vẫn cần xác minh. Bộ quy tắc trong docs không phải CI gate tự động.
+
 ## Thay đổi và bằng chứng
 
 Guard 0.4.19 tái sử dụng successful XBlock lookup trong một invocation và dùng

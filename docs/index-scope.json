@@ -20,6 +20,7 @@
     "frontend-snippets/",
     "scripts/fpt",
     "scripts/repo_index.py",
-    "scripts/tests/"
+    "scripts/tests/",
+    "docs/ENGINEERING"
   ]
 }

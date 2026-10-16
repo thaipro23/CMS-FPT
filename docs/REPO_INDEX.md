@@ -66,12 +66,14 @@ Git không xác minh trạng thái production và không làm snapshot nghiệp 
 
 ## Cập nhật sau khi sửa source hoặc di chuyển file
 
-1. Commit các thay đổi dự kiến bằng quy trình Git hiện có. Không stage secret/local data.
-2. Chạy `python scripts/repo_index.py build` từ root. Lệnh từ chối source chưa commit.
-3. Commit riêng `docs/_index/catalog.json`; chạy lại `check` sau commit.
-4. Nếu đổi route/module/ràng buộc, cập nhật `CODE_INDEX.md`, `docs/INDEX.md` hoặc
-   `docs/CURRENT_STATE.md` tương ứng trước bước build. Snapshot phải có SHA/nguồn,
-   tách kiểm thử đã ghi trong nguồn với kiểm thử vừa chạy, và tách source với deploy.
+1. Mỗi phiên bản/hotfix/bàn giao phải cập nhật `docs/CURRENT_STATE.md`, kể cả docs/tooling.
+   Nếu đổi route/module/ràng buộc, cập nhật thêm `CODE_INDEX.md`, `docs/INDEX.md` và
+   ADR/runbook liên quan. Quy tắc chất lượng, bằng chứng và mẫu cập nhật:
+   [ENGINEERING_STANDARDS](ENGINEERING_STANDARDS.md).
+2. Commit source và context dự kiến bằng quy trình Git hiện có. Không stage secret/local data.
+3. Chạy `python scripts/repo_index.py build` từ root. Lệnh từ chối source chưa commit.
+4. Commit riêng `docs/_index/catalog.json`; chạy lại `check` sau commit. Catalog khớp
+   Git không tự chứng minh nội dung snapshot nghiệp vụ đã được cập nhật.
 
 ```sh
 python -m unittest discover -s scripts/tests -p 'test_repo_index.py'

@@ -6,6 +6,7 @@ Nguồn kiểm tra: `c68efc2fcbae18eb1f7266a0fdcfee263d693496`, ngày 15/10/2026
 
 | Tác vụ | Nguồn cần đọc |
 |---|---|
+| Vai trò Senior/Tech Lead, chất lượng code, hiệu năng, cập nhật context mỗi phiên bản | [ENGINEERING_STANDARDS](ENGINEERING_STANDARDS.md) |
 | Connector API/auth/Studio/export | [Connector README](../openedx_connector_plugin/README.md) |
 | Quiz submit chậm, guard 0.4.19 | [profiling/invariants/rollout](../openedx_unit_reset/QUIZ_GUARD_PERF_0_4_19.md) |
 | Reset, reconciliation, migration 0003 | [0.4.18 rollout](../openedx_unit_reset/DEPLOY_RESET_0_4_18.md); version nguồn hiện tại là 0.4.19, xem snapshot |
