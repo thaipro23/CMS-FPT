@@ -115,7 +115,14 @@ class CourseGradingModel:
             drop_count, weight, min_count
             An assignment type was added or removed
         """
-        if course_from_modulestore.grade_cutoffs != jsondict['grade_cutoffs'] or \
+        # Compare persisted policy, not the runtime-enforced getter. Otherwise
+        # an old 50% cutoff could be saved as 100% without firing grade invalidation.
+        existing_cutoffs = (
+            (course_from_modulestore.grading_policy or {}).get('GRADE_CUTOFFS', {})
+            if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False)
+            else course_from_modulestore.grade_cutoffs
+        )
+        if existing_cutoffs != jsondict['grade_cutoffs'] or \
                 len(proposed_grader_settings) != len(course_from_modulestore.raw_grader):
             return True
 
