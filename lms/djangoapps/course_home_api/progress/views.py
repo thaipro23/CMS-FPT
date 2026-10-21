@@ -2,6 +2,7 @@
 Progress Tab Views
 """
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.http.response import Http404
 from edx_django_utils import monitoring as monitoring_utils
@@ -241,8 +242,12 @@ class ProgressTabView(RetrieveAPIView):
         # Get user_has_passing_grade data
         user_has_passing_grade = False
         if not student.is_anonymous:
-            user_grade = course_grade.percent
-            user_has_passing_grade = user_grade >= course.lowest_passing_grade
+            if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+                # Grade percent may round to 100 while the raw score remains below 100.
+                user_has_passing_grade = bool(course_grade.passed)
+            else:
+                user_grade = course_grade.percent
+                user_has_passing_grade = user_grade >= course.lowest_passing_grade
 
         block = modulestore().get_course(course_key)
         grading_policy = block.grading_policy

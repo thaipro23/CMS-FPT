@@ -24,3 +24,5 @@ này; cần kiểm tra Git thực tế khi sửa MFE. `frontend-snippets/` chỉ
 Core Open edX: `lms/`, `cms/`, `openedx/`, `common/`, `xmodule/`; chỉ mở khi cần.
 Ví dụ `python scripts/repo_index.py find "grade" --prefix lms/djangoapps/grades --limit 10`.
 Tài liệu/kiểm tra theo tác vụ: [docs/INDEX.md](docs/INDEX.md).
+
+| Bắt buộc PASS=100% mọi khóa | [score](lms/djangoapps/grades/course_grade.py), [course cutoff](xmodule/course_block.py), [server update](cms/djangoapps/models/settings/course_grading.py), [command](cms/djangoapps/contentstore/management/commands/fpt_enforce_perfect_pass.py), [runbook](docs/PERFECT_PASS_100.md) |

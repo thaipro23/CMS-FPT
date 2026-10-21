@@ -12,6 +12,7 @@ from lazy import lazy
 
 from openedx.core.lib.grade_utils import round_away_from_zero
 from xmodule import block_metadata_utils  # lint-amnesty, pylint: disable=wrong-import-order
+from xmodule.fpt_perfect_pass import has_perfect_grade
 
 from .scores import compute_percent
 from .subsection_grade import ZeroSubsectionGrade
@@ -294,8 +295,13 @@ class CourseGrade(CourseGradeBase):
         grade_cutoffs = self.course_data.course.grade_cutoffs
         grader_result = self.grader_result(visible_grades_only=visible_grades_only, has_staff_access=has_staff_access)
         self.percent = self._compute_percent(grader_result)
-        self.letter_grade = self._compute_letter_grade(grade_cutoffs, self.percent)
-        self.passed = self._compute_passed(grade_cutoffs, self.percent)
+        if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+            # Decision is based on the raw weighted grade, not rounded display percent.
+            self.passed = has_perfect_grade(grader_result['percent'])
+            self.letter_grade = 'Pass' if self.passed else None
+        else:
+            self.letter_grade = self._compute_letter_grade(grade_cutoffs, self.percent)
+            self.passed = self._compute_passed(grade_cutoffs, self.percent)
         return self
 
     @lazy

@@ -60,3 +60,9 @@ vừa chạy lại khi sửa docs. Fixture/mock không xác minh hết hành vi 
 Deploy/UAT/merge ổn định cần bằng chứng riêng. Chỉ đổi settings
 `UNIT_RESET_QUIZ_GUARD_BULK_READ_ENABLED=False` nếu rollback scoped-read optimization
 trong tác vụ vận hành đã xác định; giữ `UNIT_RESET_QUIZ_TIMER_SERVER_GUARD_ENABLED`.
+
+## Feature branch — PASS 100% mọi khóa học (21/10/2026)
+
+Baseline `fpt-indigo-ui` SHA `320efc7ae18dec68ec50f754bd04935e81d7fc58`.
+Đang chuẩn bị UAT trong `feat/global-perfect-pass-ulmo4-20261021`: code server cưỡng chế cutoff 100%, raw-grade pass check, Tutor config, Authoring MFE source patch và dry-run/backfill command; regression tests có source nhưng chưa chạy. Xem [runbook](PERFECT_PASS_100.md).
+Trạng thái: source feature branch, CHƯA DEPLOY; CHƯA CHẠY full tests, chưa kiểm tra production/certificates, chưa regrade. Hiệu năng: CHƯA ĐO, cần đo tác động regrade tới CPU/MySQL/Redis/Celery. Catalog hiện tại chưa được rebuild sau thay đổi source, phải cập nhật bằng Git checkout trước merge.

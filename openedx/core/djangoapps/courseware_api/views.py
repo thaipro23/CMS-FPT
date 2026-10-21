@@ -204,6 +204,8 @@ class CoursewareMeta:
     def user_has_passing_grade(self):
         """ Returns a boolean on if the effective_user has a passing grade in the course """
         if not self.effective_user.is_anonymous:
+            if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+                return bool(self.course_grade.passed)
             user_grade = self.course_grade.percent
             return user_grade >= self.course.lowest_passing_grade
         return False

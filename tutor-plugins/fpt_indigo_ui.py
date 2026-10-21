@@ -10,6 +10,15 @@ FPT_PRIMARY_DARK = "#072B61"
 FPT_ACCENT = "#F36F21"
 FPT_TIME_ZONE = "Asia/Ho_Chi_Minh"
 
+# Force the same policy in CMS, LMS and grading workers on Tutor deployments.
+hooks.Filters.CONFIG_DEFAULTS.add_items([
+    ("FPT_ENFORCE_PERFECT_PASS", True),
+])
+hooks.Filters.ENV_PATCHES.add_item((
+    "openedx-common-settings",
+    "FPT_ENFORCE_PERFECT_PASS = {{ FPT_ENFORCE_PERFECT_PASS }}",
+))
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PATCH_DIR = _REPO_ROOT / "fpt_indigo_ui" / "patches"
 
