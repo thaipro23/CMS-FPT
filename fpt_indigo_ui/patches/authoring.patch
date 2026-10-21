@@ -62,3 +62,43 @@ if (!source.includes('FPT_ACMS_ONLY_COMPONENT_TYPES.has(component.type)')) {
 fs.writeFileSync(path, source, 'utf8');
 console.log('[fpt-authoring] Unit buttons removed: Problem, Problem Bank, Library Content, Legacy Library');
 JS
+
+# FPT_PERFECT_PASS_100_UI_V1
+# Ulmo.4's grading slider cannot express a PASS threshold of 100%.
+# Replace it with a read-only message; retain assignment and deadline controls.
+RUN node - <<'JS'
+const fs = require('fs');
+const file = '/openedx/app/src/grading-settings/GradingSettings.jsx';
+const marker = 'FPT_PERFECT_PASS_100_UI_V1';
+if (!fs.existsSync(file)) throw new Error('FPT Ulmo.4 grading source not found');
+let source = fs.readFileSync(file, 'utf8');
+if (!source.includes(marker)) {
+  const beginAnchor = '                    <GradingScale\n';
+  const endAnchor = '                    />\n';
+  const begin = source.indexOf(beginAnchor);
+  const end = source.indexOf(endAnchor, begin);
+  if (begin < 0 || end < 0 || !source.slice(begin, end).includes('gradeCutoffs=')) {
+    throw new Error('FPT grading scale anchor changed; refusing unsafe MFE build');
+  }
+  source = source.slice(0, begin)
+    + '                    {/* ' + marker + ' */}\n'
+    + '                    <div className="alert alert-info" role="note">\n'
+    + '                      Yêu cầu hệ thống: Chỉ PASS khi điểm tổng kết thực tế đạt 100%.\n'
+    + '                    </div>\n'
+    + source.slice(end + endAnchor.length);
+  const required = [
+    ["import GradingScale from './grading-scale/GradingScale';\n", ''],
+    ["import { useConvertGradeCutoffs, useUpdateGradingData } from './hooks';",
+      "import { useUpdateGradingData } from './hooks';"],
+    ['    gradeCutoffs,\n', ''],
+    ['  const {\n    gradeLetters,\n    gradeValues,\n    sortedGrades,\n  } = useConvertGradeCutoffs(gradeCutoffs);\n\n', ''],
+    ['const [eligibleGrade, setEligibleGrade] = useState(null);', 'const eligibleGrade = 100;'],
+  ];
+  for (const [anchor, replacement] of required) {
+    if (!source.includes(anchor)) throw new Error('FPT grading hook anchor changed: ' + anchor);
+    source = source.replace(anchor, replacement);
+  }
+  fs.writeFileSync(file, source, 'utf8');
+}
+console.log('[fpt-authoring] Global perfect PASS policy visible, grading scale read only');
+JS
