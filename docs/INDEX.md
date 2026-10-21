@@ -36,3 +36,5 @@ Nguồn kiểm tra: `c68efc2fcbae18eb1f7266a0fdcfee263d693496`, ngày 15/10/2026
 trạng thái triển khai. Giữ upstream `docs/decisions/` nguyên bản. Dùng
 `python scripts/repo_index.py find "tu_khoa" --docs --history --limit 10` hoặc
 `--all` khi tìm cả core. Không nhân bản master context theo từng phiên chạy.
+
+| PASS 100% toàn hệ thống | [Runbook/UAT/rollback](PERFECT_PASS_100.md) — feature branch, chưa deploy |
