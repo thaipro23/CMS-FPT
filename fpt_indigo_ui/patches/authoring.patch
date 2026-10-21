@@ -91,6 +91,7 @@ if (!source.includes(marker)) {
     ["import { useConvertGradeCutoffs, useUpdateGradingData } from './hooks';",
       "import { useUpdateGradingData } from './hooks';"],
     ['    gradeCutoffs,\n', ''],
+    ['    resetDataRef,\n', ''],
     ['  const {\n    gradeLetters,\n    gradeValues,\n    sortedGrades,\n  } = useConvertGradeCutoffs(gradeCutoffs);\n\n', ''],
     ['const [eligibleGrade, setEligibleGrade] = useState(null);', 'const eligibleGrade = 100;'],
   ];
