@@ -4,6 +4,7 @@ import json
 import os
 from types import SimpleNamespace
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from xmodule.modulestore import ModuleStoreEnum
 from xmodule.modulestore.django import modulestore
@@ -25,6 +26,8 @@ class Command(BaseCommand):
             raise CommandError('--limit must be nonnegative')
         if options['apply'] and (not options['backup_file'] or options['expected_count'] is None):
             raise CommandError('--apply requires --backup-file and --expected-count')
+        if options['apply'] and not getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+            raise CommandError('Enable FPT_ENFORCE_PERFECT_PASS before applying persisted policies')
         store = modulestore()
         keys = sorted((summary.id for summary in store.get_course_summaries()), key=str)
         pending = []
@@ -49,12 +52,17 @@ class Command(BaseCommand):
             self.stdout.write('Nothing to update')
             return
         try:
-            backup = open(options['backup_file'], 'x', encoding='utf-8')
+            # No overwrite, 0600 permissions even if the container umask is permissive.
+            fd = os.open(options['backup_file'], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            backup = os.fdopen(fd, 'w', encoding='utf-8')
         except OSError as exc:
             raise CommandError(f'Could not exclusively create backup: {exc}') from exc
         updated = 0
         with backup:
             for key, old_cutoffs in selected:
+                current = store.get_course(key, depth=1)
+                if current is None or (current.grading_policy or {}).get('GRADE_CUTOFFS', {}) != old_cutoffs:
+                    raise CommandError(f'Concurrent grading-policy update detected for {key}')
                 # Persist rollback metadata first, including fsync, before each write.
                 backup.write(json.dumps({'course_id': str(key), 'grade_cutoffs_before': old_cutoffs},
                                         ensure_ascii=False) + '\n')

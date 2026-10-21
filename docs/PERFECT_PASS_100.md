@@ -8,7 +8,7 @@
 - LMS course grade `passed` và `letter_grade` được tính bằng raw grader percent, thay vì percent 100% đã làm tròn; giá trị display vẫn như Ulmo.4.
 - Sai số số thực được chấp nhận ở mức ±1e-12 đơn vị tỉ lệ. Ví dụ 99.5% hoặc 99.99% FAIL; 100% PASS. Điểm >100% vượt tolerance không PASS, cần xác minh dữ liệu.
 - Không bắt buộc course progress/completion 100%; đây là hệ thống trạng thái khác điểm tổng. Không ép mọi câu hỏi đều đúng nếu course grader được cấu hình drop_count hoặc trọng số khác 0.
-- Grading policy server luôn trả `{'Pass': 1.0}` khi flag bật; CMS API update cutoff chuẩn hóa về ngưỡng duy nhất này. Frontend Authoring MFE còn cần triển khai riêng hoặc patch để ẩn slider không tương thích 100%.
+- Grading policy server luôn trả `{'Pass': 1.0}` khi flag bật; CMS API update cutoff chuẩn hóa về ngưỡng duy nhất này. Authoring MFE Ulmo.4 dùng Tutor patch `fpt_indigo_ui/patches/authoring.patch` để thay thanh kéo không hỗ trợ 100% bằng thông báo chính sách cố định; phải build lại MFE để có hiệu lực.
 - Tutor plugin `fpt_indigo_ui` mặc định bật `FPT_ENFORCE_PERFECT_PASS=True` trong LMS/CMS/workers. Trên môi trường thiếu plugin/flag mặc định Open edX giữ hành vi cũ.
 
 ## Modules
@@ -19,6 +19,8 @@
 - `cms/djangoapps/contentstore/management/commands/fpt_enforce_perfect_pass.py`: audit và batch persistence, sao lưu JSONL được fsync trước từng mutation; dry-run mặc định.
 
 ## Quy trình rollout
+
+> Đây là thay đổi trạng thái học tập có thể khiến learner trước đây PASS thành FAIL. Việc backfill chính sách và tái chấm điểm là các bước riêng, không chạy đồng thời hàng loạt.
 
 1. Build riêng LMS/CMS/worker từ cùng commit có code này và kiểm chứng flag trên cả 3 loại tiến trình. Run Open edX pytest/grading tests, MFE build, UAT (điểm 99, 99.5, 99.99, 100; nhiều grader, no graded subsection, course existing/new/import).
 2. Backup Mongo modulestore + MySQL grading/Certificate database và xác minh khả năng khôi phục. Xác định số khóa thay đổi trên CMS UAT rồi production (chỉ đọc):
