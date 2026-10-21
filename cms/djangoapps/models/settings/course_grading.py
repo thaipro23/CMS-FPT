@@ -7,6 +7,7 @@ from base64 import b64encode
 from datetime import timedelta
 from hashlib import sha1
 
+from django.conf import settings
 from eventtracking import tracker
 
 from cms.djangoapps.contentstore.signals.signals import GRADING_POLICY_CHANGED
@@ -69,6 +70,8 @@ class CourseGradingModel:
         Decode the json into CourseGradingModel and save any changes. Returns the modified model.
         Probably not the usual path for updates as it's too coarse grained.
         """
+        if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+            jsondict = {**jsondict, 'grade_cutoffs': {'Pass': 1.0}}
         course = modulestore().get_course(course_key)
         previous_grading_policy_hash = str(hash_grading_policy(course.grading_policy))
 
@@ -193,6 +196,8 @@ class CourseGradingModel:
         Create or update the grade cutoffs for the given course. Returns sent in cutoffs (ie., no extra
         db fetch).
         """
+        if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+            cutoffs = {'Pass': 1.0}
         course = modulestore().get_course(course_key)
         course.grade_cutoffs = cutoffs
 

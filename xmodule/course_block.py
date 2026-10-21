@@ -375,7 +375,11 @@ class CourseFields:  # lint-amnesty, pylint: disable=missing-class-docstring
     )
     grading_policy = Dict(
         help=_("Grading policy definition for this class"),
-        default=DEFAULT_GRADING_POLICY,
+        default=(
+            {**DEFAULT_GRADING_POLICY, 'GRADE_CUTOFFS': {'Pass': 1.0}}
+            if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False)
+            else DEFAULT_GRADING_POLICY
+        ),
         scope=Scope.content
     )
     show_calculator = Boolean(
@@ -1271,6 +1275,9 @@ class CourseBlock(
 
     @property
     def grade_cutoffs(self):
+        # Runtime overlay for imported and not-yet-backfilled courses; no write on read.
+        if getattr(settings, 'FPT_ENFORCE_PERFECT_PASS', False):
+            return {'Pass': 1.0}
         return self._grading_policy['GRADE_CUTOFFS']
 
     @grade_cutoffs.setter
@@ -1284,7 +1291,7 @@ class CourseBlock(
 
     @property
     def lowest_passing_grade(self):
-        return min(self._grading_policy['GRADE_CUTOFFS'].values())
+        return min(self.grade_cutoffs.values())
 
     @property
     def is_cohorted(self):
