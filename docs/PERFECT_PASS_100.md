@@ -16,6 +16,7 @@
 - `xmodule/course_block.py`: getter policy runtime 100% kể cả policy legacy; default khi tạo khóa mới 100% nếu flag bật. Setter không gây ghi ngoài ý muốn khi đọc.
 - `cms/djangoapps/models/settings/course_grading.py`: khóa hạ cutoff từ Studio API.
 - `lms/djangoapps/grades/course_grade.py`, `xmodule/fpt_perfect_pass.py`: điểm raw quyết định PASS.
+- `lms/djangoapps/course_home_api/progress/views.py` và `openedx/core/djangoapps/courseware_api/views.py`: dùng `course_grade.passed` để tránh báo PASS nhầm qua so sánh grade percent đã làm tròn.
 - `cms/djangoapps/contentstore/management/commands/fpt_enforce_perfect_pass.py`: audit và batch persistence, sao lưu JSONL được fsync trước từng mutation; dry-run mặc định.
 
 ## Quy trình rollout
